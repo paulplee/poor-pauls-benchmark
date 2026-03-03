@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# PPB — local config & downloaded models
+.env
+models/
+
 # C extensions
 *.so
 
