@@ -64,6 +64,54 @@ DEFAULT_MODELS_DIR = Path(os.getenv("PPB_MODELS_DIR", "./models"))
 # ---------------------------------------------------------------------------
 
 
+def _make_rich_tqdm(progress: Progress) -> type:
+    """Return a tqdm-compatible class that forwards byte progress to *progress*.
+
+    ``hf_hub_download`` accepts a ``tqdm_class`` keyword argument.  By passing
+    a class produced here we intercept every ``update(n)`` call the downloader
+    makes and forward it straight to a Rich :class:`~rich.progress.Progress`
+    task, giving us a live bytes/speed/ETA bar without any polling.
+    """
+
+    class _RichTqdm:
+        def __init__(
+            self,
+            iterable=None,
+            *,
+            desc: str = "",
+            total: Optional[int] = None,
+            **_kwargs,
+        ):
+            # Use only the bare filename so the bar label stays short.
+            label = Path(desc).name or desc
+            self._task = progress.add_task(f"[cyan]{label}[/cyan]", total=total)
+            self.iterable = iterable
+            self.n = 0
+
+        # -- tqdm interface --------------------------------------------------
+
+        def update(self, n: int = 1) -> None:
+            progress.advance(self._task, n)
+            self.n += n
+
+        def close(self) -> None:
+            # Clamp to 100 % when total was unknown (chunked encoding, etc.).
+            progress.update(self._task, completed=self.n, total=self.n)
+
+        # -- context-manager / iterable shims --------------------------------
+
+        def __iter__(self):
+            yield from self.iterable
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
+
+    return _RichTqdm
+
+
 def download_model(
     repo_id: str,
     filename_pattern: str,
@@ -149,35 +197,40 @@ def download_model(
         TransferSpeedColumn(),
         TimeRemainingColumn(),
         console=console,
+        transient=False,
     ) as progress:
-        overall = progress.add_task(
-            "Overall", total=len(matches)
-        )
+        RichTqdm = _make_rich_tqdm(progress)
+        overall = progress.add_task("[bold]Total", total=len(matches))
 
         for filename in matches:
-            file_task = progress.add_task(filename, total=None)
+            # Fast-path: skip the network round-trip when the file is already
+            # present in the target directory.
+            local_file = dest / filename
+            if local_file.exists():
+                console.print(f"  [info]↩ Cached[/info]  {filename}")
+                downloaded_paths.append(local_file.resolve())
+                progress.advance(overall)
+                continue
 
             downloaded: str = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
                 local_dir=str(dest),
                 token=token,
+                tqdm_class=RichTqdm,  # ← live byte progress
             )
 
-            progress.update(file_task, completed=1, total=1)
             progress.advance(overall)
-
             model_path = Path(downloaded).resolve()
             downloaded_paths.append(model_path)
-            console.print(
-                f"  [success]✓[/success] {filename}"
-            )
+            console.print(f"  [success]✓[/success] {filename}")
 
     console.print(
         f"\n[success]Done![/success] {len(downloaded_paths)} file(s) saved to "
         f"[bold]{dest.resolve()}[/bold]"
     )
     return downloaded_paths
+
 
 # ---------------------------------------------------------------------------
 # Typer app
@@ -197,13 +250,32 @@ app = typer.Typer(
 
 @app.command()
 def download(
-    repo_id: str = typer.Argument(..., help="Hugging Face repo ID (e.g. QuantFactory/Meta-Llama-3-8B-Instruct-GGUF)"),
-    filename: str = typer.Argument(..., help='Glob pattern for the GGUF file (e.g. "*Q4_K_M.gguf" or "*.gguf")'),
-    token: Optional[str] = typer.Option(None, "--token", "-t", envvar="HF_TOKEN", help="Hugging Face API token (or set HF_TOKEN env-var)"),
-    models_dir: Optional[Path] = typer.Option(None, "--models-dir", "-d", envvar="PPB_MODELS_DIR", help="Destination directory for models (default: ./models)"),
+    repo_id: str = typer.Argument(
+        ...,
+        help="Hugging Face repo ID (e.g. QuantFactory/Meta-Llama-3-8B-Instruct-GGUF)",
+    ),
+    filename: str = typer.Argument(
+        ..., help='Glob pattern for the GGUF file (e.g. "*Q4_K_M.gguf" or "*.gguf")'
+    ),
+    token: Optional[str] = typer.Option(
+        None,
+        "--token",
+        "-t",
+        envvar="HF_TOKEN",
+        help="Hugging Face API token (or set HF_TOKEN env-var)",
+    ),
+    models_dir: Optional[Path] = typer.Option(
+        None,
+        "--models-dir",
+        "-d",
+        envvar="PPB_MODELS_DIR",
+        help="Destination directory for models (default: ./models)",
+    ),
 ) -> None:
     """Download GGUF model(s) from Hugging Face Hub."""
-    console.print(f"[info]Downloading[/info] [bold]{filename}[/bold] from [bold]{repo_id}[/bold] …")
+    console.print(
+        f"[info]Downloading[/info] [bold]{filename}[/bold] from [bold]{repo_id}[/bold] …"
+    )
     try:
         paths = download_model(repo_id, filename, token=token, models_dir=models_dir)
         for p in paths:
@@ -232,8 +304,12 @@ def sweep(
 @app.command(name="auto-limit")
 def auto_limit(
     model: str = typer.Option(..., "--model", "-m", help="Path to the GGUF model file"),
-    min_ctx: int = typer.Option(2048, "--min-ctx", help="Minimum context length to probe"),
-    max_ctx: int = typer.Option(128000, "--max-ctx", help="Maximum context length to probe"),
+    min_ctx: int = typer.Option(
+        2048, "--min-ctx", help="Minimum context length to probe"
+    ),
+    max_ctx: int = typer.Option(
+        128000, "--max-ctx", help="Maximum context length to probe"
+    ),
 ) -> None:
     """Binary-search for the maximum context window before OOM."""
     console.print(
