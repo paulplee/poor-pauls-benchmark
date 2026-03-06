@@ -9,6 +9,7 @@ import fnmatch
 import itertools
 import json
 import logging
+import math
 import os
 import subprocess
 import tomllib
@@ -320,6 +321,108 @@ def download_model(
     return downloaded_paths
 
 
+OOM_MARKERS = ("out of memory", "bad alloc", "bad_alloc", "cudaerroroutofmemory",
+               "rocm out of memory", "failed to allocate")
+
+
+def probe_ctx(model_path: Path, n_ctx: int) -> bool:
+    """Return *True* when llama-bench can run *model_path* at *n_ctx* tokens.
+
+    A run is considered a failure (OOM or other hard error) when:
+
+    * The process exits with a non-zero return code, **or**
+    * ``stderr`` contains a known out-of-memory marker.
+    """
+    cmd: list[str] = [
+        LLAMA_BENCH_CMD,
+        "-m", str(model_path),
+        "-p", str(n_ctx),
+        "-n", "0",          # skip token-generation pass — we only need allocation
+        "-o", "json",
+    ]
+    log.debug("probe_ctx n_ctx=%d — running: %s", n_ctx, " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        log.debug("probe_ctx n_ctx=%d — exit %d", n_ctx, proc.returncode)
+        return False
+    combined = (proc.stdout + proc.stderr).lower()
+    if any(marker in combined for marker in OOM_MARKERS):
+        log.debug("probe_ctx n_ctx=%d — OOM marker found in output", n_ctx)
+        return False
+    return True
+
+
+def execute_auto_limit(
+    model_path: Path,
+    min_ctx: int,
+    max_ctx: int,
+    tolerance: int = 1024,
+) -> int:
+    """Binary-search for the largest safe context window.
+
+    Parameters
+    ----------
+    model_path:
+        GGUF file to probe.
+    min_ctx / max_ctx:
+        Search bounds (inclusive).
+    tolerance:
+        Stop when ``hi - lo < tolerance``; the safe value is ``lo``.
+
+    Returns
+    -------
+    int
+        Largest *n_ctx* that did **not** trigger OOM.
+    """
+    lo, hi = min_ctx, max_ctx
+    last_good: int = 0
+    iteration = 0
+
+    model_name = model_path.name
+    console.print()
+
+    with Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TextColumn("[cyan]{task.fields[detail]}[/cyan]"),
+        console=console,
+        transient=False,
+    ) as progress:
+        # Approximate upper bound on iterations: log2((max_ctx - min_ctx) / tolerance)
+        est_iters = max(1, math.ceil(math.log2(max(1, (hi - lo) / tolerance))))
+        task = progress.add_task(
+            f"Probing [hw]{model_name}[/hw]",
+            total=est_iters,
+            detail=f"lo={lo}  hi={hi}",
+        )
+
+        while hi - lo >= tolerance:
+            mid = (lo + hi) // 2
+            iteration += 1
+            progress.update(
+                task,
+                detail=f"try n_ctx={mid:,}  (lo={lo:,}  hi={hi:,})",
+            )
+            ok = probe_ctx(model_path, mid)
+            if ok:
+                last_good = mid
+                lo = mid + 1
+                status = "[success]✓ pass[/success]"
+            else:
+                hi = mid - 1
+                status = "[error]✗ OOM[/error]"
+            console.print(
+                f"  iter {iteration:>2}: n_ctx={mid:>7,}  {status}  "
+                f"→ window [{lo:,}, {hi:,}]"
+            )
+            progress.advance(task)
+
+        progress.update(task, detail="done", completed=est_iters)
+
+    safe = last_good if last_good else lo
+    return safe
+
+
 def run_llama_bench(combo: BenchCombo, results_file: Path) -> dict | None:
     """Run ``llama-bench`` for one parameter combination and record the result.
 
@@ -556,15 +659,45 @@ def auto_limit(
         2048, "--min-ctx", help="Minimum context length to probe"
     ),
     max_ctx: int = typer.Option(
-        128000, "--max-ctx", help="Maximum context length to probe"
+        131072, "--max-ctx", help="Maximum context length to probe"
+    ),
+    tolerance: int = typer.Option(
+        1024,
+        "--tolerance",
+        "-t",
+        help="Stop searching when hi - lo < this value (default: 1024)",
     ),
 ) -> None:
     """Binary-search for the maximum context window before OOM."""
+    model_path = Path(model).expanduser().resolve()
+    if not model_path.exists():
+        console.print(f"[error]Model file not found:[/error] {model_path}")
+        raise typer.Exit(code=1)
+
     console.print(
-        f"[info]Auto-limit[/info] probing [hw]{model}[/hw] "
-        f"between [bold]{min_ctx}[/bold] and [bold]{max_ctx}[/bold] …"
+        f"[info]Auto-limit[/info] probing [hw]{model_path.name}[/hw]\n"
+        f"  Range     : [bold]{min_ctx:,}[/bold] → [bold]{max_ctx:,}[/bold] tokens\n"
+        f"  Tolerance : [bold]{tolerance:,}[/bold] tokens"
     )
-    log.info("auto-limit command — not yet implemented")
+
+    safe = execute_auto_limit(
+        model_path=model_path,
+        min_ctx=min_ctx,
+        max_ctx=max_ctx,
+        tolerance=tolerance,
+    )
+
+    if safe == 0:
+        console.print(
+            "\n[error]Could not find a working context size.[/error]\n"
+            f"  Even n_ctx={min_ctx:,} failed — check that the model loads at all."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"\n[success]✓ Maximum safe context for[/success] [hw]{model_path.name}[/hw]\n"
+        f"\n    [bold green]{safe:,} tokens[/bold green]\n"
+    )
 
 
 # ---------------------------------------------------------------------------

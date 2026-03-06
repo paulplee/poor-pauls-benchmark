@@ -79,16 +79,16 @@ All fields live inside a single `[sweep]` section.
 
 PPB computes the full Cartesian product of `n_ctx × n_batch`, so `3 × 2 = 6` combinations in the example above.
 
-##### Example: exhaustive sweep
+##### Example: exhaustive sweep across multiple quantisations
 
 ```toml
 [sweep]
-model_path = "./models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
-n_ctx   = [2048, 4096, 8192, 16384, 32768]
+model_path = "~/models/Llama-3*Q4*.gguf"   # all Q4 quants in the folder
+n_ctx   = [8192, 16384, 32768]
 n_batch = [256, 512, 1024]
 ```
 
-This produces 15 benchmark runs and appends every result as a JSON line to `results.jsonl`.
+This tests every matched model at all 9 `(n_ctx, n_batch)` combinations and appends every result as a JSON line to `results.jsonl`.
 
 ##### Results format
 
@@ -116,11 +116,51 @@ Each line written to the JSONL file is a self-contained record:
 
 ### 3. Find Your VRAM Limit
 
-Let PPB find the maximum context window your hardware can support without crashing:
+PPB can automatically discover the maximum context window your hardware supports before running out of memory, using a binary search algorithm.
 
 ```bash
-python ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf --min-ctx 2048 --max-ctx 128000
+uv run ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf
 ```
+
+The full set of options:
+
+```bash
+uv run ppb.py auto-limit \
+  --model ~/models/Llama-3-8B-Instruct.Q4_K_M.gguf \
+  --min-ctx 2048      \ # lower bound (default: 2048)
+  --max-ctx 131072    \ # upper bound (default: 131072)
+  --tolerance 1024      # stop when hi-lo < this (default: 1024)
+```
+
+#### How it works
+
+1. Sets `lo = min_ctx`, `hi = max_ctx`.
+2. Probes the midpoint `mid = (lo + hi) / 2` by running `llama-bench` with `-n 0` (allocation-only, no generation).
+3. **Pass** (exit 0, no OOM marker in output) → `lo = mid + 1`, records `mid` as the last known-good value.
+4. **Fail** (non-zero exit code, or output contains `"out of memory"` / `"bad alloc"` / etc.) → `hi = mid - 1`.
+5. Stops when `hi - lo < tolerance` and prints the largest safe context size.
+
+Sample output:
+
+```
+  iter  1: n_ctx= 66,560  ✓ pass  → window [66,561, 131,071]
+  iter  2: n_ctx= 98,815  ✗ OOM   → window [66,561, 98,814]
+  iter  3: n_ctx= 82,687  ✓ pass  → window [82,688, 98,814]
+  ...
+
+✓ Maximum safe context for Llama-3-8B-Instruct.Q4_K_M.gguf
+
+    90,111 tokens
+```
+
+#### auto-limit options
+
+| Flag          | Default   | Description                                               |
+| ------------- | --------- | --------------------------------------------------------- |
+| `--model`     | _(required)_ | Path to the GGUF model file.                           |
+| `--min-ctx`   | `2048`    | Lower bound for the binary search.                        |
+| `--max-ctx`   | `131072`  | Upper bound for the binary search.                        |
+| `--tolerance` | `1024`    | Stop searching when the remaining window is this narrow.  |
 
 ## Contributing to the Leaderboard
 
