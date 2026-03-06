@@ -26,7 +26,7 @@ PPB automates the tedious parts of benchmarking so you can focus on the data.
 
 ## Installation
 
-_(Note: PPB is currently in active development. These instructions represent the target CLI interface.)_
+> **Note:** PPB is currently in active development. These instructions represent the target CLI interface.
 
 Ensure you have Python 3.10+ installed.
 
@@ -50,21 +50,69 @@ python ppb.py download QuantFactory/Meta-Llama-3-8B-Instruct-GGUF "*Q4_K_M.gguf"
 
 ### 2. Run a Parameter Sweep
 
-Create a `sweep.toml` file to define your test matrix:
+Create a `sweep.toml` file to define your test matrix (a starter config is included at [`sweep.example.toml`](sweep.example.toml)):
 
 ```toml
 [sweep]
 model_path = "./models/Llama-3-8B-Instruct.Q4_K_M.gguf"
-n_gpu_layers = [-1]
-n_batch = [512, 1024]
-n_ctx = [8192, 16384, 32768, 65536]
+n_ctx    = [8192, 16384, 32768]
+n_batch  = [512, 1024]
 ```
 
 Execute the sweep:
 
 ```bash
 python ppb.py sweep sweep.toml
+# optionally pick a custom output file
+python ppb.py sweep sweep.toml --results my_results.jsonl
 ```
+
+#### Sweep config reference
+
+All fields live inside a single `[sweep]` section.
+
+| Key          | Type             | Required | Description                                                                                                                                                           |
+| ------------ | ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model_path` | string (path)    | ✅       | Path to the GGUF model file. Relative paths are resolved from the working directory.                                                                                  |
+| `n_ctx`      | list of integers | ✅       | Prompt token counts to test (passed as `-p` to `llama-bench`). Controls KV cache depth — larger values stress longer-context throughput. e.g. `[8192, 16384, 32768]`. |
+| `n_batch`    | list of integers | ✅       | Batch sizes (passed as `-b` to `llama-bench`) for prompt-processing throughput tests, e.g. `[512, 1024]`.                                                             |
+
+PPB computes the full Cartesian product of `n_ctx × n_batch`, so `3 × 2 = 6` combinations in the example above.
+
+##### Example: exhaustive sweep
+
+```toml
+[sweep]
+model_path = "./models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+n_ctx   = [2048, 4096, 8192, 16384, 32768]
+n_batch = [256, 512, 1024]
+```
+
+This produces 15 benchmark runs and appends every result as a JSON line to `results.jsonl`.
+
+##### Results format
+
+Each line written to the JSONL file is a self-contained record:
+
+```json
+{
+  "timestamp": "2026-03-04T10:00:00+00:00",
+  "model_path": "/abs/path/to/model.gguf",
+  "n_ctx": 8192,
+  "n_batch": 512,
+  "results": [
+    /* raw llama-bench JSON output */
+  ]
+}
+```
+
+##### Environment overrides
+
+| Variable           | Default           | Description                                       |
+| ------------------ | ----------------- | ------------------------------------------------- |
+| `PPB_LLAMA_BENCH`  | `llama-bench`     | Path or name of the `llama-bench` binary.         |
+| `PPB_RESULTS_FILE` | `./results.jsonl` | Default output file (overridden by `--results`).  |
+| `PPB_MODELS_DIR`   | `./models`        | Default directory used by the `download` command. |
 
 ### 3. Find Your VRAM Limit
 

@@ -1,0 +1,38 @@
+# Poor Paul's Benchmark — example sweep configuration
+#
+# Copy this file to sweep.toml (or any name you like) and edit to taste.
+# Run with:
+#   uv run ppb.py sweep sweep.toml
+#   uv run ppb.py sweep sweep.toml --results my_results.jsonl
+
+[sweep]
+
+# -------------------------------------------------------------------
+# model_path (required)
+#   Absolute or relative path to the GGUF model file you want to test.
+#   Relative paths are resolved from the directory where you run ppb.
+# -------------------------------------------------------------------
+model_path = "./models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+
+# -------------------------------------------------------------------
+# n_ctx (required)
+#   List of prompt token counts to benchmark.
+#   Passed to llama-bench as -p (--n-prompt), which drives the KV cache
+#   allocation — larger values test how throughput degrades at longer
+#   contexts.
+#
+#   Typical values:
+#     Small  :  2048  4096
+#     Medium :  8192  16384
+#     Large  :  32768 65536 131072
+# -------------------------------------------------------------------
+n_ctx = [8192, 16384, 32768]
+
+# -------------------------------------------------------------------
+# n_batch (required)
+#   List of prompt-processing batch sizes to test.
+#   Higher values speed up ingestion but consume more VRAM.
+#
+#   Typical values: 256, 512, 1024
+# -------------------------------------------------------------------
+n_batch = [512, 1024]
