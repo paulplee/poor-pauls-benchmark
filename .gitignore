@@ -148,6 +148,7 @@ ENV/
 env.bak/
 venv.bak/
 sweep.toml
+results.jsonl
 
 # Spyder project settings
 .spyderproject
