@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import typer
 from huggingface_hub import HfApi, RepoFile, hf_hub_download
 from huggingface_hub.errors import RepositoryNotFoundError
@@ -76,31 +76,64 @@ LLAMA_BENCH_CMD = os.getenv("PPB_LLAMA_BENCH", "llama-bench")
 class SweepConfig(BaseModel):
     """Validated representation of the ``[sweep]`` block in a sweep TOML file.
 
+    ``model_path`` may be:
+
+    * A path to a single ``.gguf`` file.
+    * A path to a **directory** — every ``.gguf`` file inside is tested.
+    * A **glob pattern** (e.g. ``~/models/*IQ4*.gguf``) — all matching files
+      are tested.
+
     Example TOML::
 
         [sweep]
-        model_path = "./models/model.gguf"
-        n_ctx    = [8192, 16384, 32768]   # passed as -p (prompt tokens) to llama-bench
-        n_batch  = [512, 1024]            # passed as -b (batch size) to llama-bench
+        model_path = "./models/model.gguf"          # single file
+        model_path = "~/models/"                    # whole directory
+        model_path = "~/models/*Q4_K_M*.gguf"       # glob
+        n_ctx    = [8192, 16384, 32768]
+        n_batch  = [512, 1024]
     """
 
-    model_path: Path
+    model_path: str  # raw value: single file, directory, or glob pattern
     n_ctx: list[int]
     n_batch: list[int]
 
-    @field_validator("model_path", mode="before")
-    @classmethod
-    def resolve_and_check(cls, v: object) -> Path:
-        p = Path(str(v)).expanduser().resolve()
-        if not p.exists():
-            raise ValueError(f"model_path does not exist: {p}")
-        return p
+    # Populated by the model_validator below; not read from TOML.
+    model_paths: list[Path] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def resolve_model_paths(self) -> "SweepConfig":
+        """Expand *model_path* into a concrete list of ``.gguf`` files."""
+        raw = self.model_path
+        expanded = Path(raw).expanduser()
+        resolved = expanded.resolve()
+
+        if resolved.is_dir():
+            # Directory: collect every .gguf inside (non-recursive).
+            paths = sorted(resolved.glob("*.gguf"))
+            if not paths:
+                raise ValueError(f"No .gguf files found in directory: {resolved}")
+        elif resolved.is_file():
+            paths = [resolved]
+        else:
+            # Treat as a glob pattern: split into parent directory + name pattern.
+            parent = expanded.parent.resolve()
+            pattern = expanded.name
+            if not parent.exists():
+                raise ValueError(f"model_path does not exist: {resolved}")
+            paths = sorted(p.resolve() for p in parent.glob(pattern))
+            if not paths:
+                raise ValueError(f"No files match pattern: {raw}")
+
+        self.model_paths = paths
+        return self
 
     def combos(self) -> list["BenchCombo"]:
-        """Return the full Cartesian product of sweep parameters."""
+        """Return the full Cartesian product of models × n_ctx × n_batch."""
         return [
-            BenchCombo(model_path=self.model_path, n_ctx=ctx, n_batch=batch)
-            for ctx, batch in itertools.product(self.n_ctx, self.n_batch)
+            BenchCombo(model_path=model, n_ctx=ctx, n_batch=batch)
+            for model, ctx, batch in itertools.product(
+                self.model_paths, self.n_ctx, self.n_batch
+            )
         ]
 
 
@@ -384,9 +417,10 @@ def execute_sweep(config_path: Path, results_file: Path) -> None:
     combos = cfg.combos()
     total = len(combos)
 
+    model_names = ", ".join(f"[hw]{m.name}[/hw]" for m in cfg.model_paths)
     console.print(
         f"[info]Sweep:[/info] [bold]{total}[/bold] combination(s) "
-        f"→ model [hw]{cfg.model_path.name}[/hw]\n"
+        f"across [bold]{len(cfg.model_paths)}[/bold] model(s): {model_names}\n"
         f"  n_ctx   : {cfg.n_ctx}\n"
         f"  n_batch : {cfg.n_batch}\n"
         f"  Results : [bold]{results_file.resolve()}[/bold]"
@@ -405,7 +439,7 @@ def execute_sweep(config_path: Path, results_file: Path) -> None:
         task = progress.add_task("Sweep", total=total, combo="starting…")
 
         for i, combo in enumerate(combos, start=1):
-            label = f"ctx={combo.n_ctx} batch={combo.n_batch}"
+            label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
             progress.update(task, combo=label)
 
             record = run_llama_bench(combo, results_file=results_file)

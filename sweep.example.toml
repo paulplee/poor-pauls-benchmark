@@ -9,7 +9,16 @@
 
 # -------------------------------------------------------------------
 # model_path (required)
-#   Absolute or relative path to the GGUF model file you want to test.
+#   Accepts any of the following:
+#     • Path to a single .gguf file   → tests that model only
+#     • Path to a directory           → tests every .gguf file inside
+#     • Glob pattern                  → tests all matching files
+#
+#   Examples:
+#     model_path = "./models/Qwen3.5-0.8B-IQ4_XS.gguf"   # single file
+#     model_path = "./models/"                              # whole directory
+#     model_path = "./models/Qwen3.5*IQ4*.gguf"            # glob
+#
 #   Relative paths are resolved from the directory where you run ppb.
 # -------------------------------------------------------------------
 model_path = "./models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
