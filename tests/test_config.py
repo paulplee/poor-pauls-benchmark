@@ -184,7 +184,7 @@ class TestAutoLimitConfig:
         assert cfg.tolerance == 1024
         assert cfg.runner_type == "llama-bench"
         assert cfg.runner_params == {}
-        assert cfg.resolved_model_path == tmp_model
+        assert cfg.model_paths == [tmp_model.resolve()]
 
     def test_custom_values(self, tmp_model: Path) -> None:
         from ppb import AutoLimitConfig
@@ -208,18 +208,33 @@ class TestAutoLimitConfig:
 
         from ppb import AutoLimitConfig
 
-        with pytest.raises(ValidationError, match="Model file not found"):
+        with pytest.raises(ValidationError, match="No files match pattern"):
             AutoLimitConfig(model_path=str(tmp_path / "no_such.gguf"))
 
-    def test_directory_model_raises(self, tmp_path: Path) -> None:
+    def test_directory_model(self, tmp_model_dir: Path) -> None:
+        from ppb import AutoLimitConfig
+
+        cfg = AutoLimitConfig(model_path=str(tmp_model_dir))
+        names = sorted(p.name for p in cfg.model_paths)
+        assert names == ["alpha.gguf", "beta.gguf"]
+
+    def test_empty_directory_raises(self, tmp_path: Path) -> None:
         from pydantic import ValidationError
 
         from ppb import AutoLimitConfig
 
-        d = tmp_path / "adir"
+        d = tmp_path / "emptydir"
         d.mkdir()
-        with pytest.raises(ValidationError, match="must be a single file"):
+        with pytest.raises(ValidationError, match="No .gguf files found"):
             AutoLimitConfig(model_path=str(d))
+
+    def test_glob_model(self, tmp_model_dir: Path) -> None:
+        from ppb import AutoLimitConfig
+
+        pattern = str(tmp_model_dir / "alpha*")
+        cfg = AutoLimitConfig(model_path=pattern)
+        assert len(cfg.model_paths) == 1
+        assert cfg.model_paths[0].name == "alpha.gguf"
 
 
 # ==========================================================================

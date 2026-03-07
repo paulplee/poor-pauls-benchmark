@@ -394,6 +394,35 @@ _hw_sniffer = HardwareSniffer()
 # ---------------------------------------------------------------------------
 
 
+def _resolve_model_path(raw: str) -> list[Path]:
+    """Expand a model_path string into a concrete list of ``.gguf`` files.
+
+    Accepts:
+    * A single file path.
+    * A directory — every ``.gguf`` file inside (non-recursive).
+    * A glob pattern (e.g. ``~/models/*IQ4*.gguf``).
+    """
+    expanded = Path(raw).expanduser()
+    resolved = expanded.resolve()
+
+    if resolved.is_dir():
+        paths = sorted(resolved.glob("*.gguf"))
+        if not paths:
+            raise ValueError(f"No .gguf files found in directory: {resolved}")
+    elif resolved.is_file():
+        paths = [resolved]
+    else:
+        parent = expanded.parent.resolve()
+        pattern = expanded.name
+        if not parent.exists():
+            raise ValueError(f"model_path does not exist: {resolved}")
+        paths = sorted(p.resolve() for p in parent.glob(pattern))
+        if not paths:
+            raise ValueError(f"No files match pattern: {raw}")
+
+    return paths
+
+
 class SweepConfig(BaseModel):
     """Validated representation of the ``[sweep]`` block in a sweep TOML file.
 
@@ -426,28 +455,7 @@ class SweepConfig(BaseModel):
     @model_validator(mode="after")
     def resolve_model_paths(self) -> "SweepConfig":
         """Expand *model_path* into a concrete list of ``.gguf`` files."""
-        raw = self.model_path
-        expanded = Path(raw).expanduser()
-        resolved = expanded.resolve()
-
-        if resolved.is_dir():
-            # Directory: collect every .gguf inside (non-recursive).
-            paths = sorted(resolved.glob("*.gguf"))
-            if not paths:
-                raise ValueError(f"No .gguf files found in directory: {resolved}")
-        elif resolved.is_file():
-            paths = [resolved]
-        else:
-            # Treat as a glob pattern: split into parent directory + name pattern.
-            parent = expanded.parent.resolve()
-            pattern = expanded.name
-            if not parent.exists():
-                raise ValueError(f"model_path does not exist: {resolved}")
-            paths = sorted(p.resolve() for p in parent.glob(pattern))
-            if not paths:
-                raise ValueError(f"No files match pattern: {raw}")
-
-        self.model_paths = paths
+        self.model_paths = _resolve_model_path(self.model_path)
         return self
 
     def combos(self) -> list["BenchCombo"]:
@@ -472,10 +480,14 @@ class BenchCombo:
 class AutoLimitConfig(BaseModel):
     """Validated representation of the ``[auto-limit]`` block in a suite TOML.
 
+    ``model_path`` uses the same resolution rules as
+    :class:`SweepConfig` — a single file, directory, or glob pattern.
+    When multiple models match, auto-limit probes each one independently.
+
     Example TOML::
 
         [auto-limit]
-        model_path = "~/models/model.gguf"
+        model_path = "~/models/"      # probe every .gguf in the directory
         min_ctx    = 2048
         max_ctx    = 131072
         tolerance  = 1024
@@ -489,17 +501,12 @@ class AutoLimitConfig(BaseModel):
     runner_params: dict[str, Any] = Field(default_factory=dict)
 
     # Populated by the model_validator below; not read from TOML.
-    resolved_model_path: Path = Field(default=Path())
+    model_paths: list[Path] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def resolve_model(self) -> "AutoLimitConfig":
-        """Expand and resolve *model_path* to an absolute file path."""
-        expanded = Path(self.model_path).expanduser().resolve()
-        if not expanded.exists():
-            raise ValueError(f"Model file not found: {expanded}")
-        if not expanded.is_file():
-            raise ValueError(f"model_path must be a single file, got: {expanded}")
-        self.resolved_model_path = expanded
+    def resolve_models(self) -> "AutoLimitConfig":
+        """Expand *model_path* into a concrete list of ``.gguf`` files."""
+        self.model_paths = _resolve_model_path(self.model_path)
         return self
 
 
@@ -836,7 +843,7 @@ def execute_sweep(
     results_file: Path,
     config_path: Path | None = None,
     sweep_config: SweepConfig | None = None,
-    max_ctx_cap: int | None = None,
+    max_ctx_caps: dict[Path, int] | None = None,
 ) -> None:
     """Run a parameter sweep.
 
@@ -850,8 +857,9 @@ def execute_sweep(
         Path to a TOML file (must contain a ``[sweep]`` section).
     sweep_config:
         Pre-built :class:`SweepConfig` — used by the CLI-only path.
-    max_ctx_cap:
-        If set, combos whose ``n_ctx`` exceeds this value are skipped.
+    max_ctx_caps:
+        Per-model context caps (from ``auto-limit``).  Combos whose
+        ``n_ctx`` exceeds the cap for their model are skipped.
     """
     if config_path is not None and sweep_config is not None:
         raise ValueError("Provide config_path or sweep_config, not both.")
@@ -883,14 +891,18 @@ def execute_sweep(
 
     combos = cfg.combos()
 
-    # Apply max-ctx cap (from auto-limit or CLI override)
-    if max_ctx_cap is not None:
+    # Apply per-model max-ctx caps (from auto-limit)
+    if max_ctx_caps:
         original = len(combos)
-        combos = [c for c in combos if c.n_ctx <= max_ctx_cap]
+        combos = [
+            c for c in combos
+            if c.model_path not in max_ctx_caps
+            or c.n_ctx <= max_ctx_caps[c.model_path]
+        ]
         skipped = original - len(combos)
         if skipped:
             console.print(
-                f"  [warning]Skipping {skipped} combo(s) with n_ctx > {max_ctx_cap:,}[/warning]"
+                f"  [warning]Skipping {skipped} combo(s) exceeding per-model ctx cap[/warning]"
             )
 
     total = len(combos)
@@ -1250,7 +1262,7 @@ def auto_limit(
         help="Path to a TOML suite file containing an [auto-limit] section",
     ),
     model: Optional[str] = typer.Option(
-        None, "--model", "-m", help="Path to the GGUF model file (overrides TOML)"
+        None, "--model", "-m", help="Path to GGUF model file/dir/glob (overrides TOML)"
     ),
     min_ctx: Optional[int] = typer.Option(
         None, "--min-ctx", help="Minimum context length to probe (default: 2048)"
@@ -1272,8 +1284,11 @@ def auto_limit(
 ) -> None:
     """Binary-search for the maximum context window before OOM.
 
+    Accepts a single model file, a directory of ``.gguf`` files, or a
+    glob pattern — the search runs independently for each matched model.
+
     Can be driven by a TOML config (``ppb auto-limit suite.toml``) or purely
-    by CLI flags (``ppb auto-limit --model ./m.gguf``).
+    by CLI flags (``ppb auto-limit --model ./models/``).
     CLI flags override TOML values.
     """
     # --- Load TOML defaults if a config was provided -------------------------
@@ -1296,7 +1311,7 @@ def auto_limit(
             except Exception as exc:
                 console.print(f"[error]Invalid [auto-limit] config:[/error] {exc}")
                 raise typer.Exit(code=1) from exc
-            al_model = al_model or str(al_cfg.resolved_model_path)
+            al_model = al_model or al_cfg.model_path
             al_min = al_cfg.min_ctx
             al_max = al_cfg.max_ctx
             al_tol = al_cfg.tolerance
@@ -1321,37 +1336,47 @@ def auto_limit(
     if runner is not None:
         al_runner = runner
 
-    model_path = Path(al_model).expanduser().resolve()  # type: ignore[arg-type]
-    if not model_path.exists():
-        console.print(f"[error]Model file not found:[/error] {model_path}")
-        raise typer.Exit(code=1)
+    # Resolve model path(s) using the same file/dir/glob rules as sweep.
+    try:
+        model_paths = _resolve_model_path(al_model)  # type: ignore[arg-type]
+    except ValueError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1) from exc
 
+    model_names = ", ".join(f"[hw]{m.name}[/hw]" for m in model_paths)
     console.print(
-        f"[info]Auto-limit[/info] probing [hw]{model_path.name}[/hw]\n"
+        f"[info]Auto-limit[/info] probing {len(model_paths)} model(s): {model_names}\n"
         f"  Range     : [bold]{al_min:,}[/bold] → [bold]{al_max:,}[/bold] tokens\n"
         f"  Tolerance : [bold]{al_tol:,}[/bold] tokens"
     )
 
-    safe = execute_auto_limit(
-        model_path=model_path,
-        min_ctx=al_min,
-        max_ctx=al_max,
-        tolerance=al_tol,
-        runner_type=al_runner,
-        runner_params=al_runner_params,
-    )
+    all_passed = True
 
-    if safe == 0:
-        console.print(
-            "\n[error]Could not find a working context size.[/error]\n"
-            f"  Even n_ctx={al_min:,} failed — check that the model loads at all."
+    for mp in model_paths:
+        safe = execute_auto_limit(
+            model_path=mp,
+            min_ctx=al_min,
+            max_ctx=al_max,
+            tolerance=al_tol,
+            runner_type=al_runner,
+            runner_params=al_runner_params,
         )
-        raise typer.Exit(code=1)
 
-    console.print(
-        f"\n[success]✓ Maximum safe context for[/success] [hw]{model_path.name}[/hw]\n"
-        f"\n    [bold green]{safe:,} tokens[/bold green]\n"
-    )
+        if safe == 0:
+            console.print(
+                f"\n[error]Could not find a working context size for[/error] "
+                f"[hw]{mp.name}[/hw]\n"
+                f"  Even n_ctx={al_min:,} failed — check that the model loads at all."
+            )
+            all_passed = False
+        else:
+            console.print(
+                f"\n[success]✓ Maximum safe context for[/success] [hw]{mp.name}[/hw]\n"
+                f"\n    [bold green]{safe:,} tokens[/bold green]\n"
+            )
+
+    if not all_passed:
+        raise typer.Exit(code=1)
 
 
 @app.command(name="all")
@@ -1371,9 +1396,10 @@ def run_all(
 ) -> None:
     """Run the full benchmark suite: auto-limit → sweep.
 
-    1. **auto-limit** — discover the maximum safe context window.
+    1. **auto-limit** — discover the maximum safe context window for each
+       model (file, directory, or glob pattern).
     2. **sweep** — run the parameter sweep, skipping any combo whose
-       ``n_ctx`` exceeds the limit found in step 1.
+       ``n_ctx`` exceeds the per-model limit found in step 1.
 
     Both steps read their configuration from the same TOML file.
     If the TOML has no ``[auto-limit]`` section, the auto-limit step
@@ -1388,7 +1414,7 @@ def run_all(
     )
 
     # -- Phase 1: auto-limit (optional) -----------------------------------
-    max_ctx_cap: int | None = None
+    max_ctx_caps: dict[Path, int] | None = None
 
     if "auto-limit" in raw:
         console.print("[info]Phase 1 / 2:[/info] auto-limit")
@@ -1398,34 +1424,58 @@ def run_all(
             console.print(f"[error]Invalid [auto-limit] config:[/error] {exc}")
             raise typer.Exit(code=1) from exc
 
+        model_names = ", ".join(
+            f"[hw]{m.name}[/hw]" for m in al_cfg.model_paths
+        )
         console.print(
-            f"  Probing [hw]{al_cfg.resolved_model_path.name}[/hw]\n"
+            f"  Probing {len(al_cfg.model_paths)} model(s): {model_names}\n"
             f"  Range     : [bold]{al_cfg.min_ctx:,}[/bold] → "
             f"[bold]{al_cfg.max_ctx:,}[/bold] tokens\n"
             f"  Tolerance : [bold]{al_cfg.tolerance:,}[/bold] tokens"
         )
 
-        safe = execute_auto_limit(
-            model_path=al_cfg.resolved_model_path,
-            min_ctx=al_cfg.min_ctx,
-            max_ctx=al_cfg.max_ctx,
-            tolerance=al_cfg.tolerance,
-            runner_type=al_cfg.runner_type,
-            runner_params=al_cfg.runner_params,
-        )
+        caps: dict[Path, int] = {}
+        any_failed = False
 
-        if safe == 0:
+        for mp in al_cfg.model_paths:
+            safe = execute_auto_limit(
+                model_path=mp,
+                min_ctx=al_cfg.min_ctx,
+                max_ctx=al_cfg.max_ctx,
+                tolerance=al_cfg.tolerance,
+                runner_type=al_cfg.runner_type,
+                runner_params=al_cfg.runner_params,
+            )
+
+            if safe == 0:
+                console.print(
+                    f"\n[error]auto-limit failed for[/error] [hw]{mp.name}[/hw] "
+                    f"— could not find a working context size."
+                )
+                any_failed = True
+            else:
+                caps[mp] = safe
+                console.print(
+                    f"\n[success]✓ Max safe context for[/success] "
+                    f"[hw]{mp.name}[/hw]: "
+                    f"[bold green]{safe:,} tokens[/bold green]"
+                )
+
+        if not caps:
             console.print(
-                "\n[error]auto-limit failed — could not find a working context "
-                "size. Skipping sweep.[/error]"
+                "\n[error]auto-limit failed for all models. "
+                "Skipping sweep.[/error]"
             )
             raise typer.Exit(code=1)
 
-        max_ctx_cap = safe
-        console.print(
-            f"\n[success]✓ Max safe context:[/success] "
-            f"[bold green]{safe:,} tokens[/bold green]\n"
-        )
+        if any_failed:
+            console.print(
+                "\n[warning]Some models failed auto-limit and will be skipped "
+                "in the sweep.[/warning]"
+            )
+
+        max_ctx_caps = caps
+        console.print()  # blank line before phase 2
     else:
         console.print("[info]No [auto-limit] section — skipping to sweep.[/info]\n")
 
@@ -1438,7 +1488,7 @@ def run_all(
     execute_sweep(
         config_path=config,
         results_file=resolved_results,
-        max_ctx_cap=max_ctx_cap,
+        max_ctx_caps=max_ctx_caps,
     )
 
 

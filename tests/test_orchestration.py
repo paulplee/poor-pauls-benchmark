@@ -376,7 +376,7 @@ class TestBackwardCompat:
 
 
 class TestExecuteSweepMaxCtxCap:
-    """Test max_ctx_cap filtering in execute_sweep."""
+    """Test per-model max_ctx_caps filtering in execute_sweep."""
 
     def test_cap_filters_combos(self, tmp_path: Path, tmp_model: Path) -> None:
         from ppb import execute_sweep
@@ -385,7 +385,10 @@ class TestExecuteSweepMaxCtxCap:
             tmp_path, str(tmp_model), n_ctx="[512, 1024, 2048]", n_batch="[256]"
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(config_path=cfg, results_file=results, max_ctx_cap=1024)
+        execute_sweep(
+            config_path=cfg, results_file=results,
+            max_ctx_caps={tmp_model.resolve(): 1024},
+        )
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 2  # Only 512 and 1024
@@ -400,7 +403,7 @@ class TestExecuteSweepMaxCtxCap:
             tmp_path, str(tmp_model), n_ctx="[512, 1024, 2048]", n_batch="[256]"
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(config_path=cfg, results_file=results, max_ctx_cap=None)
+        execute_sweep(config_path=cfg, results_file=results, max_ctx_caps=None)
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 3

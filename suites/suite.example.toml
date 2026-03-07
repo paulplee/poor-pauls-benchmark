@@ -43,7 +43,7 @@
 #     model_path = "./models/"                              # whole directory
 #     model_path = "./models/Qwen3.5*IQ4*.gguf"            # glob
 #
-#   For [auto-limit], model_path must be a single file.
+#   Both [auto-limit] and [sweep] accept all three formats.
 #
 #   Relative paths are resolved from the directory where you run ppb.
 # -------------------------------------------------------------------

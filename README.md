@@ -87,6 +87,8 @@ python -m pytest tests/ -v
 
 ### 1. Download a Model
 
+* Note: This is a only a convenience command. If you already have models sitting somewhere, just specify the `model_path` when you run the benchmark.
+
 Easily fetch GGUF files from Hugging Face:
 
 ```bash
@@ -101,6 +103,9 @@ PPB can automatically discover the maximum context window your hardware supports
 
 ```bash
 python ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf
+# Or a whole directory / glob pattern:
+python ppb.py auto-limit --model ./models/
+python ppb.py auto-limit --model "./models/*Q4*.gguf"
 ```
 
 **TOML-driven mode** (reads the `[auto-limit]` section from a suite file):
@@ -149,7 +154,7 @@ Sample output (each iteration shows per-probe duration):
 | Flag          | Default        | Description                                                  |
 | ------------- | -------------- | ------------------------------------------------------------ |
 | `CONFIG`      | _(optional)_   | Path to a TOML suite file containing an `[auto-limit]` section. |
-| `--model`     | _(from TOML)_  | Path to the GGUF model file (overrides TOML).                |
+| `--model`     | _(from TOML)_  | Path to a GGUF file, directory, or glob pattern (overrides TOML). |
 | `--min-ctx`   | `2048`         | Lower bound for the binary search.                           |
 | `--max-ctx`   | `131072`       | Upper bound for the binary search.                           |
 | `--tolerance` | `1024`         | Stop searching when the remaining window is this narrow.     |
@@ -158,7 +163,7 @@ Sample output (each iteration shows per-probe duration):
 #### auto-limit TOML section
 
 ```toml
-model_path  = "~/models/Llama-3-8B-Q4_K_M.gguf"
+model_path  = "~/models/Llama-3-8B-Q4_K_M.gguf"   # single file, dir, or glob
 runner_type = "llama-bench"  # optional (shared across sections)
 
 [auto-limit]
@@ -166,6 +171,8 @@ min_ctx    = 2048       # optional (default: 2048)
 max_ctx    = 131072     # optional (default: 131072)
 tolerance  = 1024       # optional (default: 1024)
 ```
+
+When `model_path` points to a directory or glob pattern, auto-limit probes **each matched model independently** and reports per-model results.
 
 ### 3. Run a Parameter Sweep
 
@@ -420,8 +427,8 @@ The `--results` CLI flag always takes priority over the TOML value.
 
 The `all` command combines **auto-limit** and **sweep** into a single invocation:
 
-1. **Phase 1 — auto-limit:** Discovers the max safe context window.
-2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the limit found in Phase 1.
+1. **Phase 1 — auto-limit:** Discovers the max safe context window for each model.
+2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1.
 
 ```bash
 python ppb.py all suites/my_gpu.toml
@@ -434,7 +441,7 @@ If the TOML has no `[auto-limit]` section, Phase 1 is skipped and the sweep runs
 
 ```toml
 # Shared — declared once, inherited by both sections
-model_path  = "~/models/Llama-3-8B-Q4_K_M.gguf"
+model_path  = "~/models/"                    # file, dir, or glob — probes each model
 results     = "results/my_benchmark.jsonl"   # optional
 
 [auto-limit]
@@ -447,7 +454,8 @@ n_ctx      = [8192, 16384, 32768, 65536, 131072]
 n_batch    = [512, 1024]
 ```
 
-When `all` runs Phase 1 and discovers a max safe context of 65,536 tokens, the sweep will automatically skip the 131,072 combos — no manual editing required.
+When multiple models are matched, Phase 1 probes each one independently.
+The per-model caps are then passed to Phase 2, which skips combos that exceed each model's limit — no manual editing required.
 
 ### 5. View Your Hardware Profile
 
