@@ -1,0 +1,4 @@
+# Ignore user suite files — only track the example template
+*
+!.gitignore
+!suite.example.toml

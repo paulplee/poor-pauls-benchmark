@@ -119,3 +119,65 @@ def sweep_toml_with_runner(tmp_path: Path, tmp_model: Path) -> Path:
         """)
     )
     return cfg
+
+
+@pytest.fixture()
+def suite_toml(tmp_path: Path, tmp_model: Path) -> Path:
+    """Write a full benchmark suite TOML (auto-limit + sweep).
+
+    Uses the shared-root-params layout: model_path and runner_type
+    are declared once at the top level.
+    """
+    cfg = tmp_path / "suite.toml"
+    cfg.write_text(
+        textwrap.dedent(f"""\
+        model_path = "{tmp_model}"
+        runner_type = "fake"
+        results = "custom_results.jsonl"
+
+        [auto-limit]
+        min_ctx = 1024
+        max_ctx = 4096
+        tolerance = 1024
+
+        [sweep]
+        n_ctx = [512, 1024]
+        n_batch = [256]
+        """)
+    )
+    return cfg
+
+
+@pytest.fixture()
+def suite_toml_no_autolimit(tmp_path: Path, tmp_model: Path) -> Path:
+    """Suite TOML without [auto-limit] section."""
+    cfg = tmp_path / "suite_no_al.toml"
+    cfg.write_text(
+        textwrap.dedent(f"""\
+        model_path = "{tmp_model}"
+        runner_type = "fake"
+
+        [sweep]
+        n_ctx = [512, 1024]
+        n_batch = [256]
+        """)
+    )
+    return cfg
+
+
+@pytest.fixture()
+def suite_toml_with_results(tmp_path: Path, tmp_model: Path) -> Path:
+    """Suite TOML with explicit results path."""
+    cfg = tmp_path / "suite_results.toml"
+    cfg.write_text(
+        textwrap.dedent(f"""\
+        model_path = "{tmp_model}"
+        runner_type = "fake"
+        results = "my_output.jsonl"
+
+        [sweep]
+        n_ctx = [512]
+        n_batch = [256]
+        """)
+    )
+    return cfg

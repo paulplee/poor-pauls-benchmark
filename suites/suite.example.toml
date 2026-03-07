@@ -1,0 +1,119 @@
+# Poor Paul's Benchmark — example benchmark suite
+#
+# A single TOML file drives auto-limit, sweep, or both (via `ppb all`).
+#
+# Copy this file to create your own suite:
+#
+#   cp suites/suite.example.toml suites/my_gpu.toml
+#
+# Everything in suites/ except this example is gitignored, so you can
+# name your files however you like without polluting version control.
+#
+# Usage:
+#   uv run ppb.py sweep  suites/my_gpu.toml                   # sweep only (TOML)
+#   uv run ppb.py sweep  --model ./m.gguf --n-ctx 8192 \      # sweep (pure CLI)
+#                         --n-batch 512
+#   uv run ppb.py auto-limit suites/my_gpu.toml               # auto-limit only
+#   uv run ppb.py auto-limit --model ./m.gguf                 # auto-limit (CLI)
+#   uv run ppb.py all    suites/my_gpu.toml                    # auto-limit → sweep
+#   uv run ppb.py all    suites/my_gpu.toml --results r.jsonl  # override output
+
+
+# ===================================================================
+# Shared parameters
+# ===================================================================
+#
+# Keys declared at the top level are inherited by BOTH [auto-limit]
+# and [sweep].  This means you set your model and runner ONCE.
+# If you want to benchmark a different model, create a separate
+# suite file — one model per suite keeps results tidy.
+#
+# A section can still override any shared key if needed.
+# ===================================================================
+
+# -------------------------------------------------------------------
+# model_path (required)
+#   Accepts any of the following:
+#     • Path to a single .gguf file   → tests that model only
+#     • Path to a directory           → tests every .gguf file inside
+#     • Glob pattern                  → tests all matching files
+#
+#   Examples:
+#     model_path = "./models/Qwen3.5-0.8B-IQ4_XS.gguf"   # single file
+#     model_path = "./models/"                              # whole directory
+#     model_path = "./models/Qwen3.5*IQ4*.gguf"            # glob
+#
+#   For [auto-limit], model_path must be a single file.
+#
+#   Relative paths are resolved from the directory where you run ppb.
+# -------------------------------------------------------------------
+model_path = "./models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+
+# -------------------------------------------------------------------
+# runner_type (optional — default: "llama-bench")
+#   Which benchmark backend to use.  Built-in options:
+#     • "llama-bench"   — llama.cpp's llama-bench (default)
+#   Future / community options: "llama-server", "vllm", etc.
+# -------------------------------------------------------------------
+# runner_type = "llama-bench"
+
+# -------------------------------------------------------------------
+# results (optional)
+#   Where to write benchmark results. When omitted, an auto-generated
+#   filename is used: <config_stem>_YYYYMMDD_HHMM.jsonl
+#   The --results CLI flag always takes priority over this value.
+# -------------------------------------------------------------------
+# results = "results/my_benchmark.jsonl"
+
+
+# ===================================================================
+# [auto-limit]  — binary-search for the maximum safe context window
+# ===================================================================
+# Omit this section entirely if you don't need the auto-limit step.
+
+[auto-limit]
+
+# min_ctx / max_ctx: search bounds (defaults shown)
+# min_ctx = 2048
+# max_ctx = 131072
+
+# tolerance: stop when hi − lo < tolerance (default: 1024)
+# tolerance = 1024
+
+
+# ===================================================================
+# [sweep]  — declarative parameter sweep
+# ===================================================================
+
+[sweep]
+
+# -------------------------------------------------------------------
+# n_ctx (required)
+#   List of prompt token counts to benchmark.
+#   Passed to llama-bench as -p (--n-prompt), which drives the KV cache
+#   allocation — larger values test how throughput degrades at longer
+#   contexts.
+#
+#   Typical values:
+#     Small  :  2048  4096
+#     Medium :  8192  16384
+#     Large  :  32768 65536 131072
+# -------------------------------------------------------------------
+n_ctx = [8192, 16384, 32768]
+
+# -------------------------------------------------------------------
+# n_batch (required)
+#   List of prompt-processing batch sizes to test.
+#   Higher values speed up ingestion but consume more VRAM.
+#
+#   Typical values: 256, 512, 1024
+# -------------------------------------------------------------------
+n_batch = [512, 1024]
+
+# -------------------------------------------------------------------
+# [sweep.runner_params] (optional)
+#   Runner-specific overrides.  For llama-bench:
+#     llama_bench_cmd = "/path/to/llama-bench"   # override binary path
+# -------------------------------------------------------------------
+# [sweep.runner_params]
+# llama_bench_cmd = "llama-bench"

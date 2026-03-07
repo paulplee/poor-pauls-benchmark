@@ -38,8 +38,11 @@ tests/
   test_runners.py      # Runner ABC, registry, and LlamaBenchRunner tests
   test_config.py       # SweepConfig, BenchCombo, _write_result tests
   test_orchestration.py # Sweep & auto-limit integration tests
-sweep.example.toml     # Starter sweep config (copy → sweep.toml)
-results.jsonl          # Benchmark output (JSONL)
+suites/
+  suite.example.toml   # Starter benchmark suite (copy → suites/my_gpu.toml)
+  .gitignore           # Ignores user suite files, keeps examples
+results/               # Benchmark output directory (gitignored)
+  results.jsonl        # ← files land here automatically
 ```
 
 ## Installation
@@ -81,36 +84,134 @@ Easily fetch GGUF files from Hugging Face:
 python ppb.py download QuantFactory/Meta-Llama-3-8B-Instruct-GGUF "*Q4_K_M.gguf"
 ```
 
-### 2. Run a Parameter Sweep
+### 2. Find Your VRAM Limit (`auto-limit`)
 
-Create a `sweep.toml` file to define your test matrix (a starter config is included at [`sweep.example.toml`](sweep.example.toml)):
+PPB can automatically discover the maximum context window your hardware supports before running out of memory, using a binary search algorithm.
+
+**CLI-only mode:**
+
+```bash
+python ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf
+```
+
+**TOML-driven mode** (reads the `[auto-limit]` section from a suite file):
+
+```bash
+python ppb.py auto-limit suites/my_gpu.toml
+```
+
+**Full set of options:**
+
+```bash
+python ppb.py auto-limit \
+  --model ~/models/Llama-3-8B-Instruct.Q4_K_M.gguf \
+  --min-ctx 2048 \
+  --max-ctx 131072 \
+  --tolerance 1024 \
+  --runner llama-bench
+```
+
+When driven by a TOML file, CLI flags override TOML values.
+
+#### How it works
+
+1. Instantiates the requested runner via the registry.
+2. Sets `lo = min_ctx`, `hi = max_ctx`.
+3. Probes the midpoint `mid = (lo + hi) / 2` by calling `runner.probe_ctx()` (for llama-bench this runs with `-n 0`, allocation-only).
+4. **Pass** (no OOM) → `lo = mid + 1`, records `mid` as the last known-good value.
+5. **Fail** (non-zero exit code, or output contains `"out of memory"` / `"bad alloc"` / etc.) → `hi = mid - 1`.
+6. Stops when `hi - lo < tolerance` and prints the largest safe context size.
+
+Sample output (each iteration shows per-probe duration):
+
+```
+  iter  1: n_ctx= 66,560  ✓ pass  → window [66,561, 131,071]  (2.3s)
+  iter  2: n_ctx= 98,815  ✗ OOM   → window [66,561, 98,814]   (0.8s)
+  iter  3: n_ctx= 82,687  ✓ pass  → window [82,688, 98,814]   (3.1s)
+  ...
+
+✓ Maximum safe context for Llama-3-8B-Instruct.Q4_K_M.gguf
+
+    90,111 tokens
+```
+
+#### auto-limit options
+
+| Flag          | Default        | Description                                                  |
+| ------------- | -------------- | ------------------------------------------------------------ |
+| `CONFIG`      | _(optional)_   | Path to a TOML suite file containing an `[auto-limit]` section. |
+| `--model`     | _(from TOML)_  | Path to the GGUF model file (overrides TOML).                |
+| `--min-ctx`   | `2048`         | Lower bound for the binary search.                           |
+| `--max-ctx`   | `131072`       | Upper bound for the binary search.                           |
+| `--tolerance` | `1024`         | Stop searching when the remaining window is this narrow.     |
+| `--runner`    | `llama-bench`  | Runner backend to use for probing.                           |
+
+#### auto-limit TOML section
 
 ```toml
-[sweep]
+model_path  = "~/models/Llama-3-8B-Q4_K_M.gguf"
+runner_type = "llama-bench"  # optional (shared across sections)
+
+[auto-limit]
+min_ctx    = 2048       # optional (default: 2048)
+max_ctx    = 131072     # optional (default: 131072)
+tolerance  = 1024       # optional (default: 1024)
+```
+
+### 3. Run a Parameter Sweep
+
+Create a `suite.toml` file to define your test matrix (a starter config is included at [`suites/suite.example.toml`](suites/suite.example.toml)):
+
+```toml
 model_path = "./models/Llama-3-8B-Instruct.Q4_K_M.gguf"
+
+[sweep]
 n_ctx    = [8192, 16384, 32768]
 n_batch  = [512, 1024]
 ```
 
-Execute the sweep:
+**TOML-driven:**
 
 ```bash
-python ppb.py sweep sweep.toml
-# optionally pick a custom output file
-python ppb.py sweep sweep.toml --results my_results.jsonl
+python ppb.py sweep suites/my_gpu.toml
+python ppb.py sweep suites/my_gpu.toml --results results/my_results.jsonl
+```
+
+**Pure-CLI mode** (no TOML file needed):
+
+```bash
+python ppb.py sweep \
+  --model ./models/Llama-3-8B-Q4_K_M.gguf \
+  --n-ctx 8192,16384,32768 \
+  --n-batch 512,1024
+```
+
+**CLI flags override TOML values** when both are provided:
+
+```bash
+python ppb.py sweep suites/my_gpu.toml --n-ctx 4096,8192  # only test these two contexts
+```
+
+Sample sweep output (per-combo duration shown):
+
+```
+  ✓ [1/6] model.gguf ctx=8192 batch=512   42.0 tok/s  (12.4s)
+  ✓ [2/6] model.gguf ctx=8192 batch=1024  38.7 tok/s  (11.9s)
+  ✓ [3/6] model.gguf ctx=16384 batch=512  31.2 tok/s  (14.1s)
+  ...
 ```
 
 #### Sweep config reference
 
-All fields live inside a single `[sweep]` section.
+Shared fields (`model_path`, `runner_type`, `runner_params`) can live at the **top level** and are inherited by both `[auto-limit]` and `[sweep]`. Section-level values override the root. Sweep-specific fields:
 
-| Key             | Type             | Required | Default         | Description                                                                                                                                                           |
-| --------------- | ---------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model_path`    | string (path)    | ✅       |                 | Path to a `.gguf` file, directory of `.gguf` files, or a glob pattern. Relative paths are resolved from the working directory.                                        |
+| Key             | Type             | Required | Default         | Description |
+| --------------- | ---------------- | -------- | --------------- | ----------- |
+| `model_path`    | string (path)    | ✅       |                 | Path to a `.gguf` file, directory of `.gguf` files, or a glob pattern. Relative paths are resolved from the working directory. |
 | `n_ctx`         | list of integers | ✅       |                 | Prompt token counts to test (passed as `-p` to `llama-bench`). Controls KV cache depth — larger values stress longer-context throughput. e.g. `[8192, 16384, 32768]`. |
-| `n_batch`       | list of integers | ✅       |                 | Batch sizes (passed as `-b` to `llama-bench`) for prompt-processing throughput tests, e.g. `[512, 1024]`.                                                             |
-| `runner_type`   | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below.                                                                                          |
-| `runner_params` | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below.                                                                                                         |
+| `n_batch`       | list of integers | ✅       |                 | Batch sizes (passed as `-b` to `llama-bench`) for prompt-processing throughput tests, e.g. `[512, 1024]`. |
+| `runner_type`   | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below. |
+| `runner_params` | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below. |
 
 PPB computes the full Cartesian product of `model_paths × n_ctx × n_batch`, so 2 models × 3 contexts × 2 batches = 12 combinations.
 
@@ -123,13 +224,13 @@ n_ctx   = [8192, 16384, 32768]
 n_batch = [256, 512, 1024]
 ```
 
-This tests every matched model at all 9 `(n_ctx, n_batch)` combinations and appends every result as a JSON line to `results.jsonl`.
+This tests every matched model at all 9 `(n_ctx, n_batch)` combinations.
 
 ##### Example: using a custom runner and params
 
 ```toml
 [sweep]
-runner_type = "llama-bench"           # default; swap for future runners
+runner_type = "llama-bench"
 model_path  = "~/models/"
 n_ctx       = [8192]
 n_batch     = [512]
@@ -178,66 +279,68 @@ Each line written to the JSONL file is a self-contained record with a **stable e
 
 The `runner_type` field ensures results from different backends can coexist in the same file and be compared meaningfully.
 
+#### Auto-generated results filenames
+
+When no `--results` flag is passed and the TOML file has no `results` key, PPB auto-generates a filename from the config name and current UTC time:
+
+```
+suite_20250714_1830.jsonl
+```
+
+Format: `<config_stem>_YYYYMMDD_HHMM.jsonl`.
+
+You can set a fixed output path in the TOML root:
+
+```toml
+results = "my_results.jsonl"
+
+[sweep]
+# ...
+```
+
+The `--results` CLI flag always takes priority over the TOML value.
+
 ##### Environment overrides
 
 | Variable           | Default           | Description                                       |
 | ------------------ | ----------------- | ------------------------------------------------- |
 | `PPB_LLAMA_BENCH`  | `llama-bench`     | Path or name of the `llama-bench` binary.         |
-| `PPB_RESULTS_FILE` | `./results.jsonl` | Default output file (overridden by `--results`).  |
-| `PPB_MODELS_DIR`   | `./models`        | Default directory used by the `download` command. |
+| `PPB_MODELS_DIR`   | `./models`        | Default directory used by the `download` command.  |
 
-### 3. Find Your VRAM Limit
+### 4. Run the Full Suite (`all`)
 
-PPB can automatically discover the maximum context window your hardware supports before running out of memory, using a binary search algorithm.
+The `all` command combines **auto-limit** and **sweep** into a single invocation:
 
-```bash
-python ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf
-```
-
-The full set of options:
+1. **Phase 1 — auto-limit:** Discovers the max safe context window.
+2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the limit found in Phase 1.
 
 ```bash
-python ppb.py auto-limit \
-  --model ~/models/Llama-3-8B-Instruct.Q4_K_M.gguf \
-  --min-ctx 2048 \
-  --max-ctx 131072 \
-  --tolerance 1024 \
-  --runner llama-bench   # use a different runner backend (default: llama-bench)
+python ppb.py all suites/my_gpu.toml
+python ppb.py all suites/my_gpu.toml --results results/my_run.jsonl
 ```
 
-#### How it works
+If the TOML has no `[auto-limit]` section, Phase 1 is skipped and the sweep runs unmodified.
 
-1. Instantiates the requested runner via the registry.
-2. Sets `lo = min_ctx`, `hi = max_ctx`.
-3. Probes the midpoint `mid = (lo + hi) / 2` by calling `runner.probe_ctx()` (for llama-bench this runs with `-n 0`, allocation-only).
-4. **Pass** (no OOM) → `lo = mid + 1`, records `mid` as the last known-good value.
-5. **Fail** (non-zero exit code, or output contains `"out of memory"` / `"bad alloc"` / etc.) → `hi = mid - 1`.
-6. Stops when `hi - lo < tolerance` and prints the largest safe context size.
+#### Example suite TOML
 
-Sample output:
+```toml
+# Shared — declared once, inherited by both sections
+model_path  = "~/models/Llama-3-8B-Q4_K_M.gguf"
+results     = "results/my_benchmark.jsonl"   # optional
 
-```
-  iter  1: n_ctx= 66,560  ✓ pass  → window [66,561, 131,071]
-  iter  2: n_ctx= 98,815  ✗ OOM   → window [66,561, 98,814]
-  iter  3: n_ctx= 82,687  ✓ pass  → window [82,688, 98,814]
-  ...
+[auto-limit]
+min_ctx    = 2048
+max_ctx    = 131072
+tolerance  = 1024
 
-✓ Maximum safe context for Llama-3-8B-Instruct.Q4_K_M.gguf
-
-    90,111 tokens
+[sweep]
+n_ctx      = [8192, 16384, 32768, 65536, 131072]
+n_batch    = [512, 1024]
 ```
 
-#### auto-limit options
+When `all` runs Phase 1 and discovers a max safe context of 65,536 tokens, the sweep will automatically skip the 131,072 combos — no manual editing required.
 
-| Flag          | Default        | Description                                               |
-| ------------- | -------------- | --------------------------------------------------------- |
-| `--model`     | _(required)_   | Path to the GGUF model file.                              |
-| `--min-ctx`   | `2048`         | Lower bound for the binary search.                        |
-| `--max-ctx`   | `131072`       | Upper bound for the binary search.                        |
-| `--tolerance` | `1024`         | Stop searching when the remaining window is this narrow.  |
-| `--runner`    | `llama-bench`  | Runner backend to use for probing.                        |
-
-### 4. View Your Hardware Profile
+### 5. View Your Hardware Profile
 
 Quickly check what PPB detects about your system:
 
@@ -271,8 +374,7 @@ Sample output:
 | `metal_version` *(macOS)* | system_profiler | Metal API generation |
 | `gpu_cores` *(macOS)* | system_profiler | Apple Silicon GPU core count |
 
-This same profile is automatically included in every benchmark record written
-to `results.jsonl`.
+This same profile is automatically included in every benchmark record written to `results.jsonl`.
 
 ## Runner Plugins
 
@@ -324,9 +426,9 @@ We are crowdsourcing a definitive database of Tokens-per-Second and Tokens-per-W
 
 To add your machine to the public database:
 
-1. Run a benchmark sweep: `python ppb.py sweep sweep.toml`.
+1. Run a benchmark sweep: `python ppb.py all suites/my_gpu.toml`.
 2. Open an Issue in this repository titled "Benchmark Submission: [Your Hardware]".
-3. Attach or paste the contents of your `results.jsonl`.
+3. Attach or paste the contents of your results file from the `results/` directory.
 
 The public leaderboard is hosted at: [poorpaul.dev](https://poorpaul.dev)
 

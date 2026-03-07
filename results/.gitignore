@@ -1,0 +1,3 @@
+# Ignore all result files — add exceptions if you want to track specific runs
+*
+!.gitignore

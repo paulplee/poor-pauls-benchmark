@@ -76,7 +76,7 @@ class TestExecuteSweep:
         cfg = _sweep_toml(tmp_path, str(tmp_model))
         results = tmp_path / "results.jsonl"
 
-        execute_sweep(cfg, results)
+        execute_sweep(config_path=cfg, results_file=results)
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 1  # 1 model × 1 ctx × 1 batch
@@ -97,7 +97,7 @@ class TestExecuteSweep:
             tmp_path, str(tmp_model), n_ctx="[512, 1024]", n_batch="[256, 512]"
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(cfg, results)
+        execute_sweep(config_path=cfg, results_file=results)
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 4  # 1×2×2
@@ -125,7 +125,7 @@ class TestExecuteSweep:
             return r
 
         with patch("ppb.get_runner", side_effect=spy_get):
-            execute_sweep(cfg, results)
+            execute_sweep(config_path=cfg, results_file=results)
 
         assert len(captured) == 1
         r = captured[0]
@@ -149,7 +149,7 @@ class TestExecuteSweep:
         results = tmp_path / "results.jsonl"
 
         with patch("ppb.get_runner", side_effect=spy_get):
-            execute_sweep(cfg, results)
+            execute_sweep(config_path=cfg, results_file=results)
 
         assert captured[0].teardown_called
 
@@ -172,7 +172,7 @@ class TestExecuteSweep:
         results = tmp_path / "results.jsonl"
 
         with patch("ppb.get_runner", side_effect=spy_get):
-            execute_sweep(cfg, results)
+            execute_sweep(config_path=cfg, results_file=results)
 
         assert captured[0].teardown_called
         # No results should be written
@@ -195,7 +195,7 @@ class TestExecuteSweep:
         results = tmp_path / "results.jsonl"
 
         with patch("ppb.get_runner", side_effect=spy_get):
-            execute_sweep(cfg, results)
+            execute_sweep(config_path=cfg, results_file=results)
 
         content = results.read_text().strip() if results.exists() else ""
         assert content == ""
@@ -208,7 +208,7 @@ class TestExecuteSweep:
 
         cfg = _sweep_toml(tmp_path, str(tmp_model))
         results = tmp_path / "results.jsonl"
-        execute_sweep(cfg, results)
+        execute_sweep(config_path=cfg, results_file=results)
 
         record = json.loads(results.read_text().strip())
         required_keys = {
@@ -232,7 +232,7 @@ class TestExecuteSweep:
         cfg.write_text("[other]\nfoo = 1\n")
 
         with pytest.raises((SystemExit, ClickExit)):
-            execute_sweep(cfg, tmp_path / "r.jsonl")
+            execute_sweep(config_path=cfg, results_file=tmp_path / "r.jsonl")
 
     def test_unknown_runner_type(self, tmp_path: Path, tmp_model: Path) -> None:
         """An unregistered runner_type must produce a clear error."""
@@ -252,7 +252,7 @@ class TestExecuteSweep:
         )
 
         with pytest.raises((ValueError, SystemExit, ClickExit)):
-            execute_sweep(cfg, tmp_path / "r.jsonl")
+            execute_sweep(config_path=cfg, results_file=tmp_path / "r.jsonl")
 
 
 # ==========================================================================
@@ -368,3 +368,275 @@ class TestBackwardCompat:
         cfg = SweepConfig(**raw["sweep"])
         assert cfg.runner_type == "llama-bench"
         assert cfg.runner_params == {}
+
+
+# ==========================================================================
+# execute_sweep — new features
+# ==========================================================================
+
+
+class TestExecuteSweepMaxCtxCap:
+    """Test max_ctx_cap filtering in execute_sweep."""
+
+    def test_cap_filters_combos(self, tmp_path: Path, tmp_model: Path) -> None:
+        from ppb import execute_sweep
+
+        cfg = _sweep_toml(
+            tmp_path, str(tmp_model), n_ctx="[512, 1024, 2048]", n_batch="[256]"
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(config_path=cfg, results_file=results, max_ctx_cap=1024)
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 2  # Only 512 and 1024
+        for line in lines:
+            record = json.loads(line)
+            assert record["n_ctx"] <= 1024
+
+    def test_cap_none_runs_all(self, tmp_path: Path, tmp_model: Path) -> None:
+        from ppb import execute_sweep
+
+        cfg = _sweep_toml(
+            tmp_path, str(tmp_model), n_ctx="[512, 1024, 2048]", n_batch="[256]"
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(config_path=cfg, results_file=results, max_ctx_cap=None)
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 3
+
+
+class TestExecuteSweepDirect:
+    """Test passing a SweepConfig object directly (no TOML)."""
+
+    def test_sweep_config_direct(self, tmp_path: Path, tmp_model: Path) -> None:
+        from ppb import SweepConfig, execute_sweep
+
+        cfg = SweepConfig(
+            model_path=str(tmp_model),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(results_file=results, sweep_config=cfg)
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["n_ctx"] == 512
+
+    def test_both_config_path_and_sweep_config_raises(
+        self, tmp_path: Path, tmp_model: Path
+    ) -> None:
+        from ppb import SweepConfig, execute_sweep
+
+        cfg_obj = SweepConfig(
+            model_path=str(tmp_model),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+        )
+        cfg_file = _sweep_toml(tmp_path, str(tmp_model))
+
+        with pytest.raises(ValueError, match="not both"):
+            execute_sweep(
+                config_path=cfg_file,
+                results_file=tmp_path / "r.jsonl",
+                sweep_config=cfg_obj,
+            )
+
+    def test_neither_raises(self, tmp_path: Path) -> None:
+        from ppb import execute_sweep
+
+        with pytest.raises(ValueError, match="required"):
+            execute_sweep(results_file=tmp_path / "r.jsonl")
+
+
+class TestAutoLimitRunnerParams:
+    """Test that runner_params flows through execute_auto_limit."""
+
+    def test_runner_params_forwarded(self, tmp_model: Path) -> None:
+        from ppb import execute_auto_limit
+
+        captured: list[FakeRunner] = []
+        original_get = __import__("runners").get_runner
+
+        def spy_get(rt: str):
+            r = original_get(rt)
+            captured.append(r)
+            return r
+
+        with patch("ppb.get_runner", side_effect=spy_get):
+            execute_auto_limit(
+                model_path=tmp_model,
+                min_ctx=1024,
+                max_ctx=2048,
+                tolerance=1024,
+                runner_type="fake",
+                runner_params={"my_param": "val"},
+            )
+
+        assert captured[0]._params == {"my_param": "val"}
+
+    def test_runner_params_default_empty(self, tmp_model: Path) -> None:
+        from ppb import execute_auto_limit
+
+        captured: list[FakeRunner] = []
+        original_get = __import__("runners").get_runner
+
+        def spy_get(rt: str):
+            r = original_get(rt)
+            captured.append(r)
+            return r
+
+        with patch("ppb.get_runner", side_effect=spy_get):
+            execute_auto_limit(
+                model_path=tmp_model,
+                min_ctx=1024,
+                max_ctx=2048,
+                tolerance=1024,
+                runner_type="fake",
+            )
+
+        assert captured[0]._params == {}
+
+
+# ==========================================================================
+# run_all CLI command
+# ==========================================================================
+
+
+class TestRunAll:
+    """Test the ``ppb all`` command end-to-end via CliRunner."""
+
+    def test_all_with_autolimit_and_sweep(
+        self, suite_toml: Path, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from ppb import app
+
+        runner = CliRunner()
+        results_file = tmp_path / "all_results.jsonl"
+        result = runner.invoke(
+            app, ["all", str(suite_toml), "--results", str(results_file)]
+        )
+        assert result.exit_code == 0, result.output
+
+        # The sweep should have written results
+        assert results_file.exists()
+        lines = results_file.read_text().strip().splitlines()
+        # 1 model × 2 ctx × 1 batch = 2, but some may be filtered by max_ctx_cap
+        assert len(lines) >= 1
+
+    def test_all_without_autolimit(
+        self, suite_toml_no_autolimit: Path, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from ppb import app
+
+        runner = CliRunner()
+        results_file = tmp_path / "no_al_results.jsonl"
+        result = runner.invoke(
+            app,
+            ["all", str(suite_toml_no_autolimit), "--results", str(results_file)],
+        )
+        assert result.exit_code == 0, result.output
+        assert results_file.exists()
+        lines = results_file.read_text().strip().splitlines()
+        assert len(lines) == 2  # 2 ctx × 1 batch
+
+    def test_all_auto_results_name(self, suite_toml_no_autolimit: Path) -> None:
+        """When no --results flag, the output file should be auto-named."""
+        from typer.testing import CliRunner
+
+        from ppb import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["all", str(suite_toml_no_autolimit)])
+        assert result.exit_code == 0, result.output
+        # Output should mention the auto-generated filename
+        assert "suite_no_al_" in result.output
+
+
+# ==========================================================================
+# Shared root-level params integration
+# ==========================================================================
+
+
+class TestSharedRootParams:
+    """Verify that root-level shared params are inherited by sections."""
+
+    def _root_params_toml(
+        self, tmp_path: Path, model_path: str, **section_extras
+    ) -> Path:
+        """Write a TOML with model_path + runner_type at root level."""
+        lines = [
+            f'model_path = "{model_path}"',
+            'runner_type = "fake"',
+            "",
+            "[sweep]",
+            "n_ctx = [512]",
+            "n_batch = [256]",
+        ]
+        for k, v in section_extras.items():
+            lines.append(f"{k} = {v}")
+        cfg = tmp_path / "root_params.toml"
+        cfg.write_text("\n".join(lines) + "\n")
+        return cfg
+
+    def test_sweep_inherits_root_model(
+        self, tmp_path: Path, tmp_model: Path
+    ) -> None:
+        from ppb import execute_sweep
+
+        cfg = self._root_params_toml(tmp_path, str(tmp_model))
+        results = tmp_path / "results.jsonl"
+        execute_sweep(config_path=cfg, results_file=results)
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["runner_type"] == "fake"
+        assert record["model_path"] == str(tmp_model)
+
+    def test_section_overrides_root_model(
+        self, tmp_path: Path, tmp_model: Path, tmp_model_dir: Path
+    ) -> None:
+        """If [sweep] has its own model_path, it takes priority."""
+        # root = tmp_model, but section overrides to tmp_model_dir
+        lines = [
+            f'model_path = "{tmp_model}"',
+            'runner_type = "fake"',
+            "",
+            "[sweep]",
+            f'model_path = "{tmp_model_dir}"',
+            "n_ctx = [512]",
+            "n_batch = [256]",
+        ]
+        cfg = tmp_path / "override.toml"
+        cfg.write_text("\n".join(lines) + "\n")
+
+        results = tmp_path / "results.jsonl"
+        from ppb import execute_sweep
+
+        execute_sweep(config_path=cfg, results_file=results)
+
+        lines_out = results.read_text().strip().splitlines()
+        # tmp_model_dir has 2 models (alpha.gguf, beta.gguf)
+        assert len(lines_out) == 2
+
+    def test_backward_compat_section_only(
+        self, tmp_path: Path, tmp_model: Path
+    ) -> None:
+        """Old-style TOML with everything in [sweep] still works."""
+        from ppb import execute_sweep
+
+        cfg = _sweep_toml(tmp_path, str(tmp_model))
+        results = tmp_path / "results.jsonl"
+        execute_sweep(config_path=cfg, results_file=results)
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 1

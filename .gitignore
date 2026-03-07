@@ -147,8 +147,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+# User suite configs are gitignored via suites/.gitignore
 sweep.toml
-results.jsonl
+# Result files are gitignored via results/.gitignore
 
 # Spyder project settings
 .spyderproject

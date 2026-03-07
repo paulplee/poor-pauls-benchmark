@@ -16,6 +16,7 @@ import platform
 import re
 import shutil
 import subprocess
+import time
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -465,6 +466,40 @@ class BenchCombo:
     n_batch: int
 
 
+class AutoLimitConfig(BaseModel):
+    """Validated representation of the ``[auto-limit]`` block in a suite TOML.
+
+    Example TOML::
+
+        [auto-limit]
+        model_path = "~/models/model.gguf"
+        min_ctx    = 2048
+        max_ctx    = 131072
+        tolerance  = 1024
+    """
+
+    model_path: str
+    min_ctx: int = 2048
+    max_ctx: int = 131072
+    tolerance: int = 1024
+    runner_type: str = "llama-bench"
+    runner_params: dict[str, Any] = Field(default_factory=dict)
+
+    # Populated by the model_validator below; not read from TOML.
+    resolved_model_path: Path = Field(default=Path())
+
+    @model_validator(mode="after")
+    def resolve_model(self) -> "AutoLimitConfig":
+        """Expand and resolve *model_path* to an absolute file path."""
+        expanded = Path(self.model_path).expanduser().resolve()
+        if not expanded.exists():
+            raise ValueError(f"Model file not found: {expanded}")
+        if not expanded.is_file():
+            raise ValueError(f"model_path must be a single file, got: {expanded}")
+        self.resolved_model_path = expanded
+        return self
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -640,6 +675,67 @@ def download_model(
 
 
 # ---------------------------------------------------------------------------
+# Suite config helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_results_file(
+    config_path: Path | None,
+    cli_override: Path | None,
+    toml_results: str | None,
+) -> Path:
+    """Determine the results JSONL path.
+
+    Precedence (highest → lowest):
+        1. ``--results`` CLI flag (*cli_override*)
+        2. ``results`` field in the TOML root
+        3. Auto-generated: ``<toml_stem>_<YYYYMMDD_HHMM>.jsonl``
+    """
+    if cli_override is not None:
+        return cli_override
+    if toml_results:
+        return Path(toml_results)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    stem = config_path.stem if config_path else "results"
+    return Path("results") / f"{stem}_{ts}.jsonl"
+
+
+def load_suite_config(
+    config_path: Path,
+) -> tuple[dict, Path]:
+    """Parse a benchmark suite TOML and return ``(raw_dict, default_results)``.
+
+    The returned *default_results* uses :func:`_resolve_results_file` with
+    no CLI override — callers should prefer calling ``_resolve_results_file``
+    directly when a CLI ``--results`` flag is available.
+    """
+    if not config_path.exists():
+        console.print(f"[error]Config file not found:[/error] {config_path}")
+        raise typer.Exit(code=1)
+
+    with config_path.open("rb") as fh:
+        raw = tomllib.load(fh)
+
+    return raw, _resolve_results_file(config_path, None, raw.get("results"))
+
+
+# Keys that may appear at the TOML root and are inherited by sections.
+_SHARED_TOML_KEYS = {"model_path", "runner_type", "runner_params"}
+
+
+def _merge_shared_params(raw: dict, section: str) -> dict:
+    """Merge root-level shared params into a section dict.
+
+    Section-level values take precedence over root-level values.
+    This lets users declare ``model_path`` once at the top of the TOML
+    and have it inherited by both ``[auto-limit]`` and ``[sweep]``.
+    """
+    shared = {k: v for k, v in raw.items() if k in _SHARED_TOML_KEYS}
+    section_data = dict(raw.get(section, {}))
+    return {**shared, **section_data}
+
+
+# ---------------------------------------------------------------------------
 # JSONL result writer
 # ---------------------------------------------------------------------------
 
@@ -657,6 +753,7 @@ def execute_auto_limit(
     max_ctx: int,
     tolerance: int = 1024,
     runner_type: str = "llama-bench",
+    runner_params: dict[str, Any] | None = None,
 ) -> int:
     """Binary-search for the largest safe context window.
 
@@ -668,6 +765,8 @@ def execute_auto_limit(
         Search bounds (inclusive).
     tolerance:
         Stop when ``hi - lo < tolerance``; the safe value is ``lo``.
+    runner_params:
+        Extra parameters forwarded to ``runner.setup()``.
 
     Returns
     -------
@@ -675,7 +774,7 @@ def execute_auto_limit(
         Largest *n_ctx* that did **not** trigger OOM.
     """
     runner = get_runner(runner_type)
-    runner.setup({})
+    runner.setup(runner_params or {})
 
     lo, hi = min_ctx, max_ctx
     last_good: int = 0
@@ -706,7 +805,9 @@ def execute_auto_limit(
                 task,
                 detail=f"try n_ctx={mid:,}  (lo={lo:,}  hi={hi:,})",
             )
+            t0 = time.monotonic()
             ok = runner.probe_ctx(model_path, mid)
+            elapsed = time.monotonic() - t0
             if ok:
                 last_good = mid
                 lo = mid + 1
@@ -716,7 +817,7 @@ def execute_auto_limit(
                 status = "[error]✗ OOM[/error]"
             console.print(
                 f"  iter {iteration:>2}: n_ctx={mid:>7,}  {status}  "
-                f"→ window [{lo:,}, {hi:,}]"
+                f"→ window [{lo:,}, {hi:,}]  ({elapsed:.1f}s)"
             )
             progress.advance(task)
 
@@ -728,37 +829,67 @@ def execute_auto_limit(
     return safe
 
 
-def execute_sweep(config_path: Path, results_file: Path) -> None:
-    """Parse *config_path*, enumerate all combos, and run the selected runner.
+def execute_sweep(
+    results_file: Path,
+    config_path: Path | None = None,
+    sweep_config: SweepConfig | None = None,
+    max_ctx_cap: int | None = None,
+) -> None:
+    """Run a parameter sweep.
+
+    Exactly one of *config_path* or *sweep_config* must be supplied.
 
     Parameters
     ----------
-    config_path:
-        Path to the sweep TOML file.
     results_file:
         Destination JSONL file for results.
+    config_path:
+        Path to a TOML file (must contain a ``[sweep]`` section).
+    sweep_config:
+        Pre-built :class:`SweepConfig` — used by the CLI-only path.
+    max_ctx_cap:
+        If set, combos whose ``n_ctx`` exceeds this value are skipped.
     """
-    if not config_path.exists():
-        console.print(f"[error]Config file not found:[/error] {config_path}")
-        raise typer.Exit(code=1)
+    if config_path is not None and sweep_config is not None:
+        raise ValueError("Provide config_path or sweep_config, not both.")
 
-    with config_path.open("rb") as fh:
-        raw = tomllib.load(fh)
+    if sweep_config is not None:
+        cfg = sweep_config
+    elif config_path is not None:
+        if not config_path.exists():
+            console.print(f"[error]Config file not found:[/error] {config_path}")
+            raise typer.Exit(code=1)
 
-    if "sweep" not in raw:
-        console.print(
-            "[error]Missing [sweep] section in config file.[/error]\n"
-            f"  File: {config_path}"
-        )
-        raise typer.Exit(code=1)
+        with config_path.open("rb") as fh:
+            raw = tomllib.load(fh)
 
-    try:
-        cfg = SweepConfig(**raw["sweep"])
-    except Exception as exc:  # pydantic ValidationError
-        console.print(f"[error]Invalid sweep config:[/error] {exc}")
-        raise typer.Exit(code=1) from exc
+        if "sweep" not in raw:
+            console.print(
+                "[error]Missing [sweep] section in config file.[/error]\n"
+                f"  File: {config_path}"
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            cfg = SweepConfig(**_merge_shared_params(raw, "sweep"))
+        except Exception as exc:  # pydantic ValidationError
+            console.print(f"[error]Invalid sweep config:[/error] {exc}")
+            raise typer.Exit(code=1) from exc
+    else:
+        raise ValueError("One of config_path or sweep_config is required.")
 
     combos = cfg.combos()
+
+    # Apply max-ctx cap (from auto-limit or CLI override)
+    if max_ctx_cap is not None:
+        original = len(combos)
+        combos = [c for c in combos if c.n_ctx <= max_ctx_cap]
+        skipped = original - len(combos)
+        if skipped:
+            console.print(
+                f"  [warning]Skipping {skipped} combo(s) with n_ctx > {max_ctx_cap:,}[/warning]"
+            )
+
     total = len(combos)
 
     model_names = ", ".join(f"[hw]{m.name}[/hw]" for m in cfg.model_paths)
@@ -796,7 +927,9 @@ def execute_sweep(config_path: Path, results_file: Path) -> None:
                     "n_ctx": combo.n_ctx,
                     "n_batch": combo.n_batch,
                 }
+                t0 = time.monotonic()
                 raw_result = runner.run(run_config)
+                elapsed = time.monotonic() - t0
 
                 if raw_result is None:
                     record = None
@@ -812,8 +945,9 @@ def execute_sweep(config_path: Path, results_file: Path) -> None:
                     }
                     _write_result(record, results_file)
 
+                dur = f"  ({elapsed:.1f}s)"
                 if record is None:
-                    console.print(f"  [error]✗[/error] [{i}/{total}] {label} — FAILED")
+                    console.print(f"  [error]✗[/error] [{i}/{total}] {label} — FAILED{dur}")
                     failed += 1
                 else:
                     # Pull out the tok/s figure if llama-bench emits it
@@ -823,7 +957,7 @@ def execute_sweep(config_path: Path, results_file: Path) -> None:
                         tps = f"  {tps_val:.1f} tok/s"
                     except (KeyError, IndexError, TypeError):
                         pass
-                    console.print(f"  [success]✓[/success] [{i}/{total}] {label}{tps}")
+                    console.print(f"  [success]✓[/success] [{i}/{total}] {label}{tps}{dur}")
                     passed += 1
 
                 progress.advance(task)
@@ -901,23 +1035,107 @@ def download(
 
 @app.command()
 def sweep(
-    config: Path = typer.Argument(
-        ...,
-        help="Path to a TOML sweep configuration file (must contain a [sweep] section)",
-        exists=True,
-        readable=True,
+    config: Optional[Path] = typer.Argument(
+        None,
+        help="Path to a TOML suite file containing a [sweep] section",
     ),
-    results_file: Path = typer.Option(
-        DEFAULT_RESULTS_FILE,
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m", help="Path to GGUF model file/dir/glob (overrides TOML)"
+    ),
+    n_ctx: Optional[str] = typer.Option(
+        None, "--n-ctx", help="Comma-separated context sizes, e.g. '8192,16384,32768'"
+    ),
+    n_batch: Optional[str] = typer.Option(
+        None, "--n-batch", help="Comma-separated batch sizes, e.g. '512,1024'"
+    ),
+    runner: Optional[str] = typer.Option(
+        None, "--runner", help="Runner backend (default: llama-bench)"
+    ),
+    results_file: Optional[Path] = typer.Option(
+        None,
         "--results",
         "-r",
-        envvar="PPB_RESULTS_FILE",
-        help="JSONL file to append benchmark results to (default: ./results.jsonl)",
+        help="JSONL results file (default: auto-generated from config name + timestamp)",
     ),
 ) -> None:
-    """Run a declarative parameter sweep."""
-    console.print(f"[info]Starting sweep[/info] with config [bold]{config}[/bold] …")
-    execute_sweep(config_path=Path(config), results_file=results_file)
+    """Run a declarative parameter sweep.
+
+    Can be driven by a TOML config (``ppb sweep suite.toml``) or purely
+    by CLI flags (``ppb sweep --model ./m.gguf --n-ctx 8192,16384 --n-batch 512``).
+    CLI flags override TOML values when both are provided.
+    """
+
+    def _parse_int_list(raw: str, name: str) -> list[int]:
+        try:
+            return [int(x.strip()) for x in raw.split(",") if x.strip()]
+        except ValueError as exc:
+            console.print(f"[error]Invalid --{name}:[/error] {exc}")
+            raise typer.Exit(code=1) from exc
+
+    cfg: SweepConfig
+    resolved_results: Path
+
+    if config is not None:
+        # ---- TOML-driven (with optional CLI overrides) --------------------
+        cfg_path = Path(config)
+        raw, default_results = load_suite_config(cfg_path)
+        if "sweep" not in raw:
+            console.print(
+                "[error]Missing [sweep] section in config file.[/error]\n"
+                f"  File: {cfg_path}"
+            )
+            raise typer.Exit(code=1)
+
+        sweep_raw: dict[str, Any] = _merge_shared_params(raw, "sweep")
+        # CLI overrides
+        if model is not None:
+            sweep_raw["model_path"] = model
+        if n_ctx is not None:
+            sweep_raw["n_ctx"] = _parse_int_list(n_ctx, "n-ctx")
+        if n_batch is not None:
+            sweep_raw["n_batch"] = _parse_int_list(n_batch, "n-batch")
+        if runner is not None:
+            sweep_raw["runner_type"] = runner
+
+        try:
+            cfg = SweepConfig(**sweep_raw)
+        except Exception as exc:
+            console.print(f"[error]Invalid sweep config:[/error] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        resolved_results = _resolve_results_file(
+            cfg_path, results_file, raw.get("results")
+        )
+    else:
+        # ---- Pure-CLI mode ------------------------------------------------
+        if not model:
+            console.print(
+                "[error]Provide a TOML config or --model flag.[/error]\n"
+                "  Usage: ppb sweep suite.toml\n"
+                "     or: ppb sweep --model ./m.gguf --n-ctx 8192,16384 --n-batch 512"
+            )
+            raise typer.Exit(code=1)
+        if not n_ctx or not n_batch:
+            console.print(
+                "[error]--n-ctx and --n-batch are required in CLI-only mode.[/error]"
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            cfg = SweepConfig(
+                model_path=model,
+                n_ctx=_parse_int_list(n_ctx, "n-ctx"),
+                n_batch=_parse_int_list(n_batch, "n-batch"),
+                runner_type=runner or "llama-bench",
+            )
+        except Exception as exc:
+            console.print(f"[error]Invalid sweep config:[/error] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        resolved_results = _resolve_results_file(None, results_file, None)
+
+    console.print(f"[info]Starting sweep[/info] …")
+    execute_sweep(results_file=resolved_results, sweep_config=cfg)
 
 
 @app.command(name="hw-info")
@@ -975,55 +1193,200 @@ def hw_info() -> None:
 
 @app.command(name="auto-limit")
 def auto_limit(
-    model: str = typer.Option(..., "--model", "-m", help="Path to the GGUF model file"),
-    min_ctx: int = typer.Option(
-        2048, "--min-ctx", help="Minimum context length to probe"
+    config: Optional[Path] = typer.Argument(
+        None,
+        help="Path to a TOML suite file containing an [auto-limit] section",
     ),
-    max_ctx: int = typer.Option(
-        131072, "--max-ctx", help="Maximum context length to probe"
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m", help="Path to the GGUF model file (overrides TOML)"
     ),
-    tolerance: int = typer.Option(
-        1024,
+    min_ctx: Optional[int] = typer.Option(
+        None, "--min-ctx", help="Minimum context length to probe (default: 2048)"
+    ),
+    max_ctx: Optional[int] = typer.Option(
+        None, "--max-ctx", help="Maximum context length to probe (default: 131072)"
+    ),
+    tolerance: Optional[int] = typer.Option(
+        None,
         "--tolerance",
         "-t",
         help="Stop searching when hi - lo < this value (default: 1024)",
     ),
-    runner: str = typer.Option(
-        "llama-bench",
+    runner: Optional[str] = typer.Option(
+        None,
         "--runner",
         help="Runner backend to use for probing (default: llama-bench)",
     ),
 ) -> None:
-    """Binary-search for the maximum context window before OOM."""
-    model_path = Path(model).expanduser().resolve()
+    """Binary-search for the maximum context window before OOM.
+
+    Can be driven by a TOML config (``ppb auto-limit suite.toml``) or purely
+    by CLI flags (``ppb auto-limit --model ./m.gguf``).
+    CLI flags override TOML values.
+    """
+    # --- Load TOML defaults if a config was provided -------------------------
+    al_model: str | None = model
+    al_min: int = 2048
+    al_max: int = 131072
+    al_tol: int = 1024
+    al_runner: str = "llama-bench"
+    al_runner_params: dict[str, Any] = {}
+
+    if config is not None:
+        cfg_path = Path(config)
+        if not cfg_path.exists():
+            console.print(f"[error]Config file not found:[/error] {cfg_path}")
+            raise typer.Exit(code=1)
+        raw, _ = load_suite_config(cfg_path)
+        if "auto-limit" in raw:
+            try:
+                al_cfg = AutoLimitConfig(**_merge_shared_params(raw, "auto-limit"))
+            except Exception as exc:
+                console.print(f"[error]Invalid [auto-limit] config:[/error] {exc}")
+                raise typer.Exit(code=1) from exc
+            al_model = al_model or str(al_cfg.resolved_model_path)
+            al_min = al_cfg.min_ctx
+            al_max = al_cfg.max_ctx
+            al_tol = al_cfg.tolerance
+            al_runner = al_cfg.runner_type
+            al_runner_params = al_cfg.runner_params
+        elif model is None:
+            console.print(
+                "[error]No [auto-limit] section in config and no --model flag.[/error]"
+            )
+            raise typer.Exit(code=1)
+    elif model is None:
+        console.print("[error]Provide a TOML config or --model flag.[/error]")
+        raise typer.Exit(code=1)
+
+    # CLI overrides beat TOML
+    if min_ctx is not None:
+        al_min = min_ctx
+    if max_ctx is not None:
+        al_max = max_ctx
+    if tolerance is not None:
+        al_tol = tolerance
+    if runner is not None:
+        al_runner = runner
+
+    model_path = Path(al_model).expanduser().resolve()  # type: ignore[arg-type]
     if not model_path.exists():
         console.print(f"[error]Model file not found:[/error] {model_path}")
         raise typer.Exit(code=1)
 
     console.print(
         f"[info]Auto-limit[/info] probing [hw]{model_path.name}[/hw]\n"
-        f"  Range     : [bold]{min_ctx:,}[/bold] → [bold]{max_ctx:,}[/bold] tokens\n"
-        f"  Tolerance : [bold]{tolerance:,}[/bold] tokens"
+        f"  Range     : [bold]{al_min:,}[/bold] → [bold]{al_max:,}[/bold] tokens\n"
+        f"  Tolerance : [bold]{al_tol:,}[/bold] tokens"
     )
 
     safe = execute_auto_limit(
         model_path=model_path,
-        min_ctx=min_ctx,
-        max_ctx=max_ctx,
-        tolerance=tolerance,
-        runner_type=runner,
+        min_ctx=al_min,
+        max_ctx=al_max,
+        tolerance=al_tol,
+        runner_type=al_runner,
+        runner_params=al_runner_params,
     )
 
     if safe == 0:
         console.print(
             "\n[error]Could not find a working context size.[/error]\n"
-            f"  Even n_ctx={min_ctx:,} failed — check that the model loads at all."
+            f"  Even n_ctx={al_min:,} failed — check that the model loads at all."
         )
         raise typer.Exit(code=1)
 
     console.print(
         f"\n[success]✓ Maximum safe context for[/success] [hw]{model_path.name}[/hw]\n"
         f"\n    [bold green]{safe:,} tokens[/bold green]\n"
+    )
+
+
+@app.command(name="all")
+def run_all(
+    config: Path = typer.Argument(
+        ...,
+        help="Path to a TOML benchmark suite file",
+        exists=True,
+        readable=True,
+    ),
+    results_file: Optional[Path] = typer.Option(
+        None,
+        "--results",
+        "-r",
+        help="JSONL results file (default: auto-generated from config name + timestamp)",
+    ),
+) -> None:
+    """Run the full benchmark suite: auto-limit → sweep.
+
+    1. **auto-limit** — discover the maximum safe context window.
+    2. **sweep** — run the parameter sweep, skipping any combo whose
+       ``n_ctx`` exceeds the limit found in step 1.
+
+    Both steps read their configuration from the same TOML file.
+    If the TOML has no ``[auto-limit]`` section, the auto-limit step
+    is skipped and the sweep runs unmodified.
+    """
+    raw, default_results = load_suite_config(config)
+    resolved_results = results_file if results_file is not None else default_results
+
+    console.print(
+        f"[info]Full benchmark suite[/info] from [bold]{config}[/bold]\n"
+        f"  Results → [bold]{resolved_results.resolve()}[/bold]\n"
+    )
+
+    # -- Phase 1: auto-limit (optional) -----------------------------------
+    max_ctx_cap: int | None = None
+
+    if "auto-limit" in raw:
+        console.print("[info]Phase 1 / 2:[/info] auto-limit")
+        try:
+            al_cfg = AutoLimitConfig(**_merge_shared_params(raw, "auto-limit"))
+        except Exception as exc:
+            console.print(f"[error]Invalid [auto-limit] config:[/error] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        console.print(
+            f"  Probing [hw]{al_cfg.resolved_model_path.name}[/hw]\n"
+            f"  Range     : [bold]{al_cfg.min_ctx:,}[/bold] → "
+            f"[bold]{al_cfg.max_ctx:,}[/bold] tokens\n"
+            f"  Tolerance : [bold]{al_cfg.tolerance:,}[/bold] tokens"
+        )
+
+        safe = execute_auto_limit(
+            model_path=al_cfg.resolved_model_path,
+            min_ctx=al_cfg.min_ctx,
+            max_ctx=al_cfg.max_ctx,
+            tolerance=al_cfg.tolerance,
+            runner_type=al_cfg.runner_type,
+            runner_params=al_cfg.runner_params,
+        )
+
+        if safe == 0:
+            console.print(
+                "\n[error]auto-limit failed — could not find a working context "
+                "size. Skipping sweep.[/error]"
+            )
+            raise typer.Exit(code=1)
+
+        max_ctx_cap = safe
+        console.print(
+            f"\n[success]✓ Max safe context:[/success] "
+            f"[bold green]{safe:,} tokens[/bold green]\n"
+        )
+    else:
+        console.print("[info]No [auto-limit] section — skipping to sweep.[/info]\n")
+
+    # -- Phase 2: sweep ---------------------------------------------------
+    if "sweep" not in raw:
+        console.print("[warning]No [sweep] section — nothing more to do.[/warning]")
+        return
+
+    console.print("[info]Phase 2 / 2:[/info] sweep")
+    execute_sweep(
+        config_path=config,
+        results_file=resolved_results,
+        max_ctx_cap=max_ctx_cap,
     )
 
 
