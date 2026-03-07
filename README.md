@@ -4,7 +4,7 @@ Find the absolute limit of your local AI hardware without the enterprise budget.
 
 AI-driven GPU and RAM prices got you down? It certain got me feeling a lot poorer. I can't turn back the clock and go back to normal prices. About the only thing I can do is to get myself more informed in how I can best use the little hardware that I can muster.
 
-Poor Paul's Benchmark is an automated evaluation framework for local LLM inference. It ships with a **pluggable runner architecture** — the built-in runner wraps `llama.cpp`'s `llama-bench`, and new backends (llama-server, vLLM, Stable Diffusion, …) can be added without touching core code.
+Poor Paul's Benchmark is an automated evaluation framework for local LLM inference. It ships with a **pluggable runner architecture** — built-in runners wrap `llama.cpp`'s `llama-bench` (raw throughput) and `llama-server` (real-world UX latency), and new backends (vLLM, Stable Diffusion, …) can be added without touching core code.
 
 My goal is to build the definitive public leaderboard for cost-effective AI setups, helping homelabbers, prosumers, and small businesses answer the question: _What is the most efficient hardware for my AI workload?_
 
@@ -19,6 +19,7 @@ PPB automates the tedious parts of benchmarking so you can focus on the data.
 ### Key Features
 
 - **Pluggable Runner Architecture:** Benchmark backends are implemented as plugins inheriting from `BaseRunner`. Swap `llama-bench` for `llama-server`, `vllm`, or your own backend by setting `runner_type` in the sweep config.
+- **Real-World UX Metrics:** The `llama-server` runner streams completions from real ShareGPT conversational prompts, measuring **Time-To-First-Token (TTFT)** and **Inter-Token Latency (ITL)** — the numbers that matter for interactive applications.
 - **Declarative Parameter Sweeps:** Define your test matrices in a simple TOML file. PPB will automatically iterate through every combination of batch size, context length, and GPU layers.
 - **Auto-Discover VRAM Limits:** Using a binary search algorithm, PPB automatically probes your hardware to find the exact maximum context size a specific model can handle before triggering an OOM error.
 - **Integrated Model Downloader:** Native integration with Hugging Face Hub to download, cache, and symlink GGUF models directly via the CLI.
@@ -32,10 +33,16 @@ ppb.py                 # CLI entry point (Typer app)
 runners/
   __init__.py          # Runner registry (register_runner / get_runner)
   base.py              # BaseRunner ABC — contract for all backends
-  llama_bench.py       # Built-in llama-bench runner
+  llama_bench.py       # Built-in llama-bench runner (raw throughput)
+  llama_server.py      # Built-in llama-server runner (TTFT / ITL latency)
+datasets/
+  __init__.py          # Dataset download & loading helpers
+  sharegpt.py          # ShareGPT download (HF Hub) + prompt extraction
+  data/                # Downloaded dataset cache (gitignored)
 tests/
   conftest.py          # Shared fixtures + FakeRunner
   test_runners.py      # Runner ABC, registry, and LlamaBenchRunner tests
+  test_llama_server.py # LlamaServerRunner, SSE parsing, dataset tests
   test_config.py       # SweepConfig, BenchCombo, _write_result tests
   test_orchestration.py # Sweep & auto-limit integration tests
 suites/
@@ -65,7 +72,7 @@ uv sync
 
 > **NVIDIA GPU detection:** `pynvml` is included in the dependencies and will be installed automatically. If no NVIDIA hardware is present it is simply unused. On systems without `pynvml`, PPB falls back to parsing `nvidia-smi` output.
 
-You must also have the `llama-bench` binary compiled and accessible in your system PATH (or point to it with `PPB_LLAMA_BENCH`).
+You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`).
 
 ### Running Tests
 
@@ -302,10 +309,11 @@ The `--results` CLI flag always takes priority over the TOML value.
 
 ##### Environment overrides
 
-| Variable           | Default           | Description                                       |
-| ------------------ | ----------------- | ------------------------------------------------- |
-| `PPB_LLAMA_BENCH`  | `llama-bench`     | Path or name of the `llama-bench` binary.         |
-| `PPB_MODELS_DIR`   | `./models`        | Default directory used by the `download` command.  |
+| Variable            | Default           | Description                                       |
+| ------------------- | ----------------- | ------------------------------------------------- |
+| `PPB_LLAMA_BENCH`   | `llama-bench`     | Path or name of the `llama-bench` binary.         |
+| `PPB_LLAMA_SERVER`  | `llama-server`    | Path or name of the `llama-server` binary.        |
+| `PPB_MODELS_DIR`    | `./models`        | Default directory used by the `download` command.  |
 
 ### 4. Run the Full Suite (`all`)
 
@@ -376,15 +384,87 @@ Sample output:
 
 This same profile is automatically included in every benchmark record written to `results.jsonl`.
 
+## The `llama-server` Runner
+
+While `llama-bench` measures **raw throughput**, the `llama-server` runner captures the metrics end-users actually feel:
+
+| Metric | What it measures |
+| --- | --- |
+| **TTFT** (Time-To-First-Token) | How long the user waits before seeing the first word appear. |
+| **ITL** (Inter-Token Latency) | The gap between consecutive tokens — perceived "smoothness" of streaming output. |
+
+### How it works
+
+1. **Setup** — resolves the `llama-server` binary, downloads the [ShareGPT](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) dataset from Hugging Face Hub (cached locally in `datasets/data/`), and extracts the first human turn from each conversation as a realistic prompt.
+2. **Server lifecycle** — launches `llama-server` as a subprocess on a dynamically-assigned TCP port, polls `/health` until the server is ready (up to 120 s), then streams SSE requests to `/completion`.
+3. **Measurement** — for each prompt, records the wall-clock time to first token and the inter-token gaps. After all prompts complete, aggregates avg / p50 / p99 for both TTFT and ITL.
+4. **Shutdown** — sends `SIGTERM`, waits 5 s, falls back to `SIGKILL`. The `teardown()` safety-net catches any lingering process.
+
+### Usage
+
+```bash
+# Sweep with llama-server
+python ppb.py sweep suites/my_gpu.toml
+```
+
+Where the TOML file specifies:
+
+```toml
+model_path  = "~/models/Llama-3-8B-Instruct.Q4_K_M.gguf"
+runner_type = "llama-server"
+
+[sweep]
+n_ctx   = [8192, 16384]
+n_batch = [512]          # accepted but unused — llama-server manages its own batching
+
+[sweep.runner_params]
+num_prompts      = 10       # ShareGPT prompts per benchmark run (default: 10)
+n_predict        = 256      # max tokens to generate per prompt (default: 256)
+health_timeout   = 120      # seconds to wait for server readiness (default: 120)
+llama_server_cmd = "/opt/llama.cpp/build/bin/llama-server"  # optional
+```
+
+### `llama-server` runner_params reference
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `llama_server_cmd` | string | `llama-server` | Path or name of the binary. Falls back to `PPB_LLAMA_SERVER` env → `$PATH`. |
+| `num_prompts` | int | `10` | Number of ShareGPT prompts to send per run. |
+| `n_predict` | int | `256` | Maximum tokens to generate per prompt. |
+| `health_timeout` | int/float | `120` | Seconds to wait for `/health` to return 200. |
+| `dataset_dir` | string | `datasets/data/` | Directory for cached dataset files. |
+
+### Sample `llama-server` results
+
+The `results` object in the JSONL envelope contains:
+
+```json
+{
+  "num_prompts_attempted": 10,
+  "num_prompts_succeeded": 10,
+  "n_predict": 256,
+  "total_tokens": 2048,
+  "total_duration_s": 34.567,
+  "throughput_tok_s": 59.26,
+  "avg_ttft_ms": 142.5,
+  "p50_ttft_ms": 138.2,
+  "p99_ttft_ms": 210.7,
+  "avg_itl_ms": 12.3,
+  "p50_itl_ms": 11.8,
+  "p99_itl_ms": 18.4
+}
+```
+
 ## Runner Plugins
 
 PPB uses a **pluggable runner architecture** so new benchmark backends can be added without modifying core code.
 
 ### Built-in runners
 
-| `runner_type`  | Module                  | Description |
-| -------------- | ----------------------- | ----------- |
-| `llama-bench`  | `runners/llama_bench.py` | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Supports OOM probing for `auto-limit`. |
+| `runner_type`   | Module                   | Description |
+| --------------- | ------------------------ | ----------- |
+| `llama-bench`   | `runners/llama_bench.py`  | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Measures raw throughput (tok/s). Supports OOM probing for `auto-limit`. |
+| `llama-server`  | `runners/llama_server.py` | Starts `llama-server` as a subprocess, streams real ShareGPT conversational prompts via SSE, and records **TTFT** and **ITL** latency metrics. Supports `auto-limit`. |
 
 ### Creating a custom runner
 
