@@ -21,7 +21,7 @@ PPB automates the tedious parts of benchmarking so you can focus on the data.
 - **Declarative Parameter Sweeps:** Define your test matrices in a simple TOML file. PPB will automatically iterate through every combination of batch size, context length, and GPU layers.
 - **Auto-Discover VRAM Limits:** Using a binary search algorithm, PPB automatically probes your hardware to find the exact maximum context size a specific model can handle before triggering an OOM error.
 - **Integrated Model Downloader:** Native integration with Hugging Face Hub to download, cache, and symlink GGUF models directly via the CLI.
-- **Automated Hardware Fingerprinting:** PPB automatically detects your OS, RAM, CPU architecture, and GPU details (via `pynvml` on Linux/Windows or `system_profiler` on macOS) to ensure benchmark submissions are accurate.
+- **Automated Hardware Fingerprinting:** PPB automatically detects your OS, RAM, CPU architecture, and GPU details (via `pynvml` on Linux/Windows or `system_profiler` on macOS). Hardware profiles are embedded in every result record and can be viewed any time with `ppb hw-info`.
 - **Standardized Leaderboard Export:** Generates clean Markdown tables and JSONL logs ready for submission to the public leaderboard.
 
 ## Installation
@@ -35,6 +35,8 @@ git clone https://github.com/paulplee/poor-pauls-benchmark.git
 cd poor-pauls-benchmark
 pip install -r requirements.txt
 ```
+
+> **NVIDIA GPU detection:** `pynvml` is included in the dependencies and will be installed automatically. If no NVIDIA hardware is present it is simply unused. On systems without `pynvml`, PPB falls back to parsing `nvidia-smi` output.
 
 You must also have the `llama-bench` binary compiled and accessible in your system PATH or local directory.
 
@@ -100,6 +102,27 @@ Each line written to the JSONL file is a self-contained record:
   "model_path": "/abs/path/to/model.gguf",
   "n_ctx": 8192,
   "n_batch": 512,
+  "hardware": {
+    "os": { "system": "Linux", "release": "6.8.0", "machine": "x86_64" },
+    "cpu": { "model": "AMD Ryzen 9 7950X", "cores": "32" },
+    "ram": { "total_gb": 63.9 },
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 4090",
+        "driver": "560.35.03",
+        "cuda_version": "12.4",
+        "compute_capability": "8.9",
+        "power_limit_w": 450,
+        "pcie_gen": 4,
+        "pcie_width": 16,
+        "vram_total_gb": 24.0
+      }
+    ],
+    "runtime": {
+      "python_version": "3.13.2",
+      "llama_bench": "version: b5063 (58ab80c3)"
+    }
+  },
   "results": [
     /* raw llama-bench JSON output */
   ]
@@ -161,6 +184,43 @@ Sample output:
 | `--min-ctx`   | `2048`    | Lower bound for the binary search.                        |
 | `--max-ctx`   | `131072`  | Upper bound for the binary search.                        |
 | `--tolerance` | `1024`    | Stop searching when the remaining window is this narrow.  |
+
+### 4. View Your Hardware Profile
+
+Quickly check what PPB detects about your system:
+
+```bash
+uv run ppb.py hw-info
+```
+
+Sample output:
+
+```
+  Hardware Profile
+    OS          : Linux 6.8.0  (x86_64)
+    CPU         : AMD Ryzen 9 7950X  (32 cores)
+    RAM         : 63.9 GB
+    GPU [0]     : NVIDIA GeForce RTX 5090  31.8 GB VRAM  sm_120  CUDA 13.0  driver 580.126.09  600 W TDP  PCIe 5.0 x16
+    Python      : 3.13.2
+    llama-bench : version: b5063 (58ab80c3)
+```
+
+**Fields collected per GPU (where available):**
+
+| Field | Source | Why it matters |
+|---|---|---|
+| `name` | pynvml / nvidia-smi / system_profiler | Model identification |
+| `driver` | pynvml / nvidia-smi | Affects performance and supported features |
+| `cuda_version` | pynvml | Max CUDA version; determines available kernels (Flash Attn 2, etc.) |
+| `compute_capability` | pynvml / nvidia-smi | SM version (e.g. `8.9` = RTX 4090, `12.0` = RTX 5090) |
+| `power_limit_w` | pynvml | TDP cap; enables tokens-per-watt comparisons |
+| `pcie_gen` / `pcie_width` | pynvml | PCIe bandwidth ceiling for large model loading |
+| `vram_total_gb` | pynvml / nvidia-smi | VRAM capacity |
+| `metal_version` *(macOS)* | system_profiler | Metal API generation |
+| `gpu_cores` *(macOS)* | system_profiler | Apple Silicon GPU core count |
+
+This same profile is automatically included in every benchmark record written
+to `results.jsonl`.
 
 ## Contributing to the Leaderboard
 
