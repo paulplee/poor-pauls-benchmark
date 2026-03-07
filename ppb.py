@@ -41,7 +41,8 @@ from rich.progress import (
 )
 from rich.theme import Theme
 
-from datasets import download_sharegpt
+from datasets import download_dataset
+from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
 
 # ---------------------------------------------------------------------------
@@ -1036,26 +1037,43 @@ def download(
 
 
 @app.command(name="download-dataset")
-def download_dataset(
+def download_dataset_cmd(
     dataset_dir: Optional[Path] = typer.Option(
         None,
         "--dataset-dir",
         "-d",
         help="Directory for cached dataset files (default: datasets/data/)",
     ),
+    repo: str = typer.Option(
+        SHAREGPT_REPO,
+        "--repo",
+        "-R",
+        help="Hugging Face Hub dataset repository ID.",
+    ),
+    filename: str = typer.Option(
+        SHAREGPT_FILENAME,
+        "--filename",
+        "-f",
+        help="Filename to download from the repository.",
+    ),
 ) -> None:
-    """Download the ShareGPT conversational dataset for llama-server benchmarks.
+    """Download a conversational dataset for llama-server benchmarks.
 
-    The dataset (~300 MB) is also downloaded automatically on the first
+    By default downloads the ShareGPT dataset (~700 MB).  Use --repo and
+    --filename to fetch a different HF-hosted dataset instead.
+
+    The dataset is also downloaded automatically on the first
     ``llama-server`` benchmark run, but this command lets you pre-fetch it
     explicitly — useful for offline or air-gapped environments.
     """
     console.print(
-        "[info]Downloading[/info] ShareGPT dataset "
-        "(~300 MB, first time only) …"
+        f"[info]Downloading[/info] [bold]{filename}[/bold] from "
+        f"[bold]{repo}[/bold] …"
     )
     try:
-        path = download_sharegpt(dataset_dir=dataset_dir)
+        path = download_dataset(
+            repo_id=repo, filename=filename, dataset_dir=dataset_dir,
+        )
         console.print(
             f"[success]✓ Dataset ready:[/success] [bold]{path}[/bold]"
         )

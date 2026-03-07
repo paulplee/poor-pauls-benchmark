@@ -6,6 +6,6 @@ Provides download and parsing helpers for conversational datasets
 realistic inference workloads.
 """
 
-from .sharegpt import download_sharegpt, load_sharegpt_prompts
+from .sharegpt import download_dataset, download_sharegpt, load_sharegpt_prompts
 
-__all__ = ["download_sharegpt", "load_sharegpt_prompts"]
+__all__ = ["download_dataset", "download_sharegpt", "load_sharegpt_prompts"]

@@ -125,13 +125,20 @@ n_batch = [512, 1024]
 #
 # To benchmark with llama-server instead of llama-bench, uncomment the
 # runner_type line above (set it to "llama-server") and uncomment the
-# runner_params block below.  The ShareGPT conversational dataset
-# (~300 MB) is downloaded automatically on the first run, or you can
+# runner_params block below.  The default ShareGPT conversational dataset
+# (~700 MB) is downloaded automatically on the first run, or you can
 # pre-fetch it with:  ppb download-dataset
 #
+# Use dataset_repo / dataset_filename to swap in a different HF dataset.
+# Use shuffle = true so repeated runs draw prompts in a different order.
+#
 # [sweep.runner_params]
-# num_prompts      = 10        # ShareGPT prompts per benchmark run
-# n_predict        = 256       # max tokens to generate per prompt
-# health_timeout   = 120       # seconds to wait for server readiness
-# llama_server_cmd = "llama-server"   # path or name of the binary
-# dataset_dir      = "datasets/data"  # where to cache the dataset
+# num_prompts        = 10        # prompts per benchmark run
+# n_predict          = 256       # max tokens to generate per prompt
+# health_timeout     = 120       # seconds to wait for server readiness
+# llama_server_cmd   = "llama-server"   # path or name of the binary
+# dataset_dir        = "datasets/data"  # where to cache the dataset
+# dataset_repo       = "anon8231489123/ShareGPT_Vicuna_unfiltered"
+# dataset_filename   = "ShareGPT_V3_unfiltered_cleaned_split.json"
+# shuffle            = false     # randomise prompt order
+# seed               = 42       # RNG seed for reproducible shuffling

@@ -27,7 +27,8 @@ from typing import Any
 
 import httpx
 
-from datasets import download_sharegpt, load_sharegpt_prompts
+from datasets import download_dataset, load_sharegpt_prompts
+from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 
 from .base import BaseRunner
 
@@ -108,8 +109,8 @@ class LlamaServerRunner(BaseRunner):
     """Benchmark runner that starts ``llama-server`` and streams completions.
 
     Collects real-world UX metrics — **TTFT** and **ITL** — by sending
-    ShareGPT conversational prompts to the ``/completion`` endpoint with
-    SSE streaming enabled.
+    conversational prompts to the ``/completion`` endpoint with SSE
+    streaming enabled.
 
     runner_params
     -------------
@@ -118,13 +119,24 @@ class LlamaServerRunner(BaseRunner):
         Falls back to ``PPB_LLAMA_SERVER`` env-var → ``"llama-server"`` on
         ``$PATH``.
     num_prompts : int
-        Number of ShareGPT prompts to send per benchmark run (default: 10).
+        Number of prompts to send per benchmark run (default: 10).
     n_predict : int
         Maximum tokens to generate per prompt (default: 256).
     health_timeout : int | float
         Seconds to wait for the server to become healthy (default: 120).
     dataset_dir : str
         Directory for cached dataset files.
+    dataset_repo : str
+        Hugging Face Hub repository ID for the dataset
+        (default: ``anon8231489123/ShareGPT_Vicuna_unfiltered``).
+    dataset_filename : str
+        Filename to download from the repository
+        (default: ``ShareGPT_V3_unfiltered_cleaned_split.json``).
+    shuffle : bool
+        Randomise prompt order so repeated runs use different workloads
+        (default: ``false``).
+    seed : int
+        RNG seed for reproducible shuffling (optional).
     """
 
     runner_type: str = "llama-server"
@@ -140,7 +152,7 @@ class LlamaServerRunner(BaseRunner):
     # ---- lifecycle ----------------------------------------------------------
 
     def setup(self, runner_params: dict[str, Any]) -> None:
-        """Resolve binary, download ShareGPT dataset, load prompts."""
+        """Resolve binary, download dataset, load prompts."""
         self._cmd = runner_params.get(
             "llama_server_cmd",
             os.getenv("PPB_LLAMA_SERVER", "llama-server"),
@@ -154,12 +166,25 @@ class LlamaServerRunner(BaseRunner):
         dataset_dir_str = runner_params.get("dataset_dir")
         dataset_dir = Path(dataset_dir_str) if dataset_dir_str else None
 
-        # Download + load ShareGPT prompts.
-        dataset_path = download_sharegpt(dataset_dir=dataset_dir)
-        self._prompts = load_sharegpt_prompts(dataset_path, max_prompts=num_prompts)
+        repo_id = str(runner_params.get("dataset_repo", SHAREGPT_REPO))
+        filename = str(runner_params.get("dataset_filename", SHAREGPT_FILENAME))
+        shuffle = bool(runner_params.get("shuffle", False))
+        seed_val = runner_params.get("seed")
+        seed = int(seed_val) if seed_val is not None else None
+
+        # Download + load prompts.
+        dataset_path = download_dataset(
+            repo_id=repo_id, filename=filename, dataset_dir=dataset_dir,
+        )
+        self._prompts = load_sharegpt_prompts(
+            dataset_path,
+            max_prompts=num_prompts,
+            shuffle=shuffle,
+            seed=seed,
+        )
 
         if not self._prompts:
-            log.warning("No usable prompts loaded from ShareGPT dataset")
+            log.warning("No usable prompts loaded from dataset")
 
     def run(self, config: dict[str, Any]) -> dict | None:
         """Start the server, stream prompts, collect latency metrics.

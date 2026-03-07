@@ -121,7 +121,7 @@ class TestLlamaServerSetup:
         r = LlamaServerRunner()
         assert r.runner_type == "llama-server"
 
-    @patch("runners.llama_server.download_sharegpt")
+    @patch("runners.llama_server.download_dataset")
     @patch("runners.llama_server.load_sharegpt_prompts")
     def test_setup_default_cmd(
         self,
@@ -138,7 +138,7 @@ class TestLlamaServerSetup:
         r.setup({})
         assert r._cmd == "llama-server"
 
-    @patch("runners.llama_server.download_sharegpt")
+    @patch("runners.llama_server.download_dataset")
     @patch("runners.llama_server.load_sharegpt_prompts")
     def test_setup_env_var(
         self,
@@ -155,7 +155,7 @@ class TestLlamaServerSetup:
         r.setup({})
         assert r._cmd == "/opt/llama-server"
 
-    @patch("runners.llama_server.download_sharegpt")
+    @patch("runners.llama_server.download_dataset")
     @patch("runners.llama_server.load_sharegpt_prompts")
     def test_setup_runner_params_override(
         self,
@@ -172,7 +172,7 @@ class TestLlamaServerSetup:
         r.setup({"llama_server_cmd": "/custom/llama-server"})
         assert r._cmd == "/custom/llama-server"
 
-    @patch("runners.llama_server.download_sharegpt")
+    @patch("runners.llama_server.download_dataset")
     @patch("runners.llama_server.load_sharegpt_prompts")
     def test_setup_num_prompts(
         self,
@@ -186,9 +186,14 @@ class TestLlamaServerSetup:
         r = LlamaServerRunner()
         r.setup({"num_prompts": 3})
 
-        mock_load.assert_called_once_with(Path("/fake/data.json"), max_prompts=3)
+        mock_load.assert_called_once_with(
+            Path("/fake/data.json"),
+            max_prompts=3,
+            shuffle=False,
+            seed=None,
+        )
 
-    @patch("runners.llama_server.download_sharegpt")
+    @patch("runners.llama_server.download_dataset")
     @patch("runners.llama_server.load_sharegpt_prompts")
     def test_setup_n_predict(
         self,
@@ -202,6 +207,39 @@ class TestLlamaServerSetup:
         r = LlamaServerRunner()
         r.setup({"n_predict": 128})
         assert r._n_predict == 128
+
+    @patch("runners.llama_server.download_dataset")
+    @patch("runners.llama_server.load_sharegpt_prompts")
+    def test_setup_forwards_dataset_and_shuffle_params(
+        self,
+        mock_load: Mock,
+        mock_download: Mock,
+    ) -> None:
+        """Custom dataset repo/filename and shuffle/seed are forwarded."""
+        from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
+
+        mock_download.return_value = Path("/fake/custom.json")
+        mock_load.return_value = ["a"]
+
+        r = LlamaServerRunner()
+        r.setup({
+            "dataset_repo": "my-org/my-dataset",
+            "dataset_filename": "custom.json",
+            "shuffle": True,
+            "seed": 42,
+        })
+
+        mock_download.assert_called_once_with(
+            repo_id="my-org/my-dataset",
+            filename="custom.json",
+            dataset_dir=None,
+        )
+        mock_load.assert_called_once_with(
+            Path("/fake/custom.json"),
+            max_prompts=10,
+            shuffle=True,
+            seed=42,
+        )
 
 
 # ==========================================================================
@@ -633,6 +671,48 @@ class TestShareGPTDataset:
         assert isinstance(result, Path)
         mock_dl.assert_called_once()
 
+    @patch("datasets.sharegpt.hf_hub_download")
+    def test_download_dataset_custom_repo(self, mock_dl: Mock, tmp_path: Path) -> None:
+        """download_dataset forwards custom repo_id and filename."""
+        from datasets.sharegpt import download_dataset
+
+        mock_dl.return_value = str(tmp_path / "custom.json")
+        result = download_dataset(
+            repo_id="my-org/my-dataset",
+            filename="custom.json",
+            dataset_dir=tmp_path,
+        )
+
+        assert isinstance(result, Path)
+        mock_dl.assert_called_once_with(
+            repo_id="my-org/my-dataset",
+            repo_type="dataset",
+            filename="custom.json",
+            local_dir=str(tmp_path),
+        )
+
+    def test_load_sharegpt_prompts_shuffle(self, tmp_path: Path) -> None:
+        """shuffle=True changes prompt order; seed makes it reproducible."""
+        from datasets.sharegpt import load_sharegpt_prompts
+
+        data = [
+            {"conversations": [{"from": "human", "value": f"Prompt number {i} with enough length to be valid"}]}
+            for i in range(50)
+        ]
+        f = tmp_path / "data.json"
+        f.write_text(json.dumps(data))
+
+        ordered = load_sharegpt_prompts(f, max_prompts=50, shuffle=False)
+        shuffled_a = load_sharegpt_prompts(f, max_prompts=50, shuffle=True, seed=42)
+        shuffled_b = load_sharegpt_prompts(f, max_prompts=50, shuffle=True, seed=42)
+        shuffled_c = load_sharegpt_prompts(f, max_prompts=50, shuffle=True, seed=99)
+
+        # Same seed → same order.
+        assert shuffled_a == shuffled_b
+        # Different seed → (almost certainly) different order.
+        assert shuffled_a != ordered
+        assert shuffled_c != shuffled_a
+
 
 # ==========================================================================
 # download-dataset CLI command
@@ -650,7 +730,7 @@ class TestDownloadDatasetCommand:
         runner = CliRunner()
         fake_path = tmp_path / "data.json"
 
-        with patch("ppb.download_sharegpt", return_value=fake_path) as mock_dl:
+        with patch("ppb.download_dataset", return_value=fake_path) as mock_dl:
             result = runner.invoke(app, ["download-dataset"])
 
         assert result.exit_code == 0
@@ -658,7 +738,7 @@ class TestDownloadDatasetCommand:
         mock_dl.assert_called_once()
 
     def test_success_with_custom_dir(self, tmp_path: Path) -> None:
-        """--dataset-dir is forwarded to download_sharegpt."""
+        """--dataset-dir is forwarded to download_dataset."""
         from typer.testing import CliRunner
         from ppb import app
 
@@ -666,13 +746,38 @@ class TestDownloadDatasetCommand:
         custom_dir = tmp_path / "custom"
         fake_path = custom_dir / "data.json"
 
-        with patch("ppb.download_sharegpt", return_value=fake_path) as mock_dl:
+        with patch("ppb.download_dataset", return_value=fake_path) as mock_dl:
             result = runner.invoke(
                 app, ["download-dataset", "--dataset-dir", str(custom_dir)]
             )
 
         assert result.exit_code == 0
-        mock_dl.assert_called_once_with(dataset_dir=custom_dir)
+        mock_dl.assert_called_once()
+        call_kwargs = mock_dl.call_args[1]
+        assert call_kwargs["dataset_dir"] == custom_dir
+
+    def test_custom_repo_and_filename(self, tmp_path: Path) -> None:
+        """--repo and --filename are forwarded to download_dataset."""
+        from typer.testing import CliRunner
+        from ppb import app
+
+        runner = CliRunner()
+        fake_path = tmp_path / "convos.json"
+
+        with patch("ppb.download_dataset", return_value=fake_path) as mock_dl:
+            result = runner.invoke(
+                app,
+                [
+                    "download-dataset",
+                    "--repo", "my-org/my-dataset",
+                    "--filename", "convos.json",
+                ],
+            )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_dl.call_args[1]
+        assert call_kwargs["repo_id"] == "my-org/my-dataset"
+        assert call_kwargs["filename"] == "convos.json"
 
     def test_download_failure(self) -> None:
         """Network/HF error → exit code 1 with error message."""
@@ -682,7 +787,7 @@ class TestDownloadDatasetCommand:
         runner = CliRunner()
 
         with patch(
-            "ppb.download_sharegpt",
+            "ppb.download_dataset",
             side_effect=OSError("Connection refused"),
         ):
             result = runner.invoke(app, ["download-dataset"])
@@ -691,7 +796,7 @@ class TestDownloadDatasetCommand:
         assert "download failed" in result.output.lower()
 
     def test_help_text(self) -> None:
-        """--help should mention ShareGPT and llama-server."""
+        """--help should mention dataset and llama-server."""
         from typer.testing import CliRunner
         from ppb import app
 
@@ -699,5 +804,6 @@ class TestDownloadDatasetCommand:
         result = runner.invoke(app, ["download-dataset", "--help"])
 
         assert result.exit_code == 0
-        assert "ShareGPT" in result.output
         assert "llama-server" in result.output
+        assert "--repo" in result.output
+        assert "--filename" in result.output

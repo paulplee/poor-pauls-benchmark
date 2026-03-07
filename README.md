@@ -74,7 +74,7 @@ uv sync
 
 You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`).
 
-> **ShareGPT dataset:** The `llama-server` runner uses real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) (~300 MB). It is downloaded automatically on the first `llama-server` run, or you can pre-fetch it with `python ppb.py download-dataset`.
+> **Conversational dataset:** The `llama-server` runner uses real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) (~700 MB) by default. It is downloaded automatically on the first `llama-server` run, or you can pre-fetch it with `python ppb.py download-dataset`. You can also point to any HF-hosted dataset with `--repo` and `--filename` — see [§3](#3-run-a-parameter-sweep) for details.
 
 ### Running Tests
 
@@ -217,8 +217,8 @@ Shared fields (`model_path`, `runner_type`, `runner_params`) can live at the **t
 | Key             | Type             | Required | Default         | Description |
 | --------------- | ---------------- | -------- | --------------- | ----------- |
 | `model_path`    | string (path)    | ✅       |                 | Path to a `.gguf` file, directory of `.gguf` files, or a glob pattern. Relative paths are resolved from the working directory. |
-| `n_ctx`         | list of integers | ✅       |                 | Prompt token counts to test (passed as `-p` to `llama-bench`). Controls KV cache depth — larger values stress longer-context throughput. e.g. `[8192, 16384, 32768]`. |
-| `n_batch`       | list of integers | ✅       |                 | Batch sizes (passed as `-b` to `llama-bench`) for prompt-processing throughput tests, e.g. `[512, 1024]`. |
+| `n_ctx`         | list of integers | ✅       |                 | Context sizes to test. Controls KV cache depth — larger values stress longer-context workloads, e.g. `[8192, 16384, 32768]`. |
+| `n_batch`       | list of integers | ✅       |                 | Batch sizes for prompt processing, e.g. `[512, 1024]`. Used by `llama-bench`; accepted but unused by `llama-server` (it manages its own batching). |
 | `runner_type`   | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below. |
 | `runner_params` | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below. |
 
@@ -246,6 +246,105 @@ n_batch     = [512]
 
 [sweep.runner_params]
 llama_bench_cmd = "/opt/llama.cpp/build/bin/llama-bench"
+```
+
+#### Choosing a runner
+
+PPB ships with two runners — pick the one that matches your evaluation goal:
+
+| Runner | Measures | Best for |
+| --- | --- | --- |
+| `llama-bench` *(default)* | Raw throughput (tok/s) | Finding peak hardware performance, comparing quants |
+| `llama-server` | **TTFT** and **ITL** latency | UX-relevant benchmarks for interactive / chat applications |
+
+Both runners use the same `ppb sweep` command — just set `runner_type` in your TOML.
+
+##### Setting up `llama-server` sweeps
+
+**1. Ensure `llama-server` is available:**
+
+```bash
+# On your PATH after building llama.cpp
+llama-server --version
+
+# Or point to it explicitly
+export PPB_LLAMA_SERVER=/path/to/llama-server
+```
+
+**2. (Optional) Pre-download the conversational dataset:**
+
+The runner sends real human prompts from a conversational dataset (default: [ShareGPT](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered), ~700 MB). It auto-downloads on first run, but you can pre-fetch it:
+
+```bash
+python ppb.py download-dataset
+
+# Or use a different HF dataset:
+python ppb.py download-dataset --repo "my-org/my-dataset" --filename "convos.json"
+```
+
+**3. Create a TOML suite:**
+
+```toml
+# suites/my_server.toml
+model_path  = "./models/Llama-3-8B-Instruct.Q4_K_M.gguf"
+runner_type = "llama-server"
+
+[sweep]
+n_ctx   = [8192, 16384]
+n_batch = [512]          # required by PPB but unused by llama-server
+
+[sweep.runner_params]
+num_prompts = 10         # prompts to send per run (default: 10)
+n_predict   = 256        # max tokens per prompt (default: 256)
+shuffle     = true       # randomise prompt order across runs
+```
+
+**4. Run:**
+
+```bash
+python ppb.py sweep suites/my_server.toml
+```
+
+The JSONL output includes per-run TTFT and ITL statistics:
+
+```
+avg_ttft_ms: 142.5    p50_ttft_ms: 138.2    p99_ttft_ms: 210.7
+avg_itl_ms:   12.3    p50_itl_ms:   11.8    p99_itl_ms:   18.4
+```
+
+##### `llama-server` runner_params reference
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `llama_server_cmd` | string | `llama-server` | Path or name of the binary. Falls back to `PPB_LLAMA_SERVER` env → `$PATH`. |
+| `num_prompts` | int | `10` | Number of prompts to send per run. |
+| `n_predict` | int | `256` | Maximum tokens to generate per prompt. |
+| `health_timeout` | int/float | `120` | Seconds to wait for `/health` to return 200. |
+| `dataset_dir` | string | `datasets/data/` | Directory for cached dataset files. |
+| `dataset_repo` | string | `anon8231489123/ShareGPT_Vicuna_unfiltered` | HF Hub repository ID for the prompt dataset. |
+| `dataset_filename` | string | `ShareGPT_V3_unfiltered_cleaned_split.json` | File to download from the repository. |
+| `shuffle` | bool | `false` | Randomise prompt order so repeated runs use different workloads. |
+| `seed` | int | _(none)_ | RNG seed for reproducible shuffling. |
+
+##### Sample `llama-server` results
+
+The `results` object in the JSONL envelope contains:
+
+```json
+{
+  "num_prompts_attempted": 10,
+  "num_prompts_succeeded": 10,
+  "n_predict": 256,
+  "total_tokens": 2048,
+  "total_duration_s": 34.567,
+  "throughput_tok_s": 59.26,
+  "avg_ttft_ms": 142.5,
+  "p50_ttft_ms": 138.2,
+  "p99_ttft_ms": 210.7,
+  "avg_itl_ms": 12.3,
+  "p50_itl_ms": 11.8,
+  "p99_itl_ms": 18.4
+}
 ```
 
 ##### Results format
@@ -385,145 +484,6 @@ Sample output:
 | `gpu_cores` *(macOS)* | system_profiler | Apple Silicon GPU core count |
 
 This same profile is automatically included in every benchmark record written to `results.jsonl`.
-
-### 6. Benchmark with `llama-server` (TTFT / ITL)
-
-While §3 (`sweep`) defaults to `llama-bench` for raw throughput, the `llama-server` runner measures the latency users actually feel: **Time-To-First-Token (TTFT)** and **Inter-Token Latency (ITL)**.
-
-#### Quick start
-
-**Step 1 — Ensure `llama-server` is available:**
-
-```bash
-# Option A: on your PATH after building llama.cpp
-llama-server --version
-
-# Option B: point to it explicitly
-export PPB_LLAMA_SERVER=/path/to/llama-server
-```
-
-**Step 2 — (Optional) Pre-download the ShareGPT dataset:**
-
-The `llama-server` runner sends real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered). It auto-downloads on first run (~300 MB), but you can pre-fetch it — useful if you'll be offline later:
-
-```bash
-python ppb.py download-dataset
-# ✓ Dataset ready: /…/datasets/data/ShareGPT_V3_unfiltered_cleaned_split.json
-```
-
-**Step 3 — Create a TOML suite:**
-
-```toml
-# suites/my_server.toml
-model_path  = "./models/Llama-3-8B-Instruct.Q4_K_M.gguf"
-runner_type = "llama-server"
-
-[sweep]
-n_ctx   = [8192, 16384]
-n_batch = [512]          # required by PPB but unused by llama-server
-
-[sweep.runner_params]
-num_prompts = 10         # how many ShareGPT prompts to send (default: 10)
-n_predict   = 256        # max tokens per prompt (default: 256)
-```
-
-See [`suites/suite.example.toml`](suites/suite.example.toml) for a fully commented starter config including the `llama-server` block.
-
-**Step 4 — Run:**
-
-```bash
-python ppb.py sweep suites/my_server.toml
-```
-
-Or combine with `auto-limit` to also discover the VRAM ceiling:
-
-```bash
-python ppb.py all suites/my_server.toml
-```
-
-**Step 5 — Read the results:**
-
-The JSONL output includes per-run TTFT and ITL statistics:
-
-```
-avg_ttft_ms: 142.5    p50_ttft_ms: 138.2    p99_ttft_ms: 210.7
-avg_itl_ms:   12.3    p50_itl_ms:   11.8    p99_itl_ms:   18.4
-```
-
-For the full results schema, `runner_params` reference, and internals, see [The `llama-server` Runner](#the-llama-server-runner) below.
-
-## The `llama-server` Runner
-
-> **New here?** Start with [§6 — Benchmark with llama-server](#6-benchmark-with-llama-server-ttft--itl) above for a quick walkthrough. This section is the detailed reference.
-
-While `llama-bench` measures **raw throughput**, the `llama-server` runner captures the metrics end-users actually feel:
-
-| Metric | What it measures |
-| --- | --- |
-| **TTFT** (Time-To-First-Token) | How long the user waits before seeing the first word appear. |
-| **ITL** (Inter-Token Latency) | The gap between consecutive tokens — perceived "smoothness" of streaming output. |
-
-### How it works
-
-1. **Setup** — resolves the `llama-server` binary, downloads the [ShareGPT](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) dataset from Hugging Face Hub (cached locally in `datasets/data/`), and extracts the first human turn from each conversation as a realistic prompt.
-2. **Server lifecycle** — launches `llama-server` as a subprocess on a dynamically-assigned TCP port, polls `/health` until the server is ready (up to 120 s), then streams SSE requests to `/completion`.
-3. **Measurement** — for each prompt, records the wall-clock time to first token and the inter-token gaps. After all prompts complete, aggregates avg / p50 / p99 for both TTFT and ITL.
-4. **Shutdown** — sends `SIGTERM`, waits 5 s, falls back to `SIGKILL`. The `teardown()` safety-net catches any lingering process.
-
-### Usage
-
-```bash
-# Sweep with llama-server
-python ppb.py sweep suites/my_gpu.toml
-```
-
-Where the TOML file specifies:
-
-```toml
-model_path  = "~/models/Llama-3-8B-Instruct.Q4_K_M.gguf"
-runner_type = "llama-server"
-
-[sweep]
-n_ctx   = [8192, 16384]
-n_batch = [512]          # accepted but unused — llama-server manages its own batching
-
-[sweep.runner_params]
-num_prompts      = 10       # ShareGPT prompts per benchmark run (default: 10)
-n_predict        = 256      # max tokens to generate per prompt (default: 256)
-health_timeout   = 120      # seconds to wait for server readiness (default: 120)
-llama_server_cmd = "/opt/llama.cpp/build/bin/llama-server"  # optional
-```
-
-### `llama-server` runner_params reference
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `llama_server_cmd` | string | `llama-server` | Path or name of the binary. Falls back to `PPB_LLAMA_SERVER` env → `$PATH`. |
-| `num_prompts` | int | `10` | Number of ShareGPT prompts to send per run. |
-| `n_predict` | int | `256` | Maximum tokens to generate per prompt. |
-| `health_timeout` | int/float | `120` | Seconds to wait for `/health` to return 200. |
-| `dataset_dir` | string | `datasets/data/` | Directory for cached dataset files. |
-
-### Sample `llama-server` results
-
-The `results` object in the JSONL envelope contains:
-
-```json
-{
-  "num_prompts_attempted": 10,
-  "num_prompts_succeeded": 10,
-  "n_predict": 256,
-  "total_tokens": 2048,
-  "total_duration_s": 34.567,
-  "throughput_tok_s": 59.26,
-  "avg_ttft_ms": 142.5,
-  "p50_ttft_ms": 138.2,
-  "p99_ttft_ms": 210.7,
-  "avg_itl_ms": 12.3,
-  "p50_itl_ms": 11.8,
-  "p99_itl_ms": 18.4
-}
-```
 
 ## Runner Plugins
 
