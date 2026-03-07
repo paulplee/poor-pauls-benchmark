@@ -64,5 +64,7 @@ def get_runner(runner_type: str) -> BaseRunner:
 # ---------------------------------------------------------------------------
 
 from .llama_bench import LlamaBenchRunner  # noqa: E402
+from .llama_server import LlamaServerRunner  # noqa: E402
 
 register_runner("llama-bench", LlamaBenchRunner)
+register_runner("llama-server", LlamaServerRunner)
