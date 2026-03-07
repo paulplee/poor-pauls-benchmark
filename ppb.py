@@ -20,7 +20,7 @@ import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -38,6 +38,8 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 from rich.theme import Theme
+
+from runners import get_runner
 
 # ---------------------------------------------------------------------------
 # Rich console & logging setup
@@ -411,6 +413,8 @@ class SweepConfig(BaseModel):
     model_path: str  # raw value: single file, directory, or glob pattern
     n_ctx: list[int]
     n_batch: list[int]
+    runner_type: str = "llama-bench"
+    runner_params: dict[str, Any] = Field(default_factory=dict)
 
     # Populated by the model_validator below; not read from TOML.
     model_paths: list[Path] = Field(default_factory=list)
@@ -635,35 +639,16 @@ def download_model(
     return downloaded_paths
 
 
-OOM_MARKERS = ("out of memory", "bad alloc", "bad_alloc", "cudaerroroutofmemory",
-               "rocm out of memory", "failed to allocate")
+# ---------------------------------------------------------------------------
+# JSONL result writer
+# ---------------------------------------------------------------------------
 
 
-def probe_ctx(model_path: Path, n_ctx: int) -> bool:
-    """Return *True* when llama-bench can run *model_path* at *n_ctx* tokens.
-
-    A run is considered a failure (OOM or other hard error) when:
-
-    * The process exits with a non-zero return code, **or**
-    * ``stderr`` contains a known out-of-memory marker.
-    """
-    cmd: list[str] = [
-        LLAMA_BENCH_CMD,
-        "-m", str(model_path),
-        "-p", str(n_ctx),
-        "-n", "0",          # skip token-generation pass — we only need allocation
-        "-o", "json",
-    ]
-    log.debug("probe_ctx n_ctx=%d — running: %s", n_ctx, " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        log.debug("probe_ctx n_ctx=%d — exit %d", n_ctx, proc.returncode)
-        return False
-    combined = (proc.stdout + proc.stderr).lower()
-    if any(marker in combined for marker in OOM_MARKERS):
-        log.debug("probe_ctx n_ctx=%d — OOM marker found in output", n_ctx)
-        return False
-    return True
+def _write_result(record: dict, results_file: Path) -> None:
+    """Append one JSON record as a line to *results_file*."""
+    results_file.parent.mkdir(parents=True, exist_ok=True)
+    with results_file.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
 
 
 def execute_auto_limit(
@@ -671,6 +656,7 @@ def execute_auto_limit(
     min_ctx: int,
     max_ctx: int,
     tolerance: int = 1024,
+    runner_type: str = "llama-bench",
 ) -> int:
     """Binary-search for the largest safe context window.
 
@@ -688,6 +674,9 @@ def execute_auto_limit(
     int
         Largest *n_ctx* that did **not** trigger OOM.
     """
+    runner = get_runner(runner_type)
+    runner.setup({})
+
     lo, hi = min_ctx, max_ctx
     last_good: int = 0
     iteration = 0
@@ -717,7 +706,7 @@ def execute_auto_limit(
                 task,
                 detail=f"try n_ctx={mid:,}  (lo={lo:,}  hi={hi:,})",
             )
-            ok = probe_ctx(model_path, mid)
+            ok = runner.probe_ctx(model_path, mid)
             if ok:
                 last_good = mid
                 lo = mid + 1
@@ -734,76 +723,13 @@ def execute_auto_limit(
         progress.update(task, detail="done", completed=est_iters)
 
     safe = last_good if last_good else lo
+
+    runner.teardown()
     return safe
 
 
-def run_llama_bench(combo: BenchCombo, results_file: Path) -> dict | None:
-    """Run ``llama-bench`` for one parameter combination and record the result.
-
-    Parameters
-    ----------
-    combo:
-        The model/context/batch combination to benchmark.
-    results_file:
-        JSONL file to append the enriched result record to.
-
-    Returns
-    -------
-    dict | None
-        The enriched result dict, or *None* when the run failed.
-    """
-    cmd: list[str] = [
-        LLAMA_BENCH_CMD,
-        "-m",
-        str(combo.model_path),
-        "-p",  # n_ctx → prompt token count → drives KV cache allocation
-        str(combo.n_ctx),
-        "-b",
-        str(combo.n_batch),
-        "-o",
-        "json",
-    ]
-
-    log.debug("Running: %s", " ".join(cmd))
-
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-
-    if proc.returncode != 0:
-        log.error(
-            "llama-bench exited with code %d\n%s",
-            proc.returncode,
-            proc.stderr.strip(),
-        )
-        return None
-
-    try:
-        bench_data = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        log.error(
-            "Failed to parse llama-bench output: %s\nRaw stdout:\n%s",
-            exc,
-            proc.stdout[:500],
-        )
-        return None
-
-    record: dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "model_path": str(combo.model_path),
-        "n_ctx": combo.n_ctx,
-        "n_batch": combo.n_batch,
-        "hardware": _hw_sniffer.snapshot(),
-        "results": bench_data,
-    }
-
-    results_file.parent.mkdir(parents=True, exist_ok=True)
-    with results_file.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record) + "\n")
-
-    return record
-
-
 def execute_sweep(config_path: Path, results_file: Path) -> None:
-    """Parse *config_path*, enumerate all combos, and run llama-bench for each.
+    """Parse *config_path*, enumerate all combos, and run the selected runner.
 
     Parameters
     ----------
@@ -839,44 +765,71 @@ def execute_sweep(config_path: Path, results_file: Path) -> None:
     console.print(
         f"[info]Sweep:[/info] [bold]{total}[/bold] combination(s) "
         f"across [bold]{len(cfg.model_paths)}[/bold] model(s): {model_names}\n"
+        f"  Runner  : {cfg.runner_type}\n"
         f"  n_ctx   : {cfg.n_ctx}\n"
         f"  n_batch : {cfg.n_batch}\n"
         f"  Results : [bold]{results_file.resolve()}[/bold]"
     )
 
+    runner = get_runner(cfg.runner_type)
+    runner.setup(cfg.runner_params)
+
     passed = failed = 0
 
-    with Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TextColumn("• [cyan]{task.fields[combo]}[/cyan]"),
-        console=console,
-        transient=False,
-    ) as progress:
-        task = progress.add_task("Sweep", total=total, combo="starting…")
+    try:
+        with Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("• [cyan]{task.fields[combo]}[/cyan]"),
+            console=console,
+            transient=False,
+        ) as progress:
+            task = progress.add_task("Sweep", total=total, combo="starting…")
 
-        for i, combo in enumerate(combos, start=1):
-            label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
-            progress.update(task, combo=label)
+            for i, combo in enumerate(combos, start=1):
+                label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
+                progress.update(task, combo=label)
 
-            record = run_llama_bench(combo, results_file=results_file)
+                run_config: dict[str, Any] = {
+                    "model_path": str(combo.model_path),
+                    "n_ctx": combo.n_ctx,
+                    "n_batch": combo.n_batch,
+                }
+                raw_result = runner.run(run_config)
 
-            if record is None:
-                console.print(f"  [error]✗[/error] [{i}/{total}] {label} — FAILED")
-                failed += 1
-            else:
-                # Pull out the tok/s figure if llama-bench emits it
-                tps: str = ""
-                try:
-                    tps_val = record["results"][0]["avg_ts"]
-                    tps = f"  {tps_val:.1f} tok/s"
-                except (KeyError, IndexError, TypeError):
-                    pass
-                console.print(f"  [success]✓[/success] [{i}/{total}] {label}{tps}")
-                passed += 1
+                if raw_result is None:
+                    record = None
+                else:
+                    record = {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "runner_type": cfg.runner_type,
+                        "model_path": str(combo.model_path),
+                        "n_ctx": combo.n_ctx,
+                        "n_batch": combo.n_batch,
+                        "hardware": _hw_sniffer.snapshot(),
+                        "results": raw_result["results"],
+                    }
+                    _write_result(record, results_file)
 
-            progress.advance(task)
+                if record is None:
+                    console.print(f"  [error]✗[/error] [{i}/{total}] {label} — FAILED")
+                    failed += 1
+                else:
+                    # Pull out the tok/s figure if llama-bench emits it
+                    tps: str = ""
+                    try:
+                        tps_val = record["results"][0]["avg_ts"]
+                        tps = f"  {tps_val:.1f} tok/s"
+                    except (KeyError, IndexError, TypeError):
+                        pass
+                    console.print(f"  [success]✓[/success] [{i}/{total}] {label}{tps}")
+                    passed += 1
+
+                progress.advance(task)
+
+    finally:
+        runner.teardown()
 
     status = "success" if failed == 0 else "warning"
     console.print(
@@ -962,7 +915,7 @@ def sweep(
         help="JSONL file to append benchmark results to (default: ./results.jsonl)",
     ),
 ) -> None:
-    """Run a declarative parameter sweep using llama-bench."""
+    """Run a declarative parameter sweep."""
     console.print(f"[info]Starting sweep[/info] with config [bold]{config}[/bold] …")
     execute_sweep(config_path=Path(config), results_file=results_file)
 
@@ -1035,6 +988,11 @@ def auto_limit(
         "-t",
         help="Stop searching when hi - lo < this value (default: 1024)",
     ),
+    runner: str = typer.Option(
+        "llama-bench",
+        "--runner",
+        help="Runner backend to use for probing (default: llama-bench)",
+    ),
 ) -> None:
     """Binary-search for the maximum context window before OOM."""
     model_path = Path(model).expanduser().resolve()
@@ -1053,6 +1011,7 @@ def auto_limit(
         min_ctx=min_ctx,
         max_ctx=max_ctx,
         tolerance=tolerance,
+        runner_type=runner,
     )
 
     if safe == 0:

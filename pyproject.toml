@@ -15,3 +15,6 @@ dependencies = [
 
 [project.scripts]
 ppb = "ppb:app"
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]

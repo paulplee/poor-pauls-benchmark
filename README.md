@@ -4,7 +4,7 @@ Find the absolute limit of your local AI hardware without the enterprise budget.
 
 AI-driven GPU and RAM prices got you down? It certain got me feeling a lot poorer. I can't turn back the clock and go back to normal prices. About the only thing I can do is to get myself more informed in how I can best use the little hardware that I can muster.
 
-Poor Paul's Benchmark is an automated evaluation framework for local LLM inference. It wraps `llama.cpp`'s `llama-bench` to provide declarative parameter sweeps, automated VRAM limit discovery, and standardized hardware fingerprinting.
+Poor Paul's Benchmark is an automated evaluation framework for local LLM inference. It ships with a **pluggable runner architecture** — the built-in runner wraps `llama.cpp`'s `llama-bench`, and new backends (llama-server, vLLM, Stable Diffusion, …) can be added without touching core code.
 
 My goal is to build the definitive public leaderboard for cost-effective AI setups, helping homelabbers, prosumers, and small businesses answer the question: _What is the most efficient hardware for my AI workload?_
 
@@ -18,17 +18,35 @@ PPB automates the tedious parts of benchmarking so you can focus on the data.
 
 ### Key Features
 
+- **Pluggable Runner Architecture:** Benchmark backends are implemented as plugins inheriting from `BaseRunner`. Swap `llama-bench` for `llama-server`, `vllm`, or your own backend by setting `runner_type` in the sweep config.
 - **Declarative Parameter Sweeps:** Define your test matrices in a simple TOML file. PPB will automatically iterate through every combination of batch size, context length, and GPU layers.
 - **Auto-Discover VRAM Limits:** Using a binary search algorithm, PPB automatically probes your hardware to find the exact maximum context size a specific model can handle before triggering an OOM error.
 - **Integrated Model Downloader:** Native integration with Hugging Face Hub to download, cache, and symlink GGUF models directly via the CLI.
 - **Automated Hardware Fingerprinting:** PPB automatically detects your OS, RAM, CPU architecture, and GPU details (via `pynvml` on Linux/Windows or `system_profiler` on macOS). Hardware profiles are embedded in every result record and can be viewed any time with `ppb hw-info`.
-- **Standardized Leaderboard Export:** Generates clean Markdown tables and JSONL logs ready for submission to the public leaderboard.
+- **Stable Result Envelope:** Every JSONL record includes `runner_type`, `timestamp`, and `hardware` — so results from different runners or years apart remain comparable.
+
+## Project Structure
+
+```
+ppb.py                 # CLI entry point (Typer app)
+runners/
+  __init__.py          # Runner registry (register_runner / get_runner)
+  base.py              # BaseRunner ABC — contract for all backends
+  llama_bench.py       # Built-in llama-bench runner
+tests/
+  conftest.py          # Shared fixtures + FakeRunner
+  test_runners.py      # Runner ABC, registry, and LlamaBenchRunner tests
+  test_config.py       # SweepConfig, BenchCombo, _write_result tests
+  test_orchestration.py # Sweep & auto-limit integration tests
+sweep.example.toml     # Starter sweep config (copy → sweep.toml)
+results.jsonl          # Benchmark output (JSONL)
+```
 
 ## Installation
 
-> **Note:** PPB is currently in active development. These instructions represent the target CLI interface.
+> **Note:** PPB is currently in active development.
 
-Ensure you have Python 3.10+ installed.
+Requires **Python ≥ 3.13**.
 
 ```bash
 git clone https://github.com/paulplee/poor-pauls-benchmark.git
@@ -36,9 +54,22 @@ cd poor-pauls-benchmark
 pip install -r requirements.txt
 ```
 
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync
+```
+
 > **NVIDIA GPU detection:** `pynvml` is included in the dependencies and will be installed automatically. If no NVIDIA hardware is present it is simply unused. On systems without `pynvml`, PPB falls back to parsing `nvidia-smi` output.
 
-You must also have the `llama-bench` binary compiled and accessible in your system PATH or local directory.
+You must also have the `llama-bench` binary compiled and accessible in your system PATH (or point to it with `PPB_LLAMA_BENCH`).
+
+### Running Tests
+
+```bash
+pip install pytest   # or: uv sync --group dev
+python -m pytest tests/ -v
+```
 
 ## Usage Guide
 
@@ -73,13 +104,15 @@ python ppb.py sweep sweep.toml --results my_results.jsonl
 
 All fields live inside a single `[sweep]` section.
 
-| Key          | Type             | Required | Description                                                                                                                                                           |
-| ------------ | ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model_path` | string (path)    | ✅       | Path to the GGUF model file. Relative paths are resolved from the working directory.                                                                                  |
-| `n_ctx`      | list of integers | ✅       | Prompt token counts to test (passed as `-p` to `llama-bench`). Controls KV cache depth — larger values stress longer-context throughput. e.g. `[8192, 16384, 32768]`. |
-| `n_batch`    | list of integers | ✅       | Batch sizes (passed as `-b` to `llama-bench`) for prompt-processing throughput tests, e.g. `[512, 1024]`.                                                             |
+| Key             | Type             | Required | Default         | Description                                                                                                                                                           |
+| --------------- | ---------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model_path`    | string (path)    | ✅       |                 | Path to a `.gguf` file, directory of `.gguf` files, or a glob pattern. Relative paths are resolved from the working directory.                                        |
+| `n_ctx`         | list of integers | ✅       |                 | Prompt token counts to test (passed as `-p` to `llama-bench`). Controls KV cache depth — larger values stress longer-context throughput. e.g. `[8192, 16384, 32768]`. |
+| `n_batch`       | list of integers | ✅       |                 | Batch sizes (passed as `-b` to `llama-bench`) for prompt-processing throughput tests, e.g. `[512, 1024]`.                                                             |
+| `runner_type`   | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below.                                                                                          |
+| `runner_params` | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below.                                                                                                         |
 
-PPB computes the full Cartesian product of `n_ctx × n_batch`, so `3 × 2 = 6` combinations in the example above.
+PPB computes the full Cartesian product of `model_paths × n_ctx × n_batch`, so 2 models × 3 contexts × 2 batches = 12 combinations.
 
 ##### Example: exhaustive sweep across multiple quantisations
 
@@ -92,13 +125,27 @@ n_batch = [256, 512, 1024]
 
 This tests every matched model at all 9 `(n_ctx, n_batch)` combinations and appends every result as a JSON line to `results.jsonl`.
 
+##### Example: using a custom runner and params
+
+```toml
+[sweep]
+runner_type = "llama-bench"           # default; swap for future runners
+model_path  = "~/models/"
+n_ctx       = [8192]
+n_batch     = [512]
+
+[sweep.runner_params]
+llama_bench_cmd = "/opt/llama.cpp/build/bin/llama-bench"
+```
+
 ##### Results format
 
-Each line written to the JSONL file is a self-contained record:
+Each line written to the JSONL file is a self-contained record with a **stable envelope** that stays consistent across runners and PPB versions:
 
 ```json
 {
   "timestamp": "2026-03-04T10:00:00+00:00",
+  "runner_type": "llama-bench",
   "model_path": "/abs/path/to/model.gguf",
   "n_ctx": 8192,
   "n_batch": 512,
@@ -124,10 +171,12 @@ Each line written to the JSONL file is a self-contained record:
     }
   },
   "results": [
-    /* raw llama-bench JSON output */
+    /* raw runner-specific JSON output */
   ]
 }
 ```
+
+The `runner_type` field ensures results from different backends can coexist in the same file and be compared meaningfully.
 
 ##### Environment overrides
 
@@ -142,26 +191,28 @@ Each line written to the JSONL file is a self-contained record:
 PPB can automatically discover the maximum context window your hardware supports before running out of memory, using a binary search algorithm.
 
 ```bash
-uv run ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf
+python ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf
 ```
 
 The full set of options:
 
 ```bash
-uv run ppb.py auto-limit \
+python ppb.py auto-limit \
   --model ~/models/Llama-3-8B-Instruct.Q4_K_M.gguf \
-  --min-ctx 2048      \ # lower bound (default: 2048)
-  --max-ctx 131072    \ # upper bound (default: 131072)
-  --tolerance 1024      # stop when hi-lo < this (default: 1024)
+  --min-ctx 2048 \
+  --max-ctx 131072 \
+  --tolerance 1024 \
+  --runner llama-bench   # use a different runner backend (default: llama-bench)
 ```
 
 #### How it works
 
-1. Sets `lo = min_ctx`, `hi = max_ctx`.
-2. Probes the midpoint `mid = (lo + hi) / 2` by running `llama-bench` with `-n 0` (allocation-only, no generation).
-3. **Pass** (exit 0, no OOM marker in output) → `lo = mid + 1`, records `mid` as the last known-good value.
-4. **Fail** (non-zero exit code, or output contains `"out of memory"` / `"bad alloc"` / etc.) → `hi = mid - 1`.
-5. Stops when `hi - lo < tolerance` and prints the largest safe context size.
+1. Instantiates the requested runner via the registry.
+2. Sets `lo = min_ctx`, `hi = max_ctx`.
+3. Probes the midpoint `mid = (lo + hi) / 2` by calling `runner.probe_ctx()` (for llama-bench this runs with `-n 0`, allocation-only).
+4. **Pass** (no OOM) → `lo = mid + 1`, records `mid` as the last known-good value.
+5. **Fail** (non-zero exit code, or output contains `"out of memory"` / `"bad alloc"` / etc.) → `hi = mid - 1`.
+6. Stops when `hi - lo < tolerance` and prints the largest safe context size.
 
 Sample output:
 
@@ -178,12 +229,13 @@ Sample output:
 
 #### auto-limit options
 
-| Flag          | Default   | Description                                               |
-| ------------- | --------- | --------------------------------------------------------- |
-| `--model`     | _(required)_ | Path to the GGUF model file.                           |
-| `--min-ctx`   | `2048`    | Lower bound for the binary search.                        |
-| `--max-ctx`   | `131072`  | Upper bound for the binary search.                        |
-| `--tolerance` | `1024`    | Stop searching when the remaining window is this narrow.  |
+| Flag          | Default        | Description                                               |
+| ------------- | -------------- | --------------------------------------------------------- |
+| `--model`     | _(required)_   | Path to the GGUF model file.                              |
+| `--min-ctx`   | `2048`         | Lower bound for the binary search.                        |
+| `--max-ctx`   | `131072`       | Upper bound for the binary search.                        |
+| `--tolerance` | `1024`         | Stop searching when the remaining window is this narrow.  |
+| `--runner`    | `llama-bench`  | Runner backend to use for probing.                        |
 
 ### 4. View Your Hardware Profile
 
@@ -222,20 +274,64 @@ Sample output:
 This same profile is automatically included in every benchmark record written
 to `results.jsonl`.
 
+## Runner Plugins
+
+PPB uses a **pluggable runner architecture** so new benchmark backends can be added without modifying core code.
+
+### Built-in runners
+
+| `runner_type`  | Module                  | Description |
+| -------------- | ----------------------- | ----------- |
+| `llama-bench`  | `runners/llama_bench.py` | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Supports OOM probing for `auto-limit`. |
+
+### Creating a custom runner
+
+1. Create a new file (e.g. `runners/my_runner.py`).
+2. Subclass `BaseRunner` from `runners.base` and implement `setup()`, `run()`, and `teardown()`.
+3. Optionally override `probe_ctx()` if your backend supports OOM probing.
+4. Register it in `runners/__init__.py`:
+
+```python
+from .my_runner import MyRunner
+register_runner("my-runner", MyRunner)
+```
+
+5. Use it in your sweep config:
+
+```toml
+[sweep]
+runner_type = "my-runner"
+model_path  = "~/models/model.gguf"
+n_ctx       = [8192]
+n_batch     = [512]
+
+[sweep.runner_params]
+custom_option = "value"
+```
+
+### Runner contract
+
+| Method | Required | Description |
+| --- | --- | --- |
+| `setup(runner_params)` | ✅ | Called once before the sweep. Receives `[sweep.runner_params]` from TOML. |
+| `run(config) → dict \| None` | ✅ | Execute one benchmark. `config` always has `"model_path"`. Return `{"results": ...}` or `None` on failure. Must NOT write files — the orchestrator handles JSONL output. |
+| `teardown()` | ✅ | Called once after the sweep (guaranteed via `try/finally`). |
+| `probe_ctx(model_path, n_ctx) → bool` | Optional | Override to support `auto-limit`. Default raises `NotImplementedError`. |
+
 ## Contributing to the Leaderboard
 
 We are crowdsourcing a definitive database of Tokens-per-Second and Tokens-per-Watt across consumer hardware.
 
-When you run a test suite, PPB generates a `results.md` file containing your hardware fingerprint and performance metrics. To add your machine to the public database:
+To add your machine to the public database:
 
-1. Run a standardized benchmark suite (e.g., `ppb sweep suites/standard_llama3_8b.toml`).
+1. Run a benchmark sweep: `python ppb.py sweep sweep.toml`.
 2. Open an Issue in this repository titled "Benchmark Submission: [Your Hardware]".
-3. Paste the contents of `results.md` into the issue.
+3. Attach or paste the contents of your `results.jsonl`.
 
 The public leaderboard is hosted at: [poorpaul.dev](https://poorpaul.dev)
 
 ## About the Maintainers
 
-Poor Paul's Benchmark is an open-source project maintained by the team at [B2AIN](https://b2ain.com).
+Poor Paul's Benchmark is an open-source project maintained by the team at [Ximplar](https://ximplar.com).
 
-While PPB is built for the community to test and stretch consumer hardware to its limits, B2AIN specializes in taking those insights and deploying cost-effective, high-ROI "Second Brain" AI models for enterprise environments. If you need help architecting your company's local AI infrastructure, reach out to us.
+While PPB is built for the community to test and stretch consumer hardware to its limits, Ximplar specializes in taking those insights and deploying cost-effective, high-ROI AI models for enterprise environments. If you need help architecting your company's local AI infrastructure, reach out to us.

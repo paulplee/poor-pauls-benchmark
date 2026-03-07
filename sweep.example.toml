@@ -8,6 +8,14 @@
 [sweep]
 
 # -------------------------------------------------------------------
+# runner_type (optional — default: "llama-bench")
+#   Which benchmark backend to use.  Built-in options:
+#     • "llama-bench"   — llama.cpp's llama-bench (default)
+#   Future / community options: "llama-server", "vllm", etc.
+# -------------------------------------------------------------------
+# runner_type = "llama-bench"
+
+# -------------------------------------------------------------------
 # model_path (required)
 #   Accepts any of the following:
 #     • Path to a single .gguf file   → tests that model only
@@ -45,3 +53,11 @@ n_ctx = [8192, 16384, 32768]
 #   Typical values: 256, 512, 1024
 # -------------------------------------------------------------------
 n_batch = [512, 1024]
+
+# -------------------------------------------------------------------
+# [sweep.runner_params] (optional)
+#   Runner-specific overrides.  For llama-bench:
+#     llama_bench_cmd = "/path/to/llama-bench"   # override binary path
+# -------------------------------------------------------------------
+# [sweep.runner_params]
+# llama_bench_cmd = "llama-bench"
