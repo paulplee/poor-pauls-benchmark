@@ -1,8 +1,9 @@
 """
 Poor Paul's Benchmark (PPB) — CLI entry point.
 
-An automated evaluation framework for local LLM inference
-powered by llama.cpp's llama-bench.
+An automated evaluation framework for local LLM inference with a
+pluggable runner architecture.  Built-in runners: ``llama-bench``
+(raw throughput) and ``llama-server`` (TTFT / ITL latency).
 """
 
 import contextlib
@@ -40,6 +41,7 @@ from rich.progress import (
 )
 from rich.theme import Theme
 
+from datasets import download_sharegpt
 from runners import get_runner
 
 # ---------------------------------------------------------------------------
@@ -1033,6 +1035,36 @@ def download(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(name="download-dataset")
+def download_dataset(
+    dataset_dir: Optional[Path] = typer.Option(
+        None,
+        "--dataset-dir",
+        "-d",
+        help="Directory for cached dataset files (default: datasets/data/)",
+    ),
+) -> None:
+    """Download the ShareGPT conversational dataset for llama-server benchmarks.
+
+    The dataset (~300 MB) is also downloaded automatically on the first
+    ``llama-server`` benchmark run, but this command lets you pre-fetch it
+    explicitly — useful for offline or air-gapped environments.
+    """
+    console.print(
+        "[info]Downloading[/info] ShareGPT dataset "
+        "(~300 MB, first time only) …"
+    )
+    try:
+        path = download_sharegpt(dataset_dir=dataset_dir)
+        console.print(
+            f"[success]✓ Dataset ready:[/success] [bold]{path}[/bold]"
+        )
+    except Exception as exc:
+        console.print(f"[error]Dataset download failed:[/error] {exc}")
+        log.exception("Unexpected error during dataset download")
+        raise typer.Exit(code=1) from exc
+
+
 @app.command()
 def sweep(
     config: Optional[Path] = typer.Argument(
@@ -1049,7 +1081,9 @@ def sweep(
         None, "--n-batch", help="Comma-separated batch sizes, e.g. '512,1024'"
     ),
     runner: Optional[str] = typer.Option(
-        None, "--runner", help="Runner backend (default: llama-bench)"
+        None,
+        "--runner",
+        help="Runner backend: llama-bench, llama-server (default: llama-bench)",
     ),
     results_file: Optional[Path] = typer.Option(
         None,
@@ -1215,7 +1249,7 @@ def auto_limit(
     runner: Optional[str] = typer.Option(
         None,
         "--runner",
-        help="Runner backend to use for probing (default: llama-bench)",
+        help="Runner backend to use for probing: llama-bench, llama-server (default: llama-bench)",
     ),
 ) -> None:
     """Binary-search for the maximum context window before OOM.

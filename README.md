@@ -74,6 +74,8 @@ uv sync
 
 You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`).
 
+> **ShareGPT dataset:** The `llama-server` runner uses real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) (~300 MB). It is downloaded automatically on the first `llama-server` run, or you can pre-fetch it with `python ppb.py download-dataset`.
+
 ### Running Tests
 
 ```bash
@@ -384,7 +386,75 @@ Sample output:
 
 This same profile is automatically included in every benchmark record written to `results.jsonl`.
 
+### 6. Benchmark with `llama-server` (TTFT / ITL)
+
+While §3 (`sweep`) defaults to `llama-bench` for raw throughput, the `llama-server` runner measures the latency users actually feel: **Time-To-First-Token (TTFT)** and **Inter-Token Latency (ITL)**.
+
+#### Quick start
+
+**Step 1 — Ensure `llama-server` is available:**
+
+```bash
+# Option A: on your PATH after building llama.cpp
+llama-server --version
+
+# Option B: point to it explicitly
+export PPB_LLAMA_SERVER=/path/to/llama-server
+```
+
+**Step 2 — (Optional) Pre-download the ShareGPT dataset:**
+
+The `llama-server` runner sends real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered). It auto-downloads on first run (~300 MB), but you can pre-fetch it — useful if you'll be offline later:
+
+```bash
+python ppb.py download-dataset
+# ✓ Dataset ready: /…/datasets/data/ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+**Step 3 — Create a TOML suite:**
+
+```toml
+# suites/my_server.toml
+model_path  = "./models/Llama-3-8B-Instruct.Q4_K_M.gguf"
+runner_type = "llama-server"
+
+[sweep]
+n_ctx   = [8192, 16384]
+n_batch = [512]          # required by PPB but unused by llama-server
+
+[sweep.runner_params]
+num_prompts = 10         # how many ShareGPT prompts to send (default: 10)
+n_predict   = 256        # max tokens per prompt (default: 256)
+```
+
+See [`suites/suite.example.toml`](suites/suite.example.toml) for a fully commented starter config including the `llama-server` block.
+
+**Step 4 — Run:**
+
+```bash
+python ppb.py sweep suites/my_server.toml
+```
+
+Or combine with `auto-limit` to also discover the VRAM ceiling:
+
+```bash
+python ppb.py all suites/my_server.toml
+```
+
+**Step 5 — Read the results:**
+
+The JSONL output includes per-run TTFT and ITL statistics:
+
+```
+avg_ttft_ms: 142.5    p50_ttft_ms: 138.2    p99_ttft_ms: 210.7
+avg_itl_ms:   12.3    p50_itl_ms:   11.8    p99_itl_ms:   18.4
+```
+
+For the full results schema, `runner_params` reference, and internals, see [The `llama-server` Runner](#the-llama-server-runner) below.
+
 ## The `llama-server` Runner
+
+> **New here?** Start with [§6 — Benchmark with llama-server](#6-benchmark-with-llama-server-ttft--itl) above for a quick walkthrough. This section is the detailed reference.
 
 While `llama-bench` measures **raw throughput**, the `llama-server` runner captures the metrics end-users actually feel:
 

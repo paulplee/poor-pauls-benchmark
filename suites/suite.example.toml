@@ -52,8 +52,8 @@ model_path = "./models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
 # -------------------------------------------------------------------
 # runner_type (optional — default: "llama-bench")
 #   Which benchmark backend to use.  Built-in options:
-#     • "llama-bench"   — llama.cpp's llama-bench (default)
-#   Future / community options: "llama-server", "vllm", etc.
+#     • "llama-bench"    — raw throughput (tok/s) via llama.cpp's llama-bench
+#     • "llama-server"   — real-world UX latency (TTFT / ITL) via llama-server
 # -------------------------------------------------------------------
 # runner_type = "llama-bench"
 
@@ -117,3 +117,21 @@ n_batch = [512, 1024]
 # -------------------------------------------------------------------
 # [sweep.runner_params]
 # llama_bench_cmd = "llama-bench"
+
+
+# ===================================================================
+# llama-server example (real-world UX latency benchmarks)
+# ===================================================================
+#
+# To benchmark with llama-server instead of llama-bench, uncomment the
+# runner_type line above (set it to "llama-server") and uncomment the
+# runner_params block below.  The ShareGPT conversational dataset
+# (~300 MB) is downloaded automatically on the first run, or you can
+# pre-fetch it with:  ppb download-dataset
+#
+# [sweep.runner_params]
+# num_prompts      = 10        # ShareGPT prompts per benchmark run
+# n_predict        = 256       # max tokens to generate per prompt
+# health_timeout   = 120       # seconds to wait for server readiness
+# llama_server_cmd = "llama-server"   # path or name of the binary
+# dataset_dir      = "datasets/data"  # where to cache the dataset

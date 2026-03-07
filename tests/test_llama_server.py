@@ -632,3 +632,72 @@ class TestShareGPTDataset:
 
         assert isinstance(result, Path)
         mock_dl.assert_called_once()
+
+
+# ==========================================================================
+# download-dataset CLI command
+# ==========================================================================
+
+
+class TestDownloadDatasetCommand:
+    """Test the ``ppb download-dataset`` CLI command."""
+
+    def test_success(self, tmp_path: Path) -> None:
+        """Successful download prints the cached path."""
+        from typer.testing import CliRunner
+        from ppb import app
+
+        runner = CliRunner()
+        fake_path = tmp_path / "data.json"
+
+        with patch("ppb.download_sharegpt", return_value=fake_path) as mock_dl:
+            result = runner.invoke(app, ["download-dataset"])
+
+        assert result.exit_code == 0
+        assert "Dataset ready" in result.output
+        mock_dl.assert_called_once()
+
+    def test_success_with_custom_dir(self, tmp_path: Path) -> None:
+        """--dataset-dir is forwarded to download_sharegpt."""
+        from typer.testing import CliRunner
+        from ppb import app
+
+        runner = CliRunner()
+        custom_dir = tmp_path / "custom"
+        fake_path = custom_dir / "data.json"
+
+        with patch("ppb.download_sharegpt", return_value=fake_path) as mock_dl:
+            result = runner.invoke(
+                app, ["download-dataset", "--dataset-dir", str(custom_dir)]
+            )
+
+        assert result.exit_code == 0
+        mock_dl.assert_called_once_with(dataset_dir=custom_dir)
+
+    def test_download_failure(self) -> None:
+        """Network/HF error → exit code 1 with error message."""
+        from typer.testing import CliRunner
+        from ppb import app
+
+        runner = CliRunner()
+
+        with patch(
+            "ppb.download_sharegpt",
+            side_effect=OSError("Connection refused"),
+        ):
+            result = runner.invoke(app, ["download-dataset"])
+
+        assert result.exit_code == 1
+        assert "download failed" in result.output.lower()
+
+    def test_help_text(self) -> None:
+        """--help should mention ShareGPT and llama-server."""
+        from typer.testing import CliRunner
+        from ppb import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["download-dataset", "--help"])
+
+        assert result.exit_code == 0
+        assert "ShareGPT" in result.output
+        assert "llama-server" in result.output
