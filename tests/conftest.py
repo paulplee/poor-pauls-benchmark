@@ -123,25 +123,21 @@ def sweep_toml_with_runner(tmp_path: Path, tmp_model: Path) -> Path:
 
 @pytest.fixture()
 def suite_toml(tmp_path: Path, tmp_model: Path) -> Path:
-    """Write a full benchmark suite TOML (auto-limit + sweep).
-
-    Uses the shared-root-params layout: model_path and runner_type
-    are declared once at the top level.
-    """
+    """Write a full-suite TOML with [auto-limit] and [sweep] (runner_type=fake)."""
     cfg = tmp_path / "suite.toml"
     cfg.write_text(
         textwrap.dedent(f"""\
-        model_path = "{tmp_model}"
-        runner_type = "fake"
-        results = "custom_results.jsonl"
-
         [auto-limit]
+        model_path = "{tmp_model}"
         min_ctx = 1024
         max_ctx = 4096
         tolerance = 1024
+        runner_type = "fake"
 
         [sweep]
-        n_ctx = [512, 1024]
+        runner_type = "fake"
+        model_path = "{tmp_model}"
+        n_ctx = [512, 1024, 4096]
         n_batch = [256]
         """)
     )
@@ -150,14 +146,13 @@ def suite_toml(tmp_path: Path, tmp_model: Path) -> Path:
 
 @pytest.fixture()
 def suite_toml_no_autolimit(tmp_path: Path, tmp_model: Path) -> Path:
-    """Suite TOML without [auto-limit] section."""
-    cfg = tmp_path / "suite_no_al.toml"
+    """Write a TOML with only [sweep], no [auto-limit]."""
+    cfg = tmp_path / "sweep_only.toml"
     cfg.write_text(
         textwrap.dedent(f"""\
-        model_path = "{tmp_model}"
-        runner_type = "fake"
-
         [sweep]
+        runner_type = "fake"
+        model_path = "{tmp_model}"
         n_ctx = [512, 1024]
         n_batch = [256]
         """)
@@ -167,15 +162,15 @@ def suite_toml_no_autolimit(tmp_path: Path, tmp_model: Path) -> Path:
 
 @pytest.fixture()
 def suite_toml_with_results(tmp_path: Path, tmp_model: Path) -> Path:
-    """Suite TOML with explicit results path."""
-    cfg = tmp_path / "suite_results.toml"
+    """Write a TOML with root-level ``results`` field."""
+    cfg = tmp_path / "custom_out.toml"
     cfg.write_text(
         textwrap.dedent(f"""\
-        model_path = "{tmp_model}"
-        runner_type = "fake"
-        results = "my_output.jsonl"
+        results = "custom.jsonl"
 
         [sweep]
+        runner_type = "fake"
+        model_path = "{tmp_model}"
         n_ctx = [512]
         n_batch = [256]
         """)

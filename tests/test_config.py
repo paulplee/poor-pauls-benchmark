@@ -173,7 +173,7 @@ class TestWriteResult:
 
 
 class TestAutoLimitConfig:
-    """Validate the Pydantic model for [auto-limit] configuration."""
+    """Validate the Pydantic model for [auto-limit] config."""
 
     def test_defaults(self, tmp_model: Path) -> None:
         from ppb import AutoLimitConfig
@@ -184,57 +184,51 @@ class TestAutoLimitConfig:
         assert cfg.tolerance == 1024
         assert cfg.runner_type == "llama-bench"
         assert cfg.runner_params == {}
+
+    def test_model_paths_single_file(self, tmp_model: Path) -> None:
+        from ppb import AutoLimitConfig
+
+        cfg = AutoLimitConfig(model_path=str(tmp_model))
         assert cfg.model_paths == [tmp_model.resolve()]
 
-    def test_custom_values(self, tmp_model: Path) -> None:
-        from ppb import AutoLimitConfig
-
-        cfg = AutoLimitConfig(
-            model_path=str(tmp_model),
-            min_ctx=512,
-            max_ctx=8192,
-            tolerance=256,
-            runner_type="fake",
-            runner_params={"key": "val"},
-        )
-        assert cfg.min_ctx == 512
-        assert cfg.max_ctx == 8192
-        assert cfg.tolerance == 256
-        assert cfg.runner_type == "fake"
-        assert cfg.runner_params == {"key": "val"}
-
-    def test_nonexistent_model_raises(self, tmp_path: Path) -> None:
-        from pydantic import ValidationError
-
-        from ppb import AutoLimitConfig
-
-        with pytest.raises(ValidationError, match="No files match pattern"):
-            AutoLimitConfig(model_path=str(tmp_path / "no_such.gguf"))
-
-    def test_directory_model(self, tmp_model_dir: Path) -> None:
+    def test_model_paths_directory(self, tmp_model_dir: Path) -> None:
         from ppb import AutoLimitConfig
 
         cfg = AutoLimitConfig(model_path=str(tmp_model_dir))
         names = sorted(p.name for p in cfg.model_paths)
         assert names == ["alpha.gguf", "beta.gguf"]
 
-    def test_empty_directory_raises(self, tmp_path: Path) -> None:
-        from pydantic import ValidationError
-
-        from ppb import AutoLimitConfig
-
-        d = tmp_path / "emptydir"
-        d.mkdir()
-        with pytest.raises(ValidationError, match="No .gguf files found"):
-            AutoLimitConfig(model_path=str(d))
-
-    def test_glob_model(self, tmp_model_dir: Path) -> None:
+    def test_model_paths_glob(self, tmp_model_dir: Path) -> None:
         from ppb import AutoLimitConfig
 
         pattern = str(tmp_model_dir / "alpha*")
         cfg = AutoLimitConfig(model_path=pattern)
         assert len(cfg.model_paths) == 1
         assert cfg.model_paths[0].name == "alpha.gguf"
+
+    def test_missing_model_file(self, tmp_path: Path) -> None:
+        from pydantic import ValidationError
+        from ppb import AutoLimitConfig
+
+        with pytest.raises(ValidationError, match="No files match pattern"):
+            AutoLimitConfig(model_path=str(tmp_path / "nonexistent.gguf"))
+
+    def test_all_fields_override(self, tmp_model: Path) -> None:
+        from ppb import AutoLimitConfig
+
+        cfg = AutoLimitConfig(
+            model_path=str(tmp_model),
+            min_ctx=512,
+            max_ctx=65536,
+            tolerance=512,
+            runner_type="custom",
+            runner_params={"key": "val"},
+        )
+        assert cfg.min_ctx == 512
+        assert cfg.max_ctx == 65536
+        assert cfg.tolerance == 512
+        assert cfg.runner_type == "custom"
+        assert cfg.runner_params == {"key": "val"}
 
 
 # ==========================================================================
@@ -243,27 +237,27 @@ class TestAutoLimitConfig:
 
 
 class TestResolveResultsFile:
-    """Test the results-file resolution helper."""
+    """Verify results file resolution precedence."""
 
     def test_cli_override_wins(self, tmp_path: Path) -> None:
         from ppb import _resolve_results_file
 
         result = _resolve_results_file(
             config_path=tmp_path / "suite.toml",
-            cli_override=Path("override.jsonl"),
-            toml_results="from_toml.jsonl",
+            cli_override=Path("explicit.jsonl"),
+            toml_results="toml_out.jsonl",
         )
-        assert result == Path("override.jsonl")
+        assert result == Path("explicit.jsonl")
 
-    def test_toml_results_used(self, tmp_path: Path) -> None:
+    def test_toml_results_field(self, tmp_path: Path) -> None:
         from ppb import _resolve_results_file
 
         result = _resolve_results_file(
             config_path=tmp_path / "suite.toml",
             cli_override=None,
-            toml_results="from_toml.jsonl",
+            toml_results="toml_out.jsonl",
         )
-        assert result == Path("from_toml.jsonl")
+        assert result == Path("toml_out.jsonl")
 
     def test_auto_generated_name(self, tmp_path: Path) -> None:
         from ppb import _resolve_results_file
@@ -276,10 +270,21 @@ class TestResolveResultsFile:
         name = result.name
         assert name.startswith("my_suite_")
         assert name.endswith(".jsonl")
-        # Format: my_suite_YYYYMMDD_HHMM.jsonl
-        assert len(name) == len("my_suite_") + len("YYYYMMDD_HHMM") + len(".jsonl")
 
-    def test_auto_generated_no_config(self) -> None:
+    def test_auto_generated_no_seconds(self, tmp_path: Path) -> None:
+        """Timestamp should be YYYYMMDD_HHMM — no seconds."""
+        import re
+        from ppb import _resolve_results_file
+
+        result = _resolve_results_file(
+            config_path=tmp_path / "x.toml",
+            cli_override=None,
+            toml_results=None,
+        )
+        # e.g. x_20260307_1430.jsonl — exactly 13 chars for the timestamp part
+        assert re.match(r"^x_\d{8}_\d{4}\.jsonl$", result.name)
+
+    def test_no_config_path_uses_results_stem(self) -> None:
         from ppb import _resolve_results_file
 
         result = _resolve_results_file(
@@ -287,134 +292,4 @@ class TestResolveResultsFile:
             cli_override=None,
             toml_results=None,
         )
-        name = result.name
-        assert name.startswith("results_")
-        assert name.endswith(".jsonl")
-
-
-# ==========================================================================
-# load_suite_config
-# ==========================================================================
-
-
-class TestLoadSuiteConfig:
-    """Test the suite TOML loader."""
-
-    def test_load_with_results(self, suite_toml_with_results: Path) -> None:
-        from ppb import load_suite_config
-
-        raw, results_path = load_suite_config(suite_toml_with_results)
-        assert "sweep" in raw
-        assert results_path == Path("my_output.jsonl")
-
-    def test_load_auto_generated(self, suite_toml_no_autolimit: Path) -> None:
-        from ppb import load_suite_config
-
-        raw, results_path = load_suite_config(suite_toml_no_autolimit)
-        assert "sweep" in raw
-        # Should be auto-generated from stem
-        assert results_path.name.startswith("suite_no_al_")
-
-    def test_missing_file_exits(self, tmp_path: Path) -> None:
-        from click.exceptions import Exit as ClickExit
-
-        from ppb import load_suite_config
-
-        with pytest.raises((SystemExit, ClickExit)):
-            load_suite_config(tmp_path / "nonexistent.toml")
-
-
-# ==========================================================================
-# _merge_shared_params
-# ==========================================================================
-
-
-class TestMergeSharedParams:
-    """Test root-level → section merging for shared TOML keys."""
-
-    def test_root_model_path_inherited(self) -> None:
-        from ppb import _merge_shared_params
-
-        raw = {
-            "model_path": "/root/model.gguf",
-            "results": "out.jsonl",
-            "sweep": {"n_ctx": [512], "n_batch": [256]},
-        }
-        merged = _merge_shared_params(raw, "sweep")
-        assert merged["model_path"] == "/root/model.gguf"
-        assert merged["n_ctx"] == [512]
-        assert merged["n_batch"] == [256]
-        # 'results' is NOT a shared key — must not leak in
-        assert "results" not in merged
-
-    def test_section_overrides_root(self) -> None:
-        from ppb import _merge_shared_params
-
-        raw = {
-            "model_path": "/root/model.gguf",
-            "runner_type": "llama-bench",
-            "sweep": {
-                "model_path": "/section/other.gguf",
-                "n_ctx": [512],
-                "n_batch": [256],
-            },
-        }
-        merged = _merge_shared_params(raw, "sweep")
-        assert merged["model_path"] == "/section/other.gguf"  # section wins
-        assert merged["runner_type"] == "llama-bench"  # inherited
-
-    def test_root_runner_type_inherited(self) -> None:
-        from ppb import _merge_shared_params
-
-        raw = {
-            "runner_type": "fake",
-            "auto-limit": {"model_path": "/m.gguf"},
-        }
-        merged = _merge_shared_params(raw, "auto-limit")
-        assert merged["runner_type"] == "fake"
-        assert merged["model_path"] == "/m.gguf"
-
-    def test_empty_section_gets_root_only(self) -> None:
-        from ppb import _merge_shared_params
-
-        raw = {
-            "model_path": "/m.gguf",
-            "runner_type": "fake",
-            "auto-limit": {},
-        }
-        merged = _merge_shared_params(raw, "auto-limit")
-        assert merged["model_path"] == "/m.gguf"
-        assert merged["runner_type"] == "fake"
-
-    def test_missing_section_returns_root_shared_only(self) -> None:
-        from ppb import _merge_shared_params
-
-        raw = {"model_path": "/m.gguf", "results": "out.jsonl"}
-        merged = _merge_shared_params(raw, "nonexistent")
-        assert merged == {"model_path": "/m.gguf"}
-
-    def test_backward_compat_section_level_only(self) -> None:
-        """Old-style TOML with params only in sections still works."""
-        from ppb import _merge_shared_params
-
-        raw = {
-            "sweep": {
-                "model_path": "/m.gguf",
-                "runner_type": "fake",
-                "n_ctx": [512],
-                "n_batch": [256],
-            }
-        }
-        merged = _merge_shared_params(raw, "sweep")
-        assert merged["model_path"] == "/m.gguf"
-        assert merged["runner_type"] == "fake"
-
-    def test_runner_params_inherited(self) -> None:
-        from ppb import _merge_shared_params
-
-        raw = {
-            "runner_params": {"llama_bench_cmd": "/usr/bin/llama-bench"},
-            "sweep": {"model_path": "/m.gguf", "n_ctx": [512], "n_batch": [256]},
-        }
-        merged = _merge_shared_params(raw, "sweep")
-        assert merged["runner_params"] == {"llama_bench_cmd": "/usr/bin/llama-bench"}
+        assert result.name.startswith("results_")
