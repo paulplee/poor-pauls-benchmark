@@ -446,6 +446,7 @@ class SweepConfig(BaseModel):
     model_path: str  # raw value: single file, directory, or glob pattern
     n_ctx: list[int]
     n_batch: list[int]
+    concurrent_users: list[int] = Field(default_factory=lambda: [1])
     runner_type: str = "llama-bench"
     runner_params: dict[str, Any] = Field(default_factory=dict)
 
@@ -459,22 +460,23 @@ class SweepConfig(BaseModel):
         return self
 
     def combos(self) -> list["BenchCombo"]:
-        """Return the full Cartesian product of models × n_ctx × n_batch."""
+        """Return the full Cartesian product of models × n_ctx × n_batch × concurrent_users."""
         return [
-            BenchCombo(model_path=model, n_ctx=ctx, n_batch=batch)
-            for model, ctx, batch in itertools.product(
-                self.model_paths, self.n_ctx, self.n_batch
+            BenchCombo(model_path=model, n_ctx=ctx, n_batch=batch, concurrent_users=users)
+            for model, ctx, batch, users in itertools.product(
+                self.model_paths, self.n_ctx, self.n_batch, self.concurrent_users,
             )
         ]
 
 
 @dataclass
 class BenchCombo:
-    """A single (model, n_ctx, n_batch) parameter combination."""
+    """A single (model, n_ctx, n_batch, concurrent_users) parameter combination."""
 
     model_path: Path
     n_ctx: int
     n_batch: int
+    concurrent_users: int = 1
 
 
 class AutoLimitConfig(BaseModel):
@@ -578,7 +580,7 @@ def download_model(
     Parameters
     ----------
     repo_id:
-        Hugging Face repository ID, e.g. ``"bartowski/Llama-3-8B-Instruct-GGUF"``.
+        Hugging Face repository ID, e.g. ``"unsloth/Qwen3.5-0.8B-GGUF"``.
     filename_pattern:
         Glob pattern matched against the repo's file listing,
         e.g. ``"*Q4_K_M.gguf"`` or ``"*.gguf"``.
@@ -908,14 +910,17 @@ def execute_sweep(
     total = len(combos)
 
     model_names = ", ".join(f"[hw]{m.name}[/hw]" for m in cfg.model_paths)
-    console.print(
+    sweep_info = (
         f"[info]Sweep:[/info] [bold]{total}[/bold] combination(s) "
         f"across [bold]{len(cfg.model_paths)}[/bold] model(s): {model_names}\n"
         f"  Runner  : {cfg.runner_type}\n"
         f"  n_ctx   : {cfg.n_ctx}\n"
         f"  n_batch : {cfg.n_batch}\n"
-        f"  Results : [bold]{results_file.resolve()}[/bold]"
     )
+    if cfg.concurrent_users != [1]:
+        sweep_info += f"  Users   : {cfg.concurrent_users}\n"
+    sweep_info += f"  Results : [bold]{results_file.resolve()}[/bold]"
+    console.print(sweep_info)
 
     runner = get_runner(cfg.runner_type)
     runner.setup(cfg.runner_params)
@@ -935,17 +940,21 @@ def execute_sweep(
 
             for i, combo in enumerate(combos, start=1):
                 label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
+                if combo.concurrent_users > 1:
+                    label += f" users={combo.concurrent_users}"
                 progress.update(task, combo=label)
 
                 run_config: dict[str, Any] = {
                     "model_path": str(combo.model_path),
                     "n_ctx": combo.n_ctx,
                     "n_batch": combo.n_batch,
+                    "concurrent_users": combo.concurrent_users,
                 }
                 t0 = time.monotonic()
                 raw_result = runner.run(run_config)
                 elapsed = time.monotonic() - t0
 
+                record: dict[str, Any] | None
                 if raw_result is None:
                     record = None
                 else:
@@ -958,6 +967,8 @@ def execute_sweep(
                         "hardware": _hw_sniffer.snapshot(),
                         "results": raw_result["results"],
                     }
+                    if combo.concurrent_users > 1:
+                        record["concurrent_users"] = combo.concurrent_users
                     _write_result(record, results_file)
 
                 dur = f"  ({elapsed:.1f}s)"
@@ -1008,7 +1019,7 @@ app = typer.Typer(
 def download(
     repo_id: str = typer.Argument(
         ...,
-        help="Hugging Face repo ID (e.g. QuantFactory/Meta-Llama-3-8B-Instruct-GGUF)",
+        help="Hugging Face repo ID (e.g. unsloth/Qwen3.5-0.8B-GGUF)",
     ),
     filename: str = typer.Argument(
         ..., help='Glob pattern for the GGUF file (e.g. "*Q4_K_M.gguf" or "*.gguf")'
@@ -1115,6 +1126,11 @@ def sweep(
         "--runner",
         help="Runner backend: llama-bench, llama-server (default: llama-bench)",
     ),
+    concurrent_users: Optional[str] = typer.Option(
+        None,
+        "--concurrent-users",
+        help="Comma-separated concurrent user counts, e.g. '1,2,4,8' (default: 1)",
+    ),
     results_file: Optional[Path] = typer.Option(
         None,
         "--results",
@@ -1160,6 +1176,8 @@ def sweep(
             sweep_raw["n_batch"] = _parse_int_list(n_batch, "n-batch")
         if runner is not None:
             sweep_raw["runner_type"] = runner
+        if concurrent_users is not None:
+            sweep_raw["concurrent_users"] = _parse_int_list(concurrent_users, "concurrent-users")
 
         try:
             cfg = SweepConfig(**sweep_raw)
@@ -1186,11 +1204,13 @@ def sweep(
             raise typer.Exit(code=1)
 
         try:
+            cu = _parse_int_list(concurrent_users, "concurrent-users") if concurrent_users else [1]
             cfg = SweepConfig(
                 model_path=model,
                 n_ctx=_parse_int_list(n_ctx, "n-ctx"),
                 n_batch=_parse_int_list(n_batch, "n-batch"),
                 runner_type=runner or "llama-bench",
+                concurrent_users=cu,
             )
         except Exception as exc:
             console.print(f"[error]Invalid sweep config:[/error] {exc}")

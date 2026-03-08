@@ -611,6 +611,161 @@ class TestStreamCompletion:
 
 
 # ==========================================================================
+# LlamaServerRunner — _distribute_prompts
+# ==========================================================================
+
+
+class TestDistributePrompts:
+    """Test prompt distribution modes for concurrency."""
+
+    def test_shared_mode(self) -> None:
+        r = LlamaServerRunner()
+        r._prompts = ["a", "b", "c"]
+        r._prompt_distribution = "shared"
+        buckets = r._distribute_prompts(3)
+        assert len(buckets) == 3
+        for b in buckets:
+            assert b == ["a", "b", "c"]
+
+    def test_split_mode(self) -> None:
+        r = LlamaServerRunner()
+        r._prompts = ["a", "b", "c", "d", "e", "f"]
+        r._prompt_distribution = "split"
+        buckets = r._distribute_prompts(3)
+        assert buckets[0] == ["a", "d"]
+        assert buckets[1] == ["b", "e"]
+        assert buckets[2] == ["c", "f"]
+
+
+# ==========================================================================
+# LlamaServerRunner — _aggregate_metrics
+# ==========================================================================
+
+
+class TestAggregateMetrics:
+    """Test the unified metric builder."""
+
+    def _make_runner(self) -> LlamaServerRunner:
+        r = LlamaServerRunner()
+        r._n_predict = 64
+        r._prompts = ["a"] * 5
+        return r
+
+    def test_serial_metrics(self) -> None:
+        """Serial (concurrent_users=1) metrics contain standard keys only."""
+        r = self._make_runner()
+        result = r._aggregate_metrics(
+            all_ttft=[0.1, 0.2, 0.15],
+            all_itl=[0.01, 0.02, 0.015],
+            total_tokens=30,
+            successful_prompts=3,
+            total_duration=1.5,
+            concurrent_users=1,
+        )
+        assert result is not None
+        m = result["results"]
+        assert "avg_ttft_ms" in m
+        assert "p50_ttft_ms" in m
+        assert "p99_ttft_ms" in m
+        # No concurrent-specific keys
+        assert "concurrent_users" not in m
+        assert "aggregate_throughput_tok_s" not in m
+        assert "per_user_stats" not in m
+
+    def test_concurrent_metrics_have_extra_keys(self) -> None:
+        """Concurrent (users > 1) adds concurrent-specific keys."""
+        r = self._make_runner()
+        result = r._aggregate_metrics(
+            all_ttft=[0.1, 0.2],
+            all_itl=[0.01, 0.02],
+            total_tokens=20,
+            successful_prompts=2,
+            total_duration=1.0,
+            concurrent_users=4,
+            queue_times=[0.05, 0.06],
+            per_user_stats=[{"user_id": 0}, {"user_id": 1}],
+            total_attempted=4,
+        )
+        assert result is not None
+        m = result["results"]
+        assert m["concurrent_users"] == 4
+        assert "aggregate_throughput_tok_s" in m
+        assert "per_user_throughput_tok_s" in m
+        assert "avg_queue_ms" in m
+        assert m["per_user_stats"] == [{"user_id": 0}, {"user_id": 1}]
+
+    def test_zero_successful_returns_none(self) -> None:
+        r = self._make_runner()
+        result = r._aggregate_metrics(
+            all_ttft=[], all_itl=[], total_tokens=0,
+            successful_prompts=0, total_duration=1.0,
+            concurrent_users=1,
+        )
+        assert result is None
+
+
+# ==========================================================================
+# LlamaServerRunner — run routing
+# ==========================================================================
+
+
+class TestRunRouting:
+    """Ensure run() calls serial vs concurrent path based on config."""
+
+    @patch("runners.llama_server._find_free_port", return_value=12345)
+    @patch("runners.llama_server.httpx.get")
+    @patch("subprocess.Popen")
+    def test_serial_path(
+        self, mock_popen: Mock, mock_get: Mock, mock_port: Mock,
+    ) -> None:
+        """concurrent_users=1 → _run_serial."""
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.pid = 9999
+        mock_popen.return_value = proc
+        mock_get.return_value = FakeHealthResponse(200)
+
+        r = LlamaServerRunner()
+        r._cmd = "/fake/llama-server"
+        r._prompts = ["Hello"]
+        r._n_predict = 64
+        r._health_timeout = 5.0
+
+        with patch.object(r, "_run_serial", return_value={"results": {}}) as mock_serial, \
+             patch.object(r, "_run_concurrent") as mock_conc:
+            r.run({"model_path": "/f.gguf", "n_ctx": 4096, "concurrent_users": 1})
+
+        mock_serial.assert_called_once()
+        mock_conc.assert_not_called()
+
+    @patch("runners.llama_server._find_free_port", return_value=12345)
+    @patch("runners.llama_server.httpx.get")
+    @patch("subprocess.Popen")
+    def test_concurrent_path(
+        self, mock_popen: Mock, mock_get: Mock, mock_port: Mock,
+    ) -> None:
+        """concurrent_users > 1 → _run_concurrent."""
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.pid = 9999
+        mock_popen.return_value = proc
+        mock_get.return_value = FakeHealthResponse(200)
+
+        r = LlamaServerRunner()
+        r._cmd = "/fake/llama-server"
+        r._prompts = ["Hello"]
+        r._n_predict = 64
+        r._health_timeout = 5.0
+
+        with patch.object(r, "_run_concurrent", return_value={"results": {}}) as mock_conc, \
+             patch.object(r, "_run_serial") as mock_serial:
+            r.run({"model_path": "/f.gguf", "n_ctx": 4096, "concurrent_users": 4})
+
+        mock_conc.assert_called_once()
+        mock_serial.assert_not_called()
+
+
+# ==========================================================================
 # ShareGPT dataset module
 # ==========================================================================
 

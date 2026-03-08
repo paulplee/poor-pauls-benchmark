@@ -90,6 +90,28 @@ class TestSweepConfig:
         # 2 models × 2 ctx × 2 batch = 8
         assert len(combos) == 8
 
+    def test_combos_with_concurrent_users(self, tmp_model: Path) -> None:
+        cfg = self._make_config(
+            _model_file=tmp_model,
+            n_ctx=[512],
+            n_batch=[256],
+            concurrent_users=[1, 2, 4],
+        )
+        combos = cfg.combos()
+        # 1 model × 1 ctx × 1 batch × 3 users = 3
+        assert len(combos) == 3
+        user_counts = sorted(c.concurrent_users for c in combos)
+        assert user_counts == [1, 2, 4]
+
+    def test_combos_concurrent_users_default(self, tmp_model: Path) -> None:
+        """Default concurrent_users=[1] doesn't inflate combo count."""
+        cfg = self._make_config(
+            _model_file=tmp_model, n_ctx=[512, 1024], n_batch=[256],
+        )
+        combos = cfg.combos()
+        assert len(combos) == 2
+        assert all(c.concurrent_users == 1 for c in combos)
+
     def test_combos_fields(self, tmp_model: Path) -> None:
         cfg = self._make_config(
             _model_file=tmp_model, n_ctx=[1024], n_batch=[256]
@@ -115,6 +137,21 @@ class TestBenchCombo:
         assert c.model_path == Path("/m.gguf")
         assert c.n_ctx == 4096
         assert c.n_batch == 512
+
+    def test_concurrent_users_default(self) -> None:
+        from ppb import BenchCombo
+
+        c = BenchCombo(model_path=Path("/m.gguf"), n_ctx=4096, n_batch=512)
+        assert c.concurrent_users == 1
+
+    def test_concurrent_users_set(self) -> None:
+        from ppb import BenchCombo
+
+        c = BenchCombo(
+            model_path=Path("/m.gguf"), n_ctx=4096, n_batch=512,
+            concurrent_users=8,
+        )
+        assert c.concurrent_users == 8
 
 
 # ==========================================================================

@@ -234,6 +234,56 @@ class TestExecuteSweep:
         with pytest.raises((SystemExit, ClickExit)):
             execute_sweep(results_file=tmp_path / "r.jsonl", config_path=cfg)
 
+    def test_concurrent_users_in_cartesian_product(
+        self, tmp_path: Path, tmp_model: Path,
+    ) -> None:
+        """concurrent_users adds another axis to the Cartesian product."""
+        from ppb import execute_sweep
+
+        cfg = _sweep_toml(
+            tmp_path, str(tmp_model),
+            n_ctx="[512]", n_batch="[256]",
+            concurrent_users="[1, 2]",
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(results_file=results, config_path=cfg)
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 2  # 1 model × 1 ctx × 1 batch × 2 users
+
+    def test_concurrent_users_in_envelope(
+        self, tmp_path: Path, tmp_model: Path,
+    ) -> None:
+        """concurrent_users > 1 adds the field to the JSONL envelope."""
+        from ppb import execute_sweep
+
+        cfg = _sweep_toml(
+            tmp_path, str(tmp_model),
+            n_ctx="[512]", n_batch="[256]",
+            concurrent_users="[4]",
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(results_file=results, config_path=cfg)
+
+        record = json.loads(results.read_text().strip())
+        assert record["concurrent_users"] == 4
+
+    def test_concurrent_users_1_not_in_envelope(
+        self, tmp_path: Path, tmp_model: Path,
+    ) -> None:
+        """concurrent_users == 1 should NOT appear in the envelope."""
+        from ppb import execute_sweep
+
+        cfg = _sweep_toml(
+            tmp_path, str(tmp_model),
+            n_ctx="[512]", n_batch="[256]",
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(results_file=results, config_path=cfg)
+
+        record = json.loads(results.read_text().strip())
+        assert "concurrent_users" not in record
+
     def test_unknown_runner_type(self, tmp_path: Path, tmp_model: Path) -> None:
         """An unregistered runner_type must produce a clear error."""
         from click.exceptions import Exit as ClickExit

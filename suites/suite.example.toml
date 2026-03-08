@@ -111,6 +111,19 @@ n_ctx = [8192, 16384, 32768]
 n_batch = [512, 1024]
 
 # -------------------------------------------------------------------
+# concurrent_users (optional — default: [1])
+#   List of concurrent user counts to test.
+#   Added to the Cartesian product: models × n_ctx × n_batch × users.
+#   Only meaningful for the "llama-server" runner; ignored by llama-bench.
+#   Any positive integers are accepted — there is no hard upper limit.
+#
+#   Examples:
+#     concurrent_users = [1]                   # single user (default)
+#     concurrent_users = [1, 2, 4, 8, 16, 32]  # measure latency under load
+# -------------------------------------------------------------------
+# concurrent_users = [1, 2, 4, 8, 16, 32]
+
+# -------------------------------------------------------------------
 # [sweep.runner_params] (optional)
 #   Runner-specific overrides.  For llama-bench:
 #     llama_bench_cmd = "/path/to/llama-bench"   # override binary path
@@ -142,3 +155,23 @@ n_batch = [512, 1024]
 # dataset_filename   = "ShareGPT_V3_unfiltered_cleaned_split.json"
 # shuffle            = false     # randomise prompt order
 # seed               = 42       # RNG seed for reproducible shuffling
+
+
+# ===================================================================
+# llama-server-loadtest example (auto-discover max concurrent users)
+# ===================================================================
+#
+# The loadtest runner escalates concurrent users (1, 2, 4, 8, …) against
+# a single server instance and reports the max sustainable user count plus
+# the full concurrency curve.
+#
+# runner_type = "llama-server-loadtest"
+#
+# [sweep.runner_params]
+# max_users          = 64        # highest concurrency level to try
+# user_steps         = [1, 2, 4, 8, 16, 32]  # explicit levels (optional)
+# error_threshold    = 0.1       # stop when > 10 % prompts fail
+# ramp_delay_s       = 1.0       # pause between levels
+# num_prompts        = 5         # prompts per user per level
+# n_predict          = 256       # max tokens per prompt
+# prompt_distribution = "shared" # "shared" or "split"

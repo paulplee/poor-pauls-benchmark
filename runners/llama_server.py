@@ -11,10 +11,16 @@ UX-relevant latency metrics:
 
 These complement the raw throughput numbers from ``llama-bench`` with
 user-experience data that matters for interactive applications.
+
+Supports **concurrent user simulation**: set ``concurrent_users`` in the
+sweep config to send multiple prompts simultaneously and measure how
+latency degrades under load.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json as _json
 import logging
 import os
 import signal
@@ -31,45 +37,24 @@ from datasets import download_dataset, load_sharegpt_prompts
 from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 
 from .base import BaseRunner
+from ._server_mixin import (
+    ServerMixin,
+    find_free_port,
+    percentile,
+    _HEALTH_POLL_INTERVAL_S,
+    _HEALTH_TIMEOUT_S,
+    _SERVER_STOP_TIMEOUT_S,
+    _DEFAULT_N_PREDICT,
+)
 
 log = logging.getLogger("ppb")
 
 # ---------------------------------------------------------------------------
-# Constants
+# Backward-compat aliases (used by tests and external code)
 # ---------------------------------------------------------------------------
 
-_HEALTH_POLL_INTERVAL_S = 0.5  # seconds between /health polls
-_HEALTH_TIMEOUT_S = 120  # max seconds to wait for server readiness
-_SERVER_STOP_TIMEOUT_S = 5  # seconds to wait after SIGTERM before SIGKILL
-_DEFAULT_N_PREDICT = 256  # max tokens to generate per prompt
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _find_free_port() -> int:
-    """Return a free TCP port on localhost.
-
-    Binds to port 0 (OS-assigned), reads the allocated port, then
-    closes the socket immediately.  A small race window exists between
-    close and the server binding, but it's negligible in practice.
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _percentile(data: list[float], pct: int) -> float:
-    """Return the *pct*-th percentile of *data* (nearest-rank method).
-
-    *data* must be non-empty and pre-sorted.
-    """
-    if not data:
-        return 0.0
-    k = max(0, min(len(data) - 1, int(len(data) * pct / 100)))
-    return data[k]
+_find_free_port = find_free_port
+_percentile = percentile
 
 
 def _parse_sse_lines(raw_lines: list[str]) -> list[dict[str, Any]]:
@@ -82,8 +67,6 @@ def _parse_sse_lines(raw_lines: list[str]) -> list[dict[str, Any]]:
     Lines that are empty, comments (``:``) , or ``data: [DONE]`` are
     skipped.  Returns a list of parsed JSON dicts.
     """
-    import json
-
     payloads: list[dict[str, Any]] = []
     for line in raw_lines:
         line = line.strip()
@@ -94,8 +77,8 @@ def _parse_sse_lines(raw_lines: list[str]) -> list[dict[str, Any]]:
             if not body or body == "[DONE]":
                 continue
             try:
-                payloads.append(json.loads(body))
-            except json.JSONDecodeError:
+                payloads.append(_json.loads(body))
+            except _json.JSONDecodeError:
                 log.debug("Skipping unparseable SSE body: %s", body[:120])
     return payloads
 
@@ -105,12 +88,16 @@ def _parse_sse_lines(raw_lines: list[str]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-class LlamaServerRunner(BaseRunner):
+class LlamaServerRunner(ServerMixin, BaseRunner):
     """Benchmark runner that starts ``llama-server`` and streams completions.
 
     Collects real-world UX metrics — **TTFT** and **ITL** — by sending
     conversational prompts to the ``/completion`` endpoint with SSE
     streaming enabled.
+
+    When ``concurrent_users`` > 1 in the run config, prompts are sent
+    by multiple simulated users in parallel via ``asyncio``, measuring
+    how latency degrades under load.
 
     runner_params
     -------------
@@ -137,6 +124,10 @@ class LlamaServerRunner(BaseRunner):
         (default: ``false``).
     seed : int
         RNG seed for reproducible shuffling (optional).
+    prompt_distribution : str
+        How prompts are divided among concurrent users:
+        ``"shared"`` (default) — each user gets all prompts;
+        ``"split"`` — prompts are round-robined across users.
     """
 
     runner_type: str = "llama-server"
@@ -148,18 +139,19 @@ class LlamaServerRunner(BaseRunner):
         self._health_timeout: float = _HEALTH_TIMEOUT_S
         self._process: subprocess.Popen[str] | None = None
         self._port: int = 0
+        self._prompt_distribution: str = "shared"
 
     # ---- lifecycle ----------------------------------------------------------
 
     def setup(self, runner_params: dict[str, Any]) -> None:
         """Resolve binary, download dataset, load prompts."""
-        self._cmd = runner_params.get(
-            "llama_server_cmd",
-            os.getenv("PPB_LLAMA_SERVER", "llama-server"),
-        )
+        self._cmd = self.resolve_server_cmd(runner_params)
         self._n_predict = int(runner_params.get("n_predict", _DEFAULT_N_PREDICT))
         self._health_timeout = float(
             runner_params.get("health_timeout", _HEALTH_TIMEOUT_S)
+        )
+        self._prompt_distribution = str(
+            runner_params.get("prompt_distribution", "shared")
         )
 
         num_prompts = int(runner_params.get("num_prompts", 10))
@@ -195,6 +187,8 @@ class LlamaServerRunner(BaseRunner):
             Must contain ``"model_path"`` (str) and ``"n_ctx"`` (int).
             ``"n_batch"`` is accepted but not used by this runner
             (llama-server manages its own batching).
+            ``"concurrent_users"`` (int, default 1) — number of
+            simulated users sending prompts simultaneously.
 
         Returns
         -------
@@ -203,6 +197,7 @@ class LlamaServerRunner(BaseRunner):
         """
         model_path = config["model_path"]
         n_ctx = config["n_ctx"]
+        concurrent_users = int(config.get("concurrent_users", 1))
 
         # --- start server ---------------------------------------------------
         try:
@@ -214,7 +209,17 @@ class LlamaServerRunner(BaseRunner):
             log.error("Failed to start llama-server: %s", exc)
             return None
 
-        # --- run prompts and collect metrics ---------------------------------
+        # --- choose execution path -------------------------------------------
+        try:
+            if concurrent_users <= 1:
+                return self._run_serial(proc)
+            else:
+                return self._run_concurrent(proc, concurrent_users)
+        finally:
+            self._stop_server(proc)
+
+    def _run_serial(self, proc: subprocess.Popen[str]) -> dict | None:
+        """Original serial prompt execution — one prompt at a time."""
         base_url = f"http://127.0.0.1:{self._port}"
         all_ttft: list[float] = []
         all_itl: list[float] = []
@@ -222,32 +227,249 @@ class LlamaServerRunner(BaseRunner):
         successful_prompts = 0
         t_start = time.monotonic()
 
-        try:
-            with httpx.Client(base_url=base_url, timeout=300.0) as client:
-                for i, prompt in enumerate(self._prompts, 1):
-                    log.debug("Prompt %d/%d (%d chars)", i, len(self._prompts), len(prompt))
-                    result = self._stream_completion(client, prompt)
-                    if result is not None:
-                        ttft, itl_list, n_tokens = result
-                        all_ttft.append(ttft)
-                        all_itl.extend(itl_list)
-                        total_tokens += n_tokens
-                        successful_prompts += 1
-        finally:
-            self._stop_server(proc)
+        with httpx.Client(base_url=base_url, timeout=300.0) as client:
+            for i, prompt in enumerate(self._prompts, 1):
+                log.debug("Prompt %d/%d (%d chars)", i, len(self._prompts), len(prompt))
+                result = self._stream_completion(client, prompt)
+                if result is not None:
+                    ttft, itl_list, n_tokens = result
+                    all_ttft.append(ttft)
+                    all_itl.extend(itl_list)
+                    total_tokens += n_tokens
+                    successful_prompts += 1
+
+        total_duration = time.monotonic() - t_start
+        return self._aggregate_metrics(
+            all_ttft, all_itl, total_tokens, successful_prompts,
+            total_duration, concurrent_users=1,
+        )
+
+    def _run_concurrent(
+        self, proc: subprocess.Popen[str], concurrent_users: int,
+    ) -> dict | None:
+        """Send prompts from *concurrent_users* simulated users in parallel."""
+        user_prompts = self._distribute_prompts(concurrent_users)
+        return asyncio.run(
+            self._async_run(concurrent_users, user_prompts)
+        )
+
+    def _distribute_prompts(self, concurrent_users: int) -> list[list[str]]:
+        """Split ``self._prompts`` among users based on distribution mode."""
+        if self._prompt_distribution == "split":
+            buckets: list[list[str]] = [[] for _ in range(concurrent_users)]
+            for i, p in enumerate(self._prompts):
+                buckets[i % concurrent_users].append(p)
+            return buckets
+        # "shared" — every user gets the full prompt list
+        return [list(self._prompts) for _ in range(concurrent_users)]
+
+    async def _async_run(
+        self,
+        concurrent_users: int,
+        user_prompts: list[list[str]],
+    ) -> dict | None:
+        """Async entry point: launch *concurrent_users* tasks, aggregate."""
+        base_url = f"http://127.0.0.1:{self._port}"
+        t_start = time.monotonic()
+
+        async with httpx.AsyncClient(
+            base_url=base_url, timeout=300.0,
+        ) as client:
+            tasks = [
+                self._async_user_session(client, prompts, user_id)
+                for user_id, prompts in enumerate(user_prompts)
+            ]
+            user_results = await asyncio.gather(*tasks)
 
         total_duration = time.monotonic() - t_start
 
+        # Flatten results from all users
+        all_ttft: list[float] = []
+        all_itl: list[float] = []
+        all_queue: list[float] = []
+        total_tokens = 0
+        successful_prompts = 0
+        per_user_stats: list[dict[str, Any]] = []
+
+        for uid, uresult in enumerate(user_results):
+            u_ttft = uresult["ttft"]
+            u_itl = uresult["itl"]
+            u_queue = uresult["queue"]
+            u_tokens = uresult["tokens"]
+            u_succeeded = uresult["succeeded"]
+            u_attempted = uresult["attempted"]
+
+            all_ttft.extend(u_ttft)
+            all_itl.extend(u_itl)
+            all_queue.extend(u_queue)
+            total_tokens += u_tokens
+            successful_prompts += u_succeeded
+
+            # Per-user breakdown
+            sorted_u_ttft = sorted(u_ttft)
+            sorted_u_itl = sorted(u_itl) if u_itl else [0.0]
+            per_user_stats.append({
+                "user_id": uid,
+                "prompts_attempted": u_attempted,
+                "prompts_succeeded": u_succeeded,
+                "tokens": u_tokens,
+                "avg_ttft_ms": round(statistics.mean(sorted_u_ttft) * 1000, 2) if sorted_u_ttft else 0.0,
+                "p50_ttft_ms": round(percentile(sorted_u_ttft, 50) * 1000, 2),
+                "avg_itl_ms": round(statistics.mean(sorted_u_itl) * 1000, 2) if sorted_u_itl else 0.0,
+                "p50_itl_ms": round(percentile(sorted_u_itl, 50) * 1000, 2),
+            })
+
+        total_attempted = sum(r["attempted"] for r in user_results)
+        return self._aggregate_metrics(
+            all_ttft, all_itl, total_tokens, successful_prompts,
+            total_duration, concurrent_users,
+            queue_times=all_queue,
+            per_user_stats=per_user_stats,
+            total_attempted=total_attempted,
+        )
+
+    async def _async_user_session(
+        self,
+        client: httpx.AsyncClient,
+        prompts: list[str],
+        user_id: int,
+    ) -> dict[str, Any]:
+        """One simulated user: send prompts sequentially, collect metrics."""
+        ttft_list: list[float] = []
+        itl_list: list[float] = []
+        queue_list: list[float] = []
+        tokens = 0
+        succeeded = 0
+
+        for i, prompt in enumerate(prompts):
+            log.debug("User %d prompt %d/%d (%d chars)", user_id, i + 1, len(prompts), len(prompt))
+            result = await self._astream_completion(client, prompt)
+            if result is not None:
+                ttft, itl, n_tokens, queue_time = result
+                ttft_list.append(ttft)
+                itl_list.extend(itl)
+                queue_list.append(queue_time)
+                tokens += n_tokens
+                succeeded += 1
+
+        return {
+            "ttft": ttft_list,
+            "itl": itl_list,
+            "queue": queue_list,
+            "tokens": tokens,
+            "succeeded": succeeded,
+            "attempted": len(prompts),
+        }
+
+    async def _astream_completion(
+        self,
+        client: httpx.AsyncClient,
+        prompt: str,
+    ) -> tuple[float, list[float], int, float] | None:
+        """Async version of :meth:`_stream_completion` with queue-time tracking.
+
+        Returns
+        -------
+        tuple[float, list[float], int, float] | None
+            ``(ttft_seconds, itl_list_seconds, token_count, queue_seconds)``
+            or *None* on failure.
+        """
+        payload = {
+            "prompt": prompt,
+            "n_predict": self._n_predict,
+            "stream": True,
+        }
+
+        t_request = time.monotonic()
+        t_first_byte: float | None = None
+        t_first_token: float | None = None
+        token_timestamps: list[float] = []
+        n_tokens = 0
+
+        try:
+            async with client.stream("POST", "/completion", json=payload) as response:
+                if t_first_byte is None:
+                    t_first_byte = time.monotonic()
+
+                if response.status_code != 200:
+                    body = await response.aread()
+                    log.warning(
+                        "/completion returned %d: %s",
+                        response.status_code,
+                        body.decode()[:200],
+                    )
+                    return None
+
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line or line.startswith(":") or not line.startswith("data:"):
+                        continue
+
+                    body_str = line[len("data:"):].strip()
+                    if not body_str or body_str == "[DONE]":
+                        continue
+
+                    try:
+                        event = _json.loads(body_str)
+                    except Exception:
+                        continue
+
+                    content = event.get("content", "")
+                    if not content:
+                        continue
+
+                    now = time.monotonic()
+                    n_tokens += 1
+
+                    if t_first_token is None:
+                        t_first_token = now
+                    else:
+                        token_timestamps.append(now)
+
+        except httpx.HTTPError as exc:
+            log.warning("Completion request failed: %s", exc)
+            return None
+
+        if t_first_token is None or n_tokens == 0:
+            log.debug("No tokens received for prompt (len=%d)", len(prompt))
+            return None
+
+        ttft = t_first_token - t_request
+        queue_time = (t_first_byte - t_request) if t_first_byte else ttft
+
+        # ITL: gaps between consecutive token arrivals.
+        itl_list: list[float] = []
+        prev = t_first_token
+        for ts in token_timestamps:
+            itl_list.append(ts - prev)
+            prev = ts
+
+        return ttft, itl_list, n_tokens, queue_time
+
+    def _aggregate_metrics(
+        self,
+        all_ttft: list[float],
+        all_itl: list[float],
+        total_tokens: int,
+        successful_prompts: int,
+        total_duration: float,
+        concurrent_users: int,
+        *,
+        queue_times: list[float] | None = None,
+        per_user_stats: list[dict[str, Any]] | None = None,
+        total_attempted: int | None = None,
+    ) -> dict | None:
+        """Build the metrics dict from collected timing data."""
         if successful_prompts == 0:
             log.error("All prompts failed — no metrics to report")
             return None
 
-        # --- aggregate metrics -----------------------------------------------
+        attempted = total_attempted if total_attempted is not None else len(self._prompts)
         sorted_ttft = sorted(all_ttft)
         sorted_itl = sorted(all_itl) if all_itl else [0.0]
 
         metrics: dict[str, Any] = {
-            "num_prompts_attempted": len(self._prompts),
+            "num_prompts_attempted": attempted,
             "num_prompts_succeeded": successful_prompts,
             "n_predict": self._n_predict,
             "total_tokens": total_tokens,
@@ -257,26 +479,42 @@ class LlamaServerRunner(BaseRunner):
             else 0.0,
             # TTFT — Time-To-First-Token (milliseconds)
             "avg_ttft_ms": round(statistics.mean(sorted_ttft) * 1000, 2),
-            "p50_ttft_ms": round(_percentile(sorted_ttft, 50) * 1000, 2),
-            "p99_ttft_ms": round(_percentile(sorted_ttft, 99) * 1000, 2),
+            "p50_ttft_ms": round(percentile(sorted_ttft, 50) * 1000, 2),
+            "p99_ttft_ms": round(percentile(sorted_ttft, 99) * 1000, 2),
             # ITL — Inter-Token Latency (milliseconds)
             "avg_itl_ms": round(statistics.mean(sorted_itl) * 1000, 2)
             if sorted_itl
             else 0.0,
-            "p50_itl_ms": round(_percentile(sorted_itl, 50) * 1000, 2),
-            "p99_itl_ms": round(_percentile(sorted_itl, 99) * 1000, 2),
+            "p50_itl_ms": round(percentile(sorted_itl, 50) * 1000, 2),
+            "p99_itl_ms": round(percentile(sorted_itl, 99) * 1000, 2),
         }
+
+        # Concurrent-specific metrics (only when concurrent_users > 1)
+        if concurrent_users > 1:
+            metrics["concurrent_users"] = concurrent_users
+            metrics["aggregate_throughput_tok_s"] = metrics["throughput_tok_s"]
+            metrics["per_user_throughput_tok_s"] = round(
+                metrics["throughput_tok_s"] / concurrent_users, 2
+            )
+            if queue_times:
+                sorted_q = sorted(queue_times)
+                metrics["avg_queue_ms"] = round(statistics.mean(sorted_q) * 1000, 2)
+                metrics["p50_queue_ms"] = round(percentile(sorted_q, 50) * 1000, 2)
+                metrics["p99_queue_ms"] = round(percentile(sorted_q, 99) * 1000, 2)
+            if per_user_stats:
+                metrics["per_user_stats"] = per_user_stats
 
         log.info(
             "llama-server benchmark: %d/%d prompts, %d tokens, "
-            "TTFT p50=%.1fms p99=%.1fms, ITL p50=%.1fms p99=%.1fms",
+            "TTFT p50=%.1fms p99=%.1fms, ITL p50=%.1fms p99=%.1fms%s",
             successful_prompts,
-            len(self._prompts),
+            attempted,
             total_tokens,
             metrics["p50_ttft_ms"],
             metrics["p99_ttft_ms"],
             metrics["p50_itl_ms"],
             metrics["p99_itl_ms"],
+            f", {concurrent_users} concurrent users" if concurrent_users > 1 else "",
         )
 
         return {"results": metrics}
@@ -285,7 +523,7 @@ class LlamaServerRunner(BaseRunner):
         """Safety-net: kill any lingering server process."""
         if self._process is not None and self._process.poll() is None:
             log.warning("teardown: killing lingering llama-server (pid %d)", self._process.pid)
-            self._stop_server(self._process)
+            self.stop_server(self._process)
             self._process = None
 
     # ---- optional: probe_ctx ------------------------------------------------
@@ -298,85 +536,22 @@ class LlamaServerRunner(BaseRunner):
         timeout or launch failure returns *False*.
         """
         try:
-            proc = self._start_server(model_path, n_ctx)
+            proc = self.start_server(model_path, n_ctx)
         except (TimeoutError, OSError):
             return False
         else:
-            self._stop_server(proc)
+            self.stop_server(proc)
             return True
 
-    # ---- internal -----------------------------------------------------------
+    # ---- internal (delegate to mixin) ---------------------------------------
 
     def _start_server(self, model_path: Path, n_ctx: int) -> subprocess.Popen[str]:
-        """Launch ``llama-server`` and wait for ``/health`` to become OK."""
-        self._port = _find_free_port()
-        cmd: list[str] = [
-            self._cmd,
-            "-m", str(model_path),
-            "-c", str(n_ctx),
-            "--host", "127.0.0.1",
-            "--port", str(self._port),
-        ]
-
-        log.debug("Starting llama-server: %s", " ".join(cmd))
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self._process = proc
-
-        # Poll /health until the server is ready.
-        url = f"http://127.0.0.1:{self._port}/health"
-        deadline = time.monotonic() + self._health_timeout
-
-        while time.monotonic() < deadline:
-            # Check server hasn't crashed.
-            if proc.poll() is not None:
-                stderr = proc.stderr.read() if proc.stderr else ""
-                raise OSError(
-                    f"llama-server exited with code {proc.returncode} "
-                    f"before becoming healthy.\nstderr: {stderr[:500]}"
-                )
-            try:
-                resp = httpx.get(url, timeout=2.0)
-                if resp.status_code == 200:
-                    log.debug("llama-server healthy on port %d", self._port)
-                    return proc
-            except httpx.ConnectError:
-                pass  # server not listening yet
-            except httpx.TimeoutException:
-                pass  # health endpoint slow
-
-            time.sleep(_HEALTH_POLL_INTERVAL_S)
-
-        # Timed out — kill and raise.
-        self._stop_server(proc)
-        raise TimeoutError(
-            f"llama-server did not become healthy within "
-            f"{self._health_timeout}s on port {self._port}"
-        )
+        """Delegate to :meth:`ServerMixin.start_server`."""
+        return self.start_server(model_path, n_ctx)
 
     def _stop_server(self, proc: subprocess.Popen[str]) -> None:
-        """Gracefully stop the server: SIGTERM → wait → SIGKILL."""
-        if proc.poll() is not None:
-            return  # already exited
-
-        log.debug("Stopping llama-server (pid %d)", proc.pid)
-        try:
-            proc.send_signal(signal.SIGTERM)
-            proc.wait(timeout=_SERVER_STOP_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            log.warning("SIGTERM timed out — sending SIGKILL to pid %d", proc.pid)
-            proc.kill()
-            proc.wait(timeout=5)
-        except OSError:
-            pass  # process already gone
-
-        if proc is self._process:
-            self._process = None
+        """Delegate to :meth:`ServerMixin.stop_server`."""
+        self.stop_server(proc)
 
     def _stream_completion(
         self,
@@ -422,9 +597,7 @@ class LlamaServerRunner(BaseRunner):
                         continue
 
                     try:
-                        import json
-
-                        event = json.loads(body)
+                        event = _json.loads(body)
                     except Exception:
                         continue
 

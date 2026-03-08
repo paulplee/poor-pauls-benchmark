@@ -24,6 +24,7 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 - **Real-World UX Metrics:** The `llama-server` runner streams completions from real ShareGPT conversational prompts, measuring **Time-To-First-Token (TTFT)** and **Inter-Token Latency (ITL)** — the numbers that matter for interactive applications.
 - **Integrated Model Downloader:** Native integration with Hugging Face Hub to download, cache, and symlink GGUF models directly via the CLI.
 - **Automated Hardware Fingerprinting:** PPB automatically detects your OS, RAM, CPU architecture, and GPU details (via `pynvml` on Linux/Windows or `system_profiler` on macOS). Hardware profiles are embedded in every result record and can be viewed any time with `ppb hw-info`.
+- **Concurrent User Simulation:** Measure how latency degrades under load by setting `concurrent_users = [1, 2, 4, 8, 16, 32]` (or any values you like — there is no hard upper limit) in your sweep config. The `llama-server-loadtest` runner auto-discovers maximum sustainable concurrency.
 - **Stable Result Envelope:** Every JSONL record includes `runner_type`, `timestamp`, and `hardware` — so results from different runners or years apart remain comparable.
 
 ## Project Structure
@@ -33,8 +34,10 @@ ppb.py                 # CLI entry point (Typer app)
 runners/
   __init__.py          # Runner registry (register_runner / get_runner)
   base.py              # BaseRunner ABC — contract for all backends
+  _server_mixin.py     # Shared server start/stop/health-check logic
   llama_bench.py       # Built-in llama-bench runner (raw throughput)
   llama_server.py      # Built-in llama-server runner (TTFT / ITL latency)
+  llama_server_loadtest.py  # Load-test runner (max concurrency discovery)
 datasets/
   __init__.py          # Dataset download & loading helpers
   sharegpt.py          # ShareGPT download (HF Hub) + prompt extraction
@@ -145,7 +148,7 @@ Sample output (each iteration shows per-probe duration):
   iter  3: n_ctx= 82,687  ✓ pass  → window [82,688, 98,814]   (3.1s)
   ...
 
-✓ Maximum safe context for Llama-3-8B-Instruct.Q4_K_M.gguf
+✓ Maximum safe context for unsloth/Qwen3.5-0.8B-Q4_K_M.gguf
 
     90,111 tokens
 ```
@@ -198,7 +201,7 @@ python ppb.py sweep suites/my_gpu.toml --results results/my_results.jsonl
 
 ```bash
 python ppb.py sweep \
-  --model ./models/Llama-3-8B-Q4_K_M.gguf \
+  --model ./models/Qwen3.5-0.8B-GGUF \
   --n-ctx 8192,16384,32768 \
   --n-batch 512,1024
 ```
@@ -227,16 +230,17 @@ Shared fields (`model_path`, `runner_type`, `runner_params`) can live at the **t
 | `model_path`    | string (path)    | ✅       |                 | Path to a `.gguf` file, directory of `.gguf` files, or a glob pattern. Relative paths are resolved from the working directory. |
 | `n_ctx`         | list of integers | ✅       |                 | Context sizes to test. Controls KV cache depth — larger values stress longer-context workloads, e.g. `[8192, 16384, 32768]`. |
 | `n_batch`       | list of integers | ✅       |                 | Batch sizes for prompt processing, e.g. `[512, 1024]`. Used by `llama-bench`; accepted but unused by `llama-server` (it manages its own batching). |
+| `concurrent_users` | list of integers |          | `[1]`           | Number of simulated users sending requests in parallel. Only meaningful for `llama-server` and `llama-server-loadtest` runners. Any positive integers are accepted — e.g. `[1, 2, 4, 8, 16, 32]`. There is no hard upper limit. |
 | `runner_type`   | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below. |
 | `runner_params` | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below. |
 
-PPB computes the full Cartesian product of `model_paths × n_ctx × n_batch`, so 2 models × 3 contexts × 2 batches = 12 combinations.
+PPB computes the full Cartesian product of `model_paths × n_ctx × n_batch × concurrent_users`, so 2 models × 3 contexts × 2 batches × 3 user counts = 36 combinations. When `concurrent_users` is omitted (defaults to `[1]`), the product stays the same as before.
 
 ##### Example: exhaustive sweep across multiple quantisations
 
 ```toml
 [sweep]
-model_path = "~/models/Llama-3*Q4*.gguf"   # all Q4 quants in the folder
+model_path = "~/models/*Q4*.gguf"   # all Q4 quants in the folder
 n_ctx   = [8192, 16384, 32768]
 n_batch = [256, 512, 1024]
 ```
@@ -258,14 +262,15 @@ llama_bench_cmd = "/opt/llama.cpp/build/bin/llama-bench"
 
 #### Choosing a runner
 
-PPB ships with two runners — pick the one that matches your evaluation goal:
+PPB ships with three runners — pick the one that matches your evaluation goal:
 
 | Runner | Measures | Best for |
 | --- | --- | --- |
 | `llama-bench` *(default)* | Raw throughput (tok/s) | Finding peak hardware performance, comparing quants |
 | `llama-server` | **TTFT** and **ITL** latency | UX-relevant benchmarks for interactive / chat applications |
+| `llama-server-loadtest` | Max concurrent users, concurrency curve | Capacity planning — how many users your hardware can serve |
 
-Both runners use the same `ppb sweep` command — just set `runner_type` in your TOML.
+All three runners use the same `ppb sweep` command — just set `runner_type` in your TOML.
 
 ##### Setting up `llama-server` sweeps
 
@@ -294,7 +299,7 @@ python ppb.py download-dataset --repo "my-org/my-dataset" --filename "convos.jso
 
 ```toml
 # suites/my_server.toml
-model_path  = "./models/Llama-3-8B-Instruct.Q4_K_M.gguf"
+model_path  = "./models/Qwen3.5-0.8B-Q4_K_M.gguf"
 runner_type = "llama-server"
 
 [sweep]
@@ -332,6 +337,26 @@ avg_itl_ms:   12.3    p50_itl_ms:   11.8    p99_itl_ms:   18.4
 | `dataset_repo` | string | `anon8231489123/ShareGPT_Vicuna_unfiltered` | HF Hub repository ID for the prompt dataset. |
 | `dataset_filename` | string | `ShareGPT_V3_unfiltered_cleaned_split.json` | File to download from the repository. |
 | `shuffle` | bool | `false` | Randomise prompt order so repeated runs use different workloads. |
+| `seed` | int | _(none)_ | RNG seed for reproducible shuffling. |
+| `prompt_distribution` | string | `"shared"` | How prompts are assigned when `concurrent_users > 1`. `"shared"` = all users get the same prompts; `"split"` = prompts are divided among users (each gets `num_prompts / N`). |
+
+##### `llama-server-loadtest` runner_params reference
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `max_users` | int | `64` | Stop escalating when this concurrency level is reached. |
+| `user_steps` | list of ints | powers of 2 up to `max_users` | Explicit concurrency levels to test, e.g. `[1, 2, 4, 8, 16]`. |
+| `error_threshold` | float | `0.1` | Fraction of failed requests that marks a level as unsustainable. |
+| `ramp_delay_s` | float | `2.0` | Seconds to pause between concurrency levels. |
+| `num_prompts` | int | `10` | Number of prompts each user sends per level. |
+| `n_predict` | int | `256` | Max tokens to generate per prompt. |
+| `prompt_distribution` | string | `"shared"` | Same as `llama-server` — `"shared"` or `"split"`. |
+| `llama_server_cmd` | string | `llama-server` | Path or name of the binary. |
+| `health_timeout` | int/float | `120` | Seconds to wait for `/health` to return 200. |
+| `dataset_dir` | string | `datasets/data/` | Directory for cached dataset files. |
+| `dataset_repo` | string | `anon8231489123/ShareGPT_Vicuna_unfiltered` | HF Hub repository ID for the prompt dataset. |
+| `dataset_filename` | string | `ShareGPT_V3_unfiltered_cleaned_split.json` | File to download from the repository. |
+| `shuffle` | bool | `false` | Randomise prompt order. |
 | `seed` | int | _(none)_ | RNG seed for reproducible shuffling. |
 
 ##### Sample `llama-server` results
@@ -494,6 +519,82 @@ Sample output:
 
 This same profile is automatically included in every benchmark record written to `results.jsonl`.
 
+---
+
+## Concurrent User Benchmarking
+
+PPB can simulate multiple users hitting the server at the same time so you can see how latency degrades under load.
+
+### Option A: `concurrent_users` sweep axis (controlled, repeatable)
+
+Add `concurrent_users` to your sweep config to test exact user counts:
+
+```toml
+[sweep]
+model_path   = "~/models/Qwen3.5-9B-Q4_K_M.gguf"
+n_ctx        = [8192]
+n_batch      = [512]
+runner_type  = "llama-server"
+# Any positive integers are valid — there is no hard upper limit.
+concurrent_users = [1, 2, 4, 8, 16, 32]
+
+[sweep.runner_params]
+n_predict = 256
+prompt_distribution = "shared"   # all users get the same prompt (default)
+# prompt_distribution = "split"  # each user gets a different prompt
+```
+
+Or from the CLI:
+
+```bash
+uv run ppb.py sweep --model ~/models/*.gguf --n-ctx 8192 --n-batch 512 \
+    --runner llama-server --concurrent-users 1,2,4,8,16,32
+```
+
+Each JSONL record at `concurrent_users > 1` includes extra fields:
+
+| Field | Description |
+|---|---|
+| `concurrent_users` | Number of simulated parallel users |
+| `ttft_per_user_ms` | List of TTFT values — one per user |
+| `itl_per_user_ms` | List of median ITL values — one per user |
+| `queue_time_per_user_ms` | Time each user waited before receiving the first SSE event |
+| `aggregate_tok_s` | Combined token throughput across all users |
+
+### Option B: `llama-server-loadtest` runner (auto-discovery)
+
+The load-test runner **automatically escalates** concurrency until it finds the breaking point:
+
+```toml
+[sweep]
+model_path   = "~/models/Qwen3.5-9B-Q4_K_M.gguf"
+n_ctx        = [8192]
+n_batch      = [512]
+runner_type  = "llama-server-loadtest"
+
+[sweep.runner_params]
+max_users        = 64    # stop escalation at this level
+error_threshold  = 0.1   # >10% errors = failure
+ramp_delay_s     = 2.0   # pause between levels
+# user_steps     = [1, 2, 4, 8, 16, 32, 64]  # custom; default = powers of 2
+```
+
+Results include:
+
+```json
+{
+  "max_sustainable_users": 8,
+  "error_threshold": 0.1,
+  "concurrency_curve": [
+    {"concurrent_users": 1, "error_rate": 0.0, "ttft_p50_ms": 42, ...},
+    {"concurrent_users": 2, "error_rate": 0.0, "ttft_p50_ms": 65, ...},
+    {"concurrent_users": 4, "error_rate": 0.0, "ttft_p50_ms": 120, ...},
+    {"concurrent_users": 8, "error_rate": 0.05, "ttft_p50_ms": 310, ...},
+    {"concurrent_users": 16, "error_rate": 0.25}
+  ]
+}
+```
+
 ## Runner Plugins
 
 PPB uses a **pluggable runner architecture** so new benchmark backends can be added without modifying core code.
@@ -503,7 +604,8 @@ PPB uses a **pluggable runner architecture** so new benchmark backends can be ad
 | `runner_type`   | Module                   | Description |
 | --------------- | ------------------------ | ----------- |
 | `llama-bench`   | `runners/llama_bench.py`  | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Measures raw throughput (tok/s). Supports OOM probing for `auto-limit`. |
-| `llama-server`  | `runners/llama_server.py` | Starts `llama-server` as a subprocess, streams real ShareGPT conversational prompts via SSE, and records **TTFT** and **ITL** latency metrics. Supports `auto-limit`. |
+| `llama-server`  | `runners/llama_server.py` | Starts `llama-server` as a subprocess, streams real ShareGPT conversational prompts via SSE, and records **TTFT** and **ITL** latency metrics. Supports `auto-limit` and **concurrent user simulation**. |
+| `llama-server-loadtest` | `runners/llama_server_loadtest.py` | Escalates concurrent users (1 → 2 → 4 → …) againt a single server instance. Reports the max sustainable user count and a full **concurrency curve** with TTFT/ITL/queue metrics at each level. |
 
 ### Creating a custom runner
 
