@@ -2,11 +2,11 @@
 
 Find the absolute limit of your local AI hardware without the enterprise budget.
 
-AI-driven GPU and RAM prices got you down? It certain got me feeling a lot poorer. I can't turn back the clock and go back to normal prices. About the only thing I can do is to get myself more informed in how I can best use the little hardware that I can muster.
+AI-driven GPU and RAM prices got you down? It certain got me feeling a lot poorer. I can't turn back the clock to the "normal" times, but I can try to get myself more informed in how I can best use the little hardware that I can muster.
 
-Poor Paul's Benchmark is an automated evaluation framework for local LLM inference. It ships with a **pluggable runner architecture** — built-in runners wrap `llama.cpp`'s `llama-bench` (raw throughput) and `llama-server` (real-world UX latency), and new backends (vLLM, Stable Diffusion, …) can be added without touching core code.
+Poor Paul's Benchmark is an automated evaluation framework for local LLM inference. It uses a **pluggable runner architecture** — built-in runners wrap `llama.cpp`'s `llama-bench` (raw throughput) and `llama-server` (real-world UX latency), and new backends (vLLM, Stable Diffusion, …) can be added without touching core code.
 
-My goal is to build the definitive public leaderboard for cost-effective AI setups, helping homelabbers, prosumers, and small businesses answer the question: _What is the most efficient hardware for my AI workload?_
+My goal is to build the definitive public leaderboard for cost-effective AI setups, helping homelabbers (me), prosumers (me), and small businesses (and me) answer the question: _What is the most efficient hardware / model / settings for my AI workload?_
 
 ## The Problem
 
@@ -14,14 +14,14 @@ Evaluating local LLM performance across heterogeneous hardware (Apple Silicon, d
 
 ## The Solution
 
-PPB automates the tedious parts of benchmarking so you can focus on the data.
+PPB automates the tedious parts of benchmarking so you can focus on studying the results and agonizing over what to sacrifice.
 
 ### Key Features
 
-- **Pluggable Runner Architecture:** Benchmark backends are implemented as plugins inheriting from `BaseRunner`. Swap `llama-bench` for `llama-server`, `vllm`, or your own backend by setting `runner_type` in the sweep config.
-- **Real-World UX Metrics:** The `llama-server` runner streams completions from real ShareGPT conversational prompts, measuring **Time-To-First-Token (TTFT)** and **Inter-Token Latency (ITL)** — the numbers that matter for interactive applications.
-- **Declarative Parameter Sweeps:** Define your test matrices in a simple TOML file. PPB will automatically iterate through every combination of batch size, context length, and GPU layers.
+- **Pluggable Runner Architecture:** Benchmark backends are implemented as plugins inheriting from `BaseRunner`. Swap `llama-bench` (implemented) for `llama-server` (implemented), `vllm` (not yet implemented), or your own backend by setting `runner_type` in the sweep config.
 - **Auto-Discover VRAM Limits:** Using a binary search algorithm, PPB automatically probes your hardware to find the exact maximum context size a specific model can handle before triggering an OOM error.
+- **Declarative Parameter Sweeps:** Define your test matrices in a simple TOML file. PPB will automatically iterate through every combination of GGUF models, batch size, context length, and GPU layers.
+- **Real-World UX Metrics:** The `llama-server` runner streams completions from real ShareGPT conversational prompts, measuring **Time-To-First-Token (TTFT)** and **Inter-Token Latency (ITL)** — the numbers that matter for interactive applications.
 - **Integrated Model Downloader:** Native integration with Hugging Face Hub to download, cache, and symlink GGUF models directly via the CLI.
 - **Automated Hardware Fingerprinting:** PPB automatically detects your OS, RAM, CPU architecture, and GPU details (via `pynvml` on Linux/Windows or `system_profiler` on macOS). Hardware profiles are embedded in every result record and can be viewed any time with `ppb hw-info`.
 - **Stable Result Envelope:** Every JSONL record includes `runner_type`, `timestamp`, and `hardware` — so results from different runners or years apart remain comparable.
@@ -92,7 +92,8 @@ python -m pytest tests/ -v
 Easily fetch GGUF files from Hugging Face:
 
 ```bash
-python ppb.py download QuantFactory/Meta-Llama-3-8B-Instruct-GGUF "*Q4_K_M.gguf"
+# Download all the Q4 variants of the unsloth/Qwen3.5-0.8B-GGUF series
+python ppb.py download unsloth/Qwen3.5-0.8B-GGUF "*Q4*.gguf"
 ```
 
 ### 2. Find Your VRAM Limit (`auto-limit`)
@@ -102,7 +103,7 @@ PPB can automatically discover the maximum context window your hardware supports
 **CLI-only mode:**
 
 ```bash
-python ppb.py auto-limit --model ./models/Llama-3-8B-Instruct.Q4_K_M.gguf
+python ppb.py auto-limit --model ./models/Qwen3.5-0.8B-Q4_K_M.gguf
 # Or a whole directory / glob pattern:
 python ppb.py auto-limit --model ./models/
 python ppb.py auto-limit --model "./models/*Q4*.gguf"
@@ -118,7 +119,7 @@ python ppb.py auto-limit suites/my_gpu.toml
 
 ```bash
 python ppb.py auto-limit \
-  --model ~/models/Llama-3-8B-Instruct.Q4_K_M.gguf \
+  --model ~/models/Qwen3.5-0.8B-Q4_K_M.gguf \
   --min-ctx 2048 \
   --max-ctx 131072 \
   --tolerance 1024 \
@@ -163,7 +164,7 @@ Sample output (each iteration shows per-probe duration):
 #### auto-limit TOML section
 
 ```toml
-model_path  = "~/models/Llama-3-8B-Q4_K_M.gguf"   # single file, dir, or glob
+model_path  = "~/models/Qwen3.5-0.8B-Q4_K_M.gguf"   # single file, dir, or glob
 runner_type = "llama-bench"  # optional (shared across sections)
 
 [auto-limit]
@@ -179,7 +180,7 @@ When `model_path` points to a directory or glob pattern, auto-limit probes **eac
 Create a `suite.toml` file to define your test matrix (a starter config is included at [`suites/suite.example.toml`](suites/suite.example.toml)):
 
 ```toml
-model_path = "./models/Llama-3-8B-Instruct.Q4_K_M.gguf"
+model_path = "./models/Qwen3.5-0.8B-Q4_K_M.gguf"
 
 [sweep]
 n_ctx    = [8192, 16384, 32768]

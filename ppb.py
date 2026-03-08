@@ -833,7 +833,7 @@ def execute_auto_limit(
 
         progress.update(task, detail="done", completed=est_iters)
 
-    safe = last_good if last_good else lo
+    safe = last_good
 
     runner.teardown()
     return safe

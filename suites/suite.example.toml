@@ -47,7 +47,7 @@
 #
 #   Relative paths are resolved from the directory where you run ppb.
 # -------------------------------------------------------------------
-model_path = "./models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+# model_path = "./models/"
 
 # -------------------------------------------------------------------
 # runner_type (optional — default: "llama-bench")
