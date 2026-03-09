@@ -1022,11 +1022,10 @@ def execute_sweep(
                         "model": combo.model,
                         "n_ctx": combo.n_ctx,
                         "n_batch": combo.n_batch,
+                        "concurrent_users": combo.concurrent_users,
                         "hardware": _hw_sniffer.snapshot(),
                         "results": raw_result["results"],
                     }
-                    if combo.concurrent_users > 1:
-                        record["concurrent_users"] = combo.concurrent_users
                     _write_result(record, results_file)
 
                 dur = f"  ({elapsed:.1f}s)"

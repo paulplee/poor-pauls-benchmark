@@ -80,7 +80,19 @@ def _get_benchmark_version() -> str:
     try:
         return importlib.metadata.version("poor-pauls-benchmark")
     except importlib.metadata.PackageNotFoundError:
-        return "unknown"
+        pass
+    # Fallback: read version from pyproject.toml when not pip-installed
+    try:
+        import tomllib
+
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        if pyproject.is_file():
+            with open(pyproject, "rb") as f:
+                data = tomllib.load(f)
+            return data.get("project", {}).get("version", "unknown")
+    except Exception:  # noqa: BLE001
+        pass
+    return "unknown"
 
 
 def _norm(value: Any) -> Any:

@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import textwrap
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +25,7 @@ from tests.conftest import FakeRunner
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _register_fake_runner():
@@ -137,8 +137,10 @@ class TestExecuteSweep:
             captured.append(r)
             return r
 
-        with patch("ppb.get_runner", side_effect=spy_get), \
-             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with (
+            patch("ppb.get_runner", side_effect=spy_get),
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
+        ):
             execute_sweep(results_file=results, config_path=cfg)
 
         assert len(captured) == 1
@@ -146,9 +148,7 @@ class TestExecuteSweep:
         assert r.setup_called
         assert r._params == {"custom_key": "custom_value"}
 
-    def test_runner_teardown_called(
-        self, tmp_path: Path, tmp_model: Path
-    ) -> None:
+    def test_runner_teardown_called(self, tmp_path: Path, tmp_model: Path) -> None:
         from ppb import execute_sweep
 
         captured: list[FakeRunner] = []
@@ -162,15 +162,15 @@ class TestExecuteSweep:
         cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
 
-        with patch("ppb.get_runner", side_effect=spy_get), \
-             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with (
+            patch("ppb.get_runner", side_effect=spy_get),
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
+        ):
             execute_sweep(results_file=results, config_path=cfg)
 
         assert captured[0].teardown_called
 
-    def test_teardown_called_on_failure(
-        self, tmp_path: Path, tmp_model: Path
-    ) -> None:
+    def test_teardown_called_on_failure(self, tmp_path: Path, tmp_model: Path) -> None:
         """teardown() must be called even when all runs fail."""
         from ppb import execute_sweep
 
@@ -186,17 +186,17 @@ class TestExecuteSweep:
         cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
 
-        with patch("ppb.get_runner", side_effect=spy_get), \
-             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with (
+            patch("ppb.get_runner", side_effect=spy_get),
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
+        ):
             execute_sweep(results_file=results, config_path=cfg)
 
         assert captured[0].teardown_called
         # No results should be written
         assert not results.exists() or results.read_text().strip() == ""
 
-    def test_failed_run_not_written(
-        self, tmp_path: Path, tmp_model: Path
-    ) -> None:
+    def test_failed_run_not_written(self, tmp_path: Path, tmp_model: Path) -> None:
         """When runner.run() returns None, no JSONL line should be written."""
         from ppb import execute_sweep
 
@@ -210,16 +210,16 @@ class TestExecuteSweep:
         cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
 
-        with patch("ppb.get_runner", side_effect=spy_get), \
-             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with (
+            patch("ppb.get_runner", side_effect=spy_get),
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
+        ):
             execute_sweep(results_file=results, config_path=cfg)
 
         content = results.read_text().strip() if results.exists() else ""
         assert content == ""
 
-    def test_result_envelope_structure(
-        self, tmp_path: Path, tmp_model: Path
-    ) -> None:
+    def test_result_envelope_structure(self, tmp_path: Path, tmp_model: Path) -> None:
         """Every JSONL record must have the stable envelope fields."""
         from ppb import execute_sweep
 
@@ -253,14 +253,18 @@ class TestExecuteSweep:
             execute_sweep(results_file=tmp_path / "r.jsonl", config_path=cfg)
 
     def test_concurrent_users_in_cartesian_product(
-        self, tmp_path: Path, tmp_model: Path,
+        self,
+        tmp_path: Path,
+        tmp_model: Path,
     ) -> None:
         """concurrent_users adds another axis to the Cartesian product."""
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, tmp_model,
-            n_ctx="[512]", n_batch="[256]",
+            tmp_path,
+            tmp_model,
+            n_ctx="[512]",
+            n_batch="[256]",
             concurrent_users="[1, 2]",
         )
         results = tmp_path / "results.jsonl"
@@ -271,14 +275,18 @@ class TestExecuteSweep:
         assert len(lines) == 2  # 1 model × 1 ctx × 1 batch × 2 users
 
     def test_concurrent_users_in_envelope(
-        self, tmp_path: Path, tmp_model: Path,
+        self,
+        tmp_path: Path,
+        tmp_model: Path,
     ) -> None:
         """concurrent_users > 1 adds the field to the JSONL envelope."""
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, tmp_model,
-            n_ctx="[512]", n_batch="[256]",
+            tmp_path,
+            tmp_model,
+            n_ctx="[512]",
+            n_batch="[256]",
             concurrent_users="[4]",
         )
         results = tmp_path / "results.jsonl"
@@ -288,22 +296,26 @@ class TestExecuteSweep:
         record = json.loads(results.read_text().strip())
         assert record["concurrent_users"] == 4
 
-    def test_concurrent_users_1_not_in_envelope(
-        self, tmp_path: Path, tmp_model: Path,
+    def test_concurrent_users_1_in_envelope(
+        self,
+        tmp_path: Path,
+        tmp_model: Path,
     ) -> None:
-        """concurrent_users == 1 should NOT appear in the envelope."""
+        """concurrent_users == 1 should appear in the envelope."""
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, tmp_model,
-            n_ctx="[512]", n_batch="[256]",
+            tmp_path,
+            tmp_model,
+            n_ctx="[512]",
+            n_batch="[256]",
         )
         results = tmp_path / "results.jsonl"
         with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(results_file=results, config_path=cfg)
 
         record = json.loads(results.read_text().strip())
-        assert "concurrent_users" not in record
+        assert record["concurrent_users"] == 1
 
     def test_unknown_runner_type(self, tmp_path: Path, tmp_model: Path) -> None:
         """An unregistered runner_type must produce a clear error."""
@@ -324,8 +336,10 @@ class TestExecuteSweep:
             """)
         )
 
-        with pytest.raises((ValueError, SystemExit, ClickExit)), \
-             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with (
+            pytest.raises((ValueError, SystemExit, ClickExit)),
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
+        ):
             execute_sweep(results_file=tmp_path / "r.jsonl", config_path=cfg)
 
 
@@ -415,7 +429,8 @@ class TestExecuteSweepMaxCtxCap:
         results = tmp_path / "results.jsonl"
         with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(
-                results_file=results, config_path=cfg,
+                results_file=results,
+                config_path=cfg,
                 max_ctx_caps={tmp_model.resolve(): 1024},
             )
 
@@ -443,13 +458,12 @@ class TestExecuteSweepMaxCtxCap:
         """When every requested n_ctx exceeds cap, the cap is injected and used."""
         from ppb import execute_sweep
 
-        cfg = _sweep_toml(
-            tmp_path, tmp_model, n_ctx="[4096, 8192]", n_batch="[256]"
-        )
+        cfg = _sweep_toml(tmp_path, tmp_model, n_ctx="[4096, 8192]", n_batch="[256]")
         results = tmp_path / "results.jsonl"
         with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(
-                results_file=results, config_path=cfg,
+                results_file=results,
+                config_path=cfg,
                 max_ctx_caps={tmp_model.resolve(): 1024},
             )
 
@@ -588,7 +602,6 @@ class TestRunAll:
         self, tmp_path: Path, suite_toml: Path, tmp_model: Path
     ) -> None:
         """vram-cliff should run, then sweep respects the cap."""
-        from ppb import run_all
         from typer.testing import CliRunner
         from ppb import app
 
@@ -658,8 +671,10 @@ class TestRunAll:
             return r
 
         runner = CliRunner()
-        with patch("ppb.get_runner", side_effect=spy_get), \
-             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with (
+            patch("ppb.get_runner", side_effect=spy_get),
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
+        ):
             result = runner.invoke(
                 app, ["all", str(cfg), "--results", str(tmp_path / "r.jsonl")]
             )
@@ -674,9 +689,7 @@ class TestRunAll:
 class TestBackwardCompat:
     """Ensure existing sweep.toml files without runner_type still work."""
 
-    def test_default_runner_type_in_toml(
-        self, tmp_path: Path, tmp_model: Path
-    ) -> None:
+    def test_default_runner_type_in_toml(self, tmp_path: Path, tmp_model: Path) -> None:
         """A TOML with no runner_type must default to 'llama-bench'."""
         from ppb import SweepConfig
 
