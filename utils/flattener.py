@@ -244,7 +244,7 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
     if runner_type == "llama-bench" and isinstance(results, list):
         return _flatten_llama_bench(envelope, hw_fields, cuda_version, results, raw_payload)
     elif runner_type == "llama-server" and isinstance(results, dict):
-        return [_flatten_llama_server(envelope, hw_fields, results, raw_payload)]
+        return [_flatten_llama_server(envelope, hw_fields, cuda_version, results, raw_payload)]
     elif runner_type == "llama-server-loadtest" and isinstance(results, dict):
         return [_flatten_llama_server_loadtest(envelope, hw_fields, results, raw_payload)]
     else:
@@ -335,6 +335,7 @@ def _flatten_llama_bench(
 def _flatten_llama_server(
     envelope: dict[str, Any],
     hw_fields: dict[str, Any],
+    cuda_version: str | None,
     results: dict[str, Any],
     raw_payload: str,
 ) -> dict[str, Any]:
@@ -342,6 +343,12 @@ def _flatten_llama_server(
     flat = _new_row()
     flat.update(envelope)
     flat.update(hw_fields)
+    # Infer compute backend from hardware (llama-bench emits this directly;
+    # llama-server does not, so we derive it from the detected platform).
+    if flat.get("os_system") == "Darwin":
+        flat["backends"] = flat.get("gpu_driver") or "Metal"
+    elif flat.get("gpu_name"):
+        flat["backends"] = f"CUDA {cuda_version}" if cuda_version else "CUDA"
     flat["throughput_tok_s"] = results.get("throughput_tok_s")
     flat["avg_ttft_ms"] = results.get("avg_ttft_ms")
     flat["p50_ttft_ms"] = results.get("p50_ttft_ms")

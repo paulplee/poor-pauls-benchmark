@@ -344,13 +344,31 @@ class HardwareSniffer:
                             gpus.append(current)
                         current = {"name": line.split(":", 1)[1].strip()}
                     elif line.startswith("VRAM") and current:
-                        current["vram"] = line.split(":", 1)[1].strip()
+                        vram_str = line.split(":", 1)[1].strip()  # e.g. "8 GB"
+                        m = re.match(r"([\d.]+)\s*GB", vram_str, re.IGNORECASE)
+                        if m:
+                            current["vram_total_gb"] = float(m.group(1))
                     elif line.startswith("Metal Support:") and current:
-                        current["metal_version"] = line.split(":", 1)[1].strip()
+                        # Use Metal version as the driver identifier on macOS
+                        current["driver"] = line.split(":", 1)[1].strip()
                     elif line.startswith("Total Number of Cores:") and current:
                         # GPU cores on Apple Silicon
                         current["gpu_cores"] = line.split(":", 1)[1].strip()
                 if current:
+                    # Apple Silicon uses unified memory — no dedicated VRAM line.
+                    # Fall back to total system RAM as the GPU memory budget.
+                    if "vram_total_gb" not in current:
+                        try:
+                            mem_out = subprocess.check_output(
+                                ["sysctl", "-n", "hw.memsize"],
+                                text=True,
+                                timeout=5,
+                            )
+                            current["vram_total_gb"] = round(
+                                int(mem_out.strip()) / (1024 ** 3), 1
+                            )
+                        except (subprocess.SubprocessError, FileNotFoundError, ValueError):
+                            pass
                     gpus.append(current)
             except (subprocess.SubprocessError, FileNotFoundError):
                 pass
