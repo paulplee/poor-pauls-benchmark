@@ -443,7 +443,7 @@ def _ensure_models(
     paths = download_model(
         repo_id,
         filename,
-        models_dir=Path(models_dir),
+        models_dir=Path(models_dir).expanduser(),
         token=token,
     )
     return [(p, f"{repo_id}/{p.name}") for p in paths]
@@ -634,7 +634,7 @@ def download_model(
     RepositoryNotFoundError
         If the repository does not exist or authentication failed.
     """
-    dest = models_dir or DEFAULT_MODELS_DIR
+    dest = (models_dir or DEFAULT_MODELS_DIR).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
 
     # --- resolve the glob pattern to exact filenames -------------------------
