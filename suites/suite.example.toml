@@ -181,18 +181,21 @@ n_batch = [512, 1024]
 # [publish]  — auto-publish results to the PPB Hugging Face leaderboard
 # ===================================================================
 #
-# When enabled, `ppb all` will automatically flatten and upload your
-# results to the central PPB dataset (poor-paul/ppb-results) after the
-# sweep completes — "shoot and forget" benchmarking to leaderboard.
+# When enabled, `ppb all` will automatically flatten your results to a
+# local CSV and upload them to the central PPB dataset (poor-paul/ppb-results)
+# after the sweep completes — "shoot and forget" benchmarking to leaderboard.
+#
+# Set upload = false to write the CSV without pushing to Hugging Face
+# (you can always upload later with `ppb publish --results ... --upload`).
 #
 # You can also publish manually at any time:
-#   uv run ppb.py publish --results results/my_results.jsonl
+#   uv run ppb.py publish --results results/my_results.jsonl          # CSV only
+#   uv run ppb.py publish --results results/my_results.jsonl --upload  # CSV + HF
 #
-# Authentication: run `huggingface-cli login` once, or set the HF_TOKEN
-# environment variable, or put the token here (not recommended for
-# version-controlled files).
+# Authentication:  set HF_TOKEN in your .env file (recommended),
+# or run `huggingface-cli login` once.  Do NOT put tokens in this file.
 #
 # [publish]
 # enabled   = true              # must be true to activate (default: false)
 # submitter = "Your Name"       # display name for the leaderboard
-# token     = ""                # HF token (prefer HF_TOKEN env or CLI login)
+# upload    = true              # push to HF (default: true for ppb all)

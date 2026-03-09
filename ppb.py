@@ -1521,18 +1521,33 @@ def run_all(
         console.print("\n[info]Phase 3 / 3:[/info] publish to Hugging Face")
         pub_cfg = raw["publish"]
         submitter = pub_cfg.get("submitter", "")
-        token = pub_cfg.get("token")
+        token = pub_cfg.get("token") or None  # normalise "" → None → env fallback
+        do_upload = pub_cfg.get("upload", True)  # default True for ppb-all compat
 
         flat_rows = _flatten_results_file(resolved_results, submitter=submitter)
         if flat_rows:
-            try:
-                url = publish_to_hf(flat_rows, token=token)
+            # Always write a local CSV alongside the results file
+            csv_path = resolved_results.with_suffix(".csv")
+            _write_csv(flat_rows, csv_path)
+            console.print(
+                f"  Wrote [bold]{len(flat_rows)}[/bold] row(s) → "
+                f"[bold]{csv_path.resolve()}[/bold]"
+            )
+
+            if do_upload:
+                try:
+                    url = publish_to_hf(flat_rows, token=token)
+                    console.print(
+                        f"\n[success]✅ Published {len(flat_rows)} row(s) to Hugging Face.[/success]\n"
+                        f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
+                    )
+                except Exception as exc:
+                    console.print(f"\n[error]Publish failed:[/error] {exc}")
+            else:
                 console.print(
-                    f"\n[success]✅ Published {len(flat_rows)} row(s) to Hugging Face.[/success]\n"
-                    f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
+                    "\n[info]Upload disabled ([bold]upload = false[/bold] in [publish]). "
+                    "CSV written — run [bold]ppb publish --upload[/bold] to push to HF.[/info]"
                 )
-            except Exception as exc:
-                console.print(f"\n[error]Publish failed:[/error] {exc}")
         else:
             console.print("[warning]No rows to publish.[/warning]")
     elif "publish" in raw:
@@ -1566,6 +1581,22 @@ def _flatten_results_file(
                     flat["submitter"] = submitter
                 flat_rows.append(flat)
     return flat_rows
+
+
+def _write_csv(flat_rows: list[dict[str, Any]], output_path: Path) -> None:
+    """Write flat rows to a CSV file (union of all keys, insertion order)."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for r in flat_rows:
+        for k in r:
+            if k not in seen:
+                fieldnames.append(k)
+                seen.add(k)
+    with output_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(flat_rows)
 
 
 @app.command(name="export")
@@ -1603,19 +1634,7 @@ def export_cmd(
     suffix = output_file.suffix.lower()
 
     if suffix == ".csv":
-        # Union of all keys across rows, preserving insertion order
-        fieldnames: list[str] = []
-        seen: set[str] = set()
-        for r in flat_rows:
-            for k in r:
-                if k not in seen:
-                    fieldnames.append(k)
-                    seen.add(k)
-
-        with output_file.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(flat_rows)
+        _write_csv(flat_rows, output_file)
     elif suffix == ".jsonl":
         with output_file.open("w", encoding="utf-8") as fh:
             for r in flat_rows:
@@ -1644,6 +1663,11 @@ def publish_cmd(
         exists=True,
         readable=True,
     ),
+    upload: bool = typer.Option(
+        False,
+        "--upload/--no-upload",
+        help="Upload to the PPB Hugging Face leaderboard (default: local CSV only)",
+    ),
     token: Optional[str] = typer.Option(
         None,
         "--token",
@@ -1652,7 +1676,11 @@ def publish_cmd(
         help="Hugging Face API token (or set HF_TOKEN / run huggingface-cli login)",
     ),
 ) -> None:
-    """Publish flattened benchmark results to the PPB Hugging Face leaderboard."""
+    """Flatten results to a local CSV and optionally upload to the PPB leaderboard.
+
+    By default, only writes a CSV file alongside the input JSONL — perfect for
+    reviewing in Excel before sharing.  Add --upload to push to Hugging Face.
+    """
     submitter = typer.prompt(
         "Display name for the leaderboard (leave blank to skip)",
         default="",
@@ -1666,10 +1694,23 @@ def publish_cmd(
         console.print("[warning]No rows found in results file.[/warning]")
         raise typer.Exit(code=1)
 
+    # -- Always write a local CSV ------------------------------------------
+    csv_path = results.with_suffix(".csv")
+    _write_csv(flat_rows, csv_path)
     console.print(
-        f"  Flattened [bold]{len(flat_rows)}[/bold] row(s). Uploading…"
+        f"\n[success]✅ Exported {len(flat_rows)} row(s) to CSV[/success] → "
+        f"[bold]{csv_path.resolve()}[/bold]\n"
+        f"  📊 Excel-ready!"
     )
 
+    # -- Upload to HF (opt-in) ---------------------------------------------
+    if not upload:
+        console.print(
+            "\n[info]To upload to the leaderboard, re-run with [bold]--upload[/bold].[/info]"
+        )
+        return
+
+    console.print("  Uploading to Hugging Face…")
     try:
         url = publish_to_hf(flat_rows, token=token)
     except Exception as exc:
@@ -1677,7 +1718,7 @@ def publish_cmd(
         raise typer.Exit(code=1) from exc
 
     console.print(
-        f"\n[success]✅ Success! Your normalized data has been pushed to Hugging Face.[/success]\n"
+        f"\n[success]✅ Published to Hugging Face![/success]\n"
         f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
     )
 

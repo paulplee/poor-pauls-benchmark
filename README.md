@@ -488,7 +488,7 @@ n_batch    = [512, 1024]
 [publish]
 enabled   = true
 submitter = "Your Name"
-# token   = ""   # or set HF_TOKEN env var
+# upload  = true   # set false to write CSV only (default: true)
 ```
 
 When multiple models are matched, Phase 1 probes each one independently.
@@ -548,16 +548,22 @@ Output format is inferred from the file extension: `.csv` → CSV, anything else
 
 ### 7. Publish to Leaderboard
 
-Upload your flattened results directly to the central PPB dataset on Hugging Face:
+Flatten your raw JSONL results to a local CSV and optionally upload to the central PPB dataset on Hugging Face:
 
 ```bash
+# Step 1 — flatten to a local CSV (review in Excel first)
 python ppb.py publish --results results/my_run.jsonl
+
+# Step 2 — when you’re happy, upload to the leaderboard
+python ppb.py publish --results results/my_run.jsonl --upload
 ```
 
-You'll be prompted for a display name.  Authentication uses (in order):
+The CSV is written alongside the input file (e.g. `results/my_run.csv`).
+
+Authentication for `--upload` uses (in order):
 
 1. `--token` flag
-2. `HF_TOKEN` environment variable
+2. `HF_TOKEN` environment variable (recommended — set in `.env`)
 3. Cached `huggingface-cli login` credential
 
 Results land in `submissions/results_<timestamp>_<uuid>.jsonl` inside the [`poor-paul/ppb-results`](https://huggingface.co/datasets/poor-paul/ppb-results) repository.
@@ -700,7 +706,7 @@ python ppb.py all suites/my_gpu.toml   # add [publish] section to auto-upload
 Or manually:
 
 1. Run a benchmark sweep: `python ppb.py all suites/my_gpu.toml`.
-2. Publish your results: `python ppb.py publish --results results/my_run.jsonl`.
+2. Publish your results: `python ppb.py publish --results results/my_run.jsonl --upload`.
 
 You can also open an Issue titled "Benchmark Submission: [Your Hardware]" and attach your results file.
 
