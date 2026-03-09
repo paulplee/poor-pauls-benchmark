@@ -69,7 +69,7 @@ class BaseRunner(ABC):
 
         Override this in runners that support OOM probing.  The default
         implementation raises :exc:`NotImplementedError` so callers get a
-        clear message when a runner does not support ``auto-limit``.
+        clear message when a runner does not support ``vram-cliff``.
         """
         raise NotImplementedError(
             f"Runner {self.runner_type!r} does not support context-size probing."

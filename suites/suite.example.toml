@@ -1,6 +1,6 @@
 # Poor Paul's Benchmark — example benchmark suite
 #
-# A single TOML file drives auto-limit, sweep, or both (via `ppb all`).
+# A single TOML file drives vram-cliff, sweep, or both (via `ppb all`).
 #
 # Copy this file to create your own suite:
 #
@@ -13,9 +13,9 @@
 #   uv run ppb.py sweep  suites/my_gpu.toml                   # sweep only (TOML)
 #   uv run ppb.py sweep  --model ./m.gguf --n-ctx 8192 \      # sweep (pure CLI)
 #                         --n-batch 512
-#   uv run ppb.py auto-limit suites/my_gpu.toml               # auto-limit only
-#   uv run ppb.py auto-limit --model ./m.gguf                 # auto-limit (CLI)
-#   uv run ppb.py all    suites/my_gpu.toml                    # auto-limit → sweep
+#   uv run ppb.py vram-cliff suites/my_gpu.toml              # vram-cliff only
+#   uv run ppb.py vram-cliff --model ./m.gguf                 # vram-cliff (CLI)
+#   uv run ppb.py all    suites/my_gpu.toml                    # vram-cliff → sweep
 #   uv run ppb.py all    suites/my_gpu.toml --results r.jsonl  # override output
 
 
@@ -23,7 +23,7 @@
 # Shared parameters
 # ===================================================================
 #
-# Keys declared at the top level are inherited by BOTH [auto-limit]
+# Keys declared at the top level are inherited by BOTH [vram-cliff]
 # and [sweep].  This means you set your model and runner ONCE.
 # If you want to benchmark a different model, create a separate
 # suite file — one model per suite keeps results tidy.
@@ -43,7 +43,7 @@
 #     model_path = "./models/"                              # whole directory
 #     model_path = "./models/Qwen3.5*IQ4*.gguf"            # glob
 #
-#   Both [auto-limit] and [sweep] accept all three formats.
+#   Both [vram-cliff] and [sweep] accept all three formats.
 #
 #   Relative paths are resolved from the directory where you run ppb.
 # -------------------------------------------------------------------
@@ -67,11 +67,11 @@
 
 
 # ===================================================================
-# [auto-limit]  — binary-search for the maximum safe context window
+# [vram-cliff]  — binary-search for the maximum safe context window
 # ===================================================================
-# Omit this section entirely if you don't need the auto-limit step.
+# Omit this section entirely if you don't need the vram-cliff step.
 
-[auto-limit]
+[vram-cliff]
 
 # min_ctx / max_ctx: search bounds (defaults shown)
 # min_ctx = 2048

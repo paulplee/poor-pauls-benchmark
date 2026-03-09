@@ -1,4 +1,4 @@
-"""Integration tests for the sweep and auto-limit orchestration.
+"""Integration tests for the sweep and vram-cliff orchestration.
 
 These tests use a :class:`FakeRunner` (registered at test time) to verify
 that the orchestrator correctly:
@@ -306,18 +306,18 @@ class TestExecuteSweep:
 
 
 # ==========================================================================
-# execute_auto_limit
+# execute_vram_cliff
 # ==========================================================================
 
 
-class TestExecuteAutoLimit:
+class TestExecuteVramCliff:
     """Verify the binary-search orchestrator uses the runner plugin."""
 
-    def test_basic_auto_limit(self, tmp_model: Path) -> None:
+    def test_basic_vram_cliff(self, tmp_model: Path) -> None:
         """With probe always passing, should converge to max_ctx."""
-        from ppb import execute_auto_limit
+        from ppb import execute_vram_cliff
 
-        result = execute_auto_limit(
+        result = execute_vram_cliff(
             model_path=tmp_model,
             min_ctx=1024,
             max_ctx=4096,
@@ -329,7 +329,7 @@ class TestExecuteAutoLimit:
 
     def test_probe_always_fails(self, tmp_model: Path) -> None:
         """With probe always failing, should return 0 (or min_ctx fallback)."""
-        from ppb import execute_auto_limit
+        from ppb import execute_vram_cliff
 
         original_get = __import__("runners").get_runner
 
@@ -339,7 +339,7 @@ class TestExecuteAutoLimit:
             return r
 
         with patch("ppb.get_runner", side_effect=spy_get):
-            result = execute_auto_limit(
+            result = execute_vram_cliff(
                 model_path=tmp_model,
                 min_ctx=1024,
                 max_ctx=4096,
@@ -352,7 +352,7 @@ class TestExecuteAutoLimit:
 
     def test_runner_type_passed_through(self, tmp_model: Path) -> None:
         """The runner_type parameter must reach get_runner."""
-        from ppb import execute_auto_limit
+        from ppb import execute_vram_cliff
 
         called_with: list[str] = []
         original_get = __import__("runners").get_runner
@@ -362,7 +362,7 @@ class TestExecuteAutoLimit:
             return original_get(rt)
 
         with patch("ppb.get_runner", side_effect=spy_get):
-            execute_auto_limit(
+            execute_vram_cliff(
                 model_path=tmp_model,
                 min_ctx=1024,
                 max_ctx=2048,
@@ -481,15 +481,15 @@ class TestExecuteSweepDirect:
 
 
 # ==========================================================================
-# execute_auto_limit runner_params
+# execute_vram_cliff runner_params
 # ==========================================================================
 
 
-class TestAutoLimitRunnerParams:
-    """Verify runner_params forwarding in execute_auto_limit."""
+class TestVramCliffRunnerParams:
+    """Verify runner_params forwarding in execute_vram_cliff."""
 
     def test_runner_params_forwarded(self, tmp_model: Path) -> None:
-        from ppb import execute_auto_limit
+        from ppb import execute_vram_cliff
 
         captured: list[FakeRunner] = []
         original_get = __import__("runners").get_runner
@@ -500,7 +500,7 @@ class TestAutoLimitRunnerParams:
             return r
 
         with patch("ppb.get_runner", side_effect=spy_get):
-            execute_auto_limit(
+            execute_vram_cliff(
                 model_path=tmp_model,
                 min_ctx=1024,
                 max_ctx=2048,
@@ -525,7 +525,7 @@ class TestLoadSuiteConfig:
 
         raw, results = load_suite_config(suite_toml)
         assert "sweep" in raw
-        assert "auto-limit" in raw
+        assert "vram-cliff" in raw
         assert results.name.endswith(".jsonl")
 
     def test_missing_file_exits(self, tmp_path: Path) -> None:
@@ -548,12 +548,12 @@ class TestLoadSuiteConfig:
 
 
 class TestRunAll:
-    """Verify the ``all`` command chains auto-limit → sweep."""
+    """Verify the ``all`` command chains vram-cliff → sweep."""
 
-    def test_all_auto_limit_then_sweep(
+    def test_all_vram_cliff_then_sweep(
         self, tmp_path: Path, suite_toml: Path, tmp_model: Path
     ) -> None:
-        """auto-limit should run, then sweep respects the cap."""
+        """vram-cliff should run, then sweep respects the cap."""
         from ppb import run_all
         from typer.testing import CliRunner
         from ppb import app
@@ -570,33 +570,33 @@ class TestRunAll:
         lines = results.read_text().strip().splitlines()
         assert len(lines) > 0
 
-    def test_all_without_autolimit_section(
-        self, tmp_path: Path, suite_toml_no_autolimit: Path
+    def test_all_without_vramcliff_section(
+        self, tmp_path: Path, suite_toml_no_vramcliff: Path
     ) -> None:
-        """Without [auto-limit], sweep runs unmodified."""
+        """Without [vram-cliff], sweep runs unmodified."""
         from typer.testing import CliRunner
         from ppb import app
 
         runner = CliRunner()
         results = tmp_path / "res.jsonl"
         result = runner.invoke(
-            app, ["all", str(suite_toml_no_autolimit), "--results", str(results)]
+            app, ["all", str(suite_toml_no_vramcliff), "--results", str(results)]
         )
         assert result.exit_code == 0
         assert results.exists()
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 2  # 2 n_ctx × 1 n_batch
 
-    def test_all_auto_limit_fails_exits(self, tmp_path: Path, tmp_model: Path) -> None:
-        """If auto-limit returns 0, the command must exit with code 1."""
+    def test_all_vram_cliff_fails_exits(self, tmp_path: Path, tmp_model: Path) -> None:
+        """If vram-cliff returns 0, the command must exit with code 1."""
         from typer.testing import CliRunner
         from ppb import app
 
-        # Write a suite TOML where auto-limit will always fail
+        # Write a suite TOML where vram-cliff will always fail
         cfg = tmp_path / "fail_suite.toml"
         cfg.write_text(
             textwrap.dedent(f"""\
-            [auto-limit]
+            [vram-cliff]
             model_path = "{tmp_model}"
             min_ctx = 1024
             max_ctx = 2048

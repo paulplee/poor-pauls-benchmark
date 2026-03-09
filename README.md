@@ -51,7 +51,7 @@ tests/
   test_runners.py      # Runner ABC, registry, and LlamaBenchRunner tests
   test_llama_server.py # LlamaServerRunner, SSE parsing, dataset tests
   test_config.py       # SweepConfig, BenchCombo, _write_result tests
-  test_orchestration.py # Sweep & auto-limit integration tests
+  test_orchestration.py # Sweep & vram-cliff integration tests
 suites/
   suite.example.toml   # Starter benchmark suite (copy → suites/my_gpu.toml)
   .gitignore           # Ignores user suite files, keeps examples
@@ -103,29 +103,29 @@ Easily fetch GGUF files from Hugging Face:
 python ppb.py download unsloth/Qwen3.5-0.8B-GGUF "*Q4*.gguf"
 ```
 
-### 2. Find Your VRAM Limit (`auto-limit`)
+### 2. Find Your VRAM Cliff (`vram-cliff`)
 
 PPB can automatically discover the maximum context window your hardware supports before running out of memory, using a binary search algorithm.
 
 **CLI-only mode:**
 
 ```bash
-python ppb.py auto-limit --model ./models/Qwen3.5-0.8B-Q4_K_M.gguf
+python ppb.py vram-cliff --model ./models/Qwen3.5-0.8B-Q4_K_M.gguf
 # Or a whole directory / glob pattern:
-python ppb.py auto-limit --model ./models/
-python ppb.py auto-limit --model "./models/*Q4*.gguf"
+python ppb.py vram-cliff --model ./models/
+python ppb.py vram-cliff --model "./models/*Q4*.gguf"
 ```
 
-**TOML-driven mode** (reads the `[auto-limit]` section from a suite file):
+**TOML-driven mode** (reads the `[vram-cliff]` section from a suite file):
 
 ```bash
-python ppb.py auto-limit suites/my_gpu.toml
+python ppb.py vram-cliff suites/my_gpu.toml
 ```
 
 **Full set of options:**
 
 ```bash
-python ppb.py auto-limit \
+python ppb.py vram-cliff \
   --model ~/models/Qwen3.5-0.8B-Q4_K_M.gguf \
   --min_ctx 2048 \
   --max_ctx 131072 \
@@ -157,30 +157,30 @@ Sample output (each iteration shows per-probe duration):
     90,111 tokens
 ```
 
-#### auto-limit options
+#### vram-cliff options
 
 | Flag          | Default        | Description                                                  |
 | ------------- | -------------- | ------------------------------------------------------------ |
-| `CONFIG`      | _(optional)_   | Path to a TOML suite file containing an `[auto-limit]` section. |
+| `CONFIG`      | _(optional)_   | Path to a TOML suite file containing a `[vram-cliff]` section. |
 | `--model`     | _(from TOML)_  | Path to a GGUF file, directory, or glob pattern (overrides TOML). |
 | `--min_ctx`   | `2048`         | Lower bound for the binary search.                           |
 | `--max_ctx`   | `131072`       | Upper bound for the binary search.                           |
 | `--tolerance` | `1024`         | Stop searching when the remaining window is this narrow.     |
 | `--runner`    | `llama-bench`  | Runner backend to use for probing.                           |
 
-#### auto-limit TOML section
+#### vram-cliff TOML section
 
 ```toml
 model_path  = "~/models/Qwen3.5-0.8B-Q4_K_M.gguf"   # single file, dir, or glob
 runner_type = "llama-bench"  # optional (shared across sections)
 
-[auto-limit]
+[vram-cliff]
 min_ctx    = 2048       # optional (default: 2048)
 max_ctx    = 131072     # optional (default: 131072)
 tolerance  = 1024       # optional (default: 1024)
 ```
 
-When `model_path` points to a directory or glob pattern, auto-limit probes **each matched model independently** and reports per-model results.
+When `model_path` points to a directory or glob pattern, vram-cliff probes **each matched model independently** and reports per-model results.
 
 ### 3. Run a Parameter Sweep
 
@@ -227,7 +227,7 @@ Sample sweep output (per-combo duration shown):
 
 #### Sweep config reference
 
-Shared fields (`model_path`, `runner_type`, `runner_params`) can live at the **top level** and are inherited by both `[auto-limit]` and `[sweep]`. Section-level values override the root. Sweep-specific fields:
+Shared fields (`model_path`, `runner_type`, `runner_params`) can live at the **top level** and are inherited by both `[vram-cliff]` and `[sweep]`. Section-level values override the root. Sweep-specific fields:
 
 | Key             | Type             | Required | Default         | Description |
 | --------------- | ---------------- | -------- | --------------- | ----------- |
@@ -455,9 +455,9 @@ The `--results` CLI flag always takes priority over the TOML value.
 
 ### 4. Run the Full Suite (`all`)
 
-The `all` command combines **auto-limit**, **sweep**, and (optionally) **publish** into a single invocation:
+The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish** into a single invocation:
 
-1. **Phase 1 — auto-limit:** Discovers the max safe context window for each model.
+1. **Phase 1 — vram-cliff:** Discovers the max safe context window for each model.
 2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1.
 3. **Phase 3 — publish** *(optional)*: If the TOML has a `[publish]` section with `enabled = true`, flattens the results and uploads them to the central PPB leaderboard on Hugging Face.
 
@@ -466,7 +466,7 @@ python ppb.py all suites/my_gpu.toml
 python ppb.py all suites/my_gpu.toml --results results/my_run.jsonl
 ```
 
-If the TOML has no `[auto-limit]` section, Phase 1 is skipped and the sweep runs unmodified.  If there is no `[publish]` section (or `enabled = false`), Phase 3 is skipped.
+If the TOML has no `[vram-cliff]` section, Phase 1 is skipped and the sweep runs unmodified.  If there is no `[publish]` section (or `enabled = false`), Phase 3 is skipped.
 
 #### Example suite TOML
 
@@ -475,7 +475,7 @@ If the TOML has no `[auto-limit]` section, Phase 1 is skipped and the sweep runs
 model_path  = "~/models/"                    # file, dir, or glob — probes each model
 results     = "results/my_benchmark.jsonl"   # optional
 
-[auto-limit]
+[vram-cliff]
 min_ctx    = 2048
 max_ctx    = 131072
 tolerance  = 1024
@@ -648,8 +648,8 @@ PPB uses a **pluggable runner architecture** so new benchmark backends can be ad
 
 | `runner_type`   | Module                   | Description |
 | --------------- | ------------------------ | ----------- |
-| `llama-bench`   | `runners/llama_bench.py`  | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Measures raw throughput (tok/s). Supports OOM probing for `auto-limit`. |
-| `llama-server`  | `runners/llama_server.py` | Starts `llama-server` as a subprocess, streams real ShareGPT conversational prompts via SSE, and records **TTFT** and **ITL** latency metrics. Supports `auto-limit` and **concurrent user simulation**. |
+| `llama-bench`   | `runners/llama_bench.py`  | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Measures raw throughput (tok/s). Supports OOM probing for `vram-cliff`. |
+| `llama-server`  | `runners/llama_server.py` | Starts `llama-server` as a subprocess, streams real ShareGPT conversational prompts via SSE, and records **TTFT** and **ITL** latency metrics. Supports `vram-cliff` and **concurrent user simulation**. |
 | `llama-server-loadtest` | `runners/llama_server_loadtest.py` | Escalates concurrent users (1 → 2 → 4 → …) againt a single server instance. Reports the max sustainable user count and a full **concurrency curve** with TTFT/ITL/queue metrics at each level. |
 
 ### Creating a custom runner
@@ -684,7 +684,7 @@ custom_option = "value"
 | `setup(runner_params)` | ✅ | Called once before the sweep. Receives `[sweep.runner_params]` from TOML. |
 | `run(config) → dict \| None` | ✅ | Execute one benchmark. `config` always has `"model_path"`. Return `{"results": ...}` or `None` on failure. Must NOT write files — the orchestrator handles JSONL output. |
 | `teardown()` | ✅ | Called once after the sweep (guaranteed via `try/finally`). |
-| `probe_ctx(model_path, n_ctx) → bool` | Optional | Override to support `auto-limit`. Default raises `NotImplementedError`. |
+| `probe_ctx(model_path, n_ctx) → bool` | Optional | Override to support `vram-cliff`. Default raises `NotImplementedError`. |
 
 ## Contributing to the Leaderboard
 

@@ -3,7 +3,7 @@ llama-bench runner — the default benchmark backend for PPB.
 
 Wraps ``llama-bench`` from `llama.cpp <https://github.com/ggerganov/llama.cpp>`_
 via :mod:`subprocess`.  Supports both regular benchmark runs **and** OOM probing
-for the ``auto-limit`` command.
+for the ``vram-cliff`` command.
 """
 
 from __future__ import annotations

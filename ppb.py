@@ -484,16 +484,16 @@ class BenchCombo:
     concurrent_users: int = 1
 
 
-class AutoLimitConfig(BaseModel):
-    """Validated representation of the ``[auto-limit]`` block in a suite TOML.
+class VramCliffConfig(BaseModel):
+    """Validated representation of the ``[vram-cliff]`` block in a suite TOML.
 
     ``model_path`` uses the same resolution rules as
     :class:`SweepConfig` — a single file, directory, or glob pattern.
-    When multiple models match, auto-limit probes each one independently.
+    When multiple models match, vram-cliff probes each one independently.
 
     Example TOML::
 
-        [auto-limit]
+        [vram-cliff]
         model_path = "~/models/"      # probe every .gguf in the directory
         min_ctx    = 2048
         max_ctx    = 131072
@@ -511,7 +511,7 @@ class AutoLimitConfig(BaseModel):
     model_paths: list[Path] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def resolve_models(self) -> "AutoLimitConfig":
+    def resolve_models(self) -> "VramCliffConfig":
         """Expand *model_path* into a concrete list of ``.gguf`` files."""
         self.model_paths = _resolve_model_path(self.model_path)
         return self
@@ -745,7 +745,7 @@ def _merge_shared_params(raw: dict, section: str) -> dict:
 
     Section-level values take precedence over root-level values.
     This lets users declare ``model_path`` once at the top of the TOML
-    and have it inherited by both ``[auto-limit]`` and ``[sweep]``.
+    and have it inherited by both ``[vram-cliff]`` and ``[sweep]``.
     """
     shared = {k: v for k, v in raw.items() if k in _SHARED_TOML_KEYS}
     section_data = dict(raw.get(section, {}))
@@ -764,7 +764,7 @@ def _write_result(record: dict, results_file: Path) -> None:
         fh.write(json.dumps(record) + "\n")
 
 
-def execute_auto_limit(
+def execute_vram_cliff(
     model_path: Path,
     min_ctx: int,
     max_ctx: int,
@@ -865,7 +865,7 @@ def execute_sweep(
     sweep_config:
         Pre-built :class:`SweepConfig` — used by the CLI-only path.
     max_ctx_caps:
-        Per-model context caps (from ``auto-limit``).  Combos whose
+        Per-model context caps (from ``vram-cliff``).  Combos whose
         ``n_ctx`` exceeds the cap for their model are skipped.
     """
     if config_path is not None and sweep_config is not None:
@@ -898,7 +898,7 @@ def execute_sweep(
 
     combos = cfg.combos()
 
-    # Apply per-model max_ctx caps (from auto-limit)
+    # Apply per-model max_ctx caps (from vram-cliff)
     if max_ctx_caps:
         original = len(combos)
         combos = [
@@ -1280,11 +1280,11 @@ def hw_info() -> None:
     log.debug("Hardware snapshot:\n%s", json.dumps(hw, indent=2))
 
 
-@app.command(name="auto-limit")
-def auto_limit(
+@app.command(name="vram-cliff")
+def vram_cliff(
     config: Optional[Path] = typer.Argument(
         None,
-        help="Path to a TOML suite file containing an [auto-limit] section",
+        help="Path to a TOML suite file containing a [vram-cliff] section",
     ),
     model: Optional[str] = typer.Option(
         None, "--model", "-m", help="Path to GGUF model file/dir/glob (overrides TOML)"
@@ -1312,8 +1312,8 @@ def auto_limit(
     Accepts a single model file, a directory of ``.gguf`` files, or a
     glob pattern — the search runs independently for each matched model.
 
-    Can be driven by a TOML config (``ppb auto-limit suite.toml``) or purely
-    by CLI flags (``ppb auto-limit --model ./models/``).
+    Can be driven by a TOML config (``ppb vram-cliff suite.toml``) or purely
+    by CLI flags (``ppb vram-cliff --model ./models/``).
     CLI flags override TOML values.
     """
     # --- Load TOML defaults if a config was provided -------------------------
@@ -1330,11 +1330,11 @@ def auto_limit(
             console.print(f"[error]Config file not found:[/error] {cfg_path}")
             raise typer.Exit(code=1)
         raw, _ = load_suite_config(cfg_path)
-        if "auto-limit" in raw:
+        if "vram-cliff" in raw:
             try:
-                al_cfg = AutoLimitConfig(**_merge_shared_params(raw, "auto-limit"))
+                al_cfg = VramCliffConfig(**_merge_shared_params(raw, "vram-cliff"))
             except Exception as exc:
-                console.print(f"[error]Invalid [auto-limit] config:[/error] {exc}")
+                console.print(f"[error]Invalid [vram-cliff] config:[/error] {exc}")
                 raise typer.Exit(code=1) from exc
             al_model = al_model or al_cfg.model_path
             al_min = al_cfg.min_ctx
@@ -1344,7 +1344,7 @@ def auto_limit(
             al_runner_params = al_cfg.runner_params
         elif model is None:
             console.print(
-                "[error]No [auto-limit] section in config and no --model flag.[/error]"
+                "[error]No [vram-cliff] section in config and no --model flag.[/error]"
             )
             raise typer.Exit(code=1)
     elif model is None:
@@ -1370,7 +1370,7 @@ def auto_limit(
 
     model_names = ", ".join(f"[hw]{m.name}[/hw]" for m in model_paths)
     console.print(
-        f"[info]Auto-limit[/info] probing {len(model_paths)} model(s): {model_names}\n"
+        f"[info]VRAM Cliff[/info] probing {len(model_paths)} model(s): {model_names}\n"
         f"  Range     : [bold]{al_min:,}[/bold] → [bold]{al_max:,}[/bold] tokens\n"
         f"  Tolerance : [bold]{al_tol:,}[/bold] tokens"
     )
@@ -1378,7 +1378,7 @@ def auto_limit(
     all_passed = True
 
     for mp in model_paths:
-        safe = execute_auto_limit(
+        safe = execute_vram_cliff(
             model_path=mp,
             min_ctx=al_min,
             max_ctx=al_max,
@@ -1419,15 +1419,15 @@ def run_all(
         help="JSONL results file (default: auto-generated from config name + timestamp)",
     ),
 ) -> None:
-    """Run the full benchmark suite: auto-limit → sweep.
+    """Run the full benchmark suite: vram-cliff → sweep.
 
-    1. **auto-limit** — discover the maximum safe context window for each
+    1. **vram-cliff** — discover the maximum safe context window for each
        model (file, directory, or glob pattern).
     2. **sweep** — run the parameter sweep, skipping any combo whose
        ``n_ctx`` exceeds the per-model limit found in step 1.
 
     Both steps read their configuration from the same TOML file.
-    If the TOML has no ``[auto-limit]`` section, the auto-limit step
+    If the TOML has no ``[vram-cliff]`` section, the vram-cliff step
     is skipped and the sweep runs unmodified.
     """
     raw, default_results = load_suite_config(config)
@@ -1438,15 +1438,15 @@ def run_all(
         f"  Results → [bold]{resolved_results.resolve()}[/bold]\n"
     )
 
-    # -- Phase 1: auto-limit (optional) -----------------------------------
+    # -- Phase 1: vram-cliff (optional) -----------------------------------
     max_ctx_caps: dict[Path, int] | None = None
 
-    if "auto-limit" in raw:
-        console.print("[info]Phase 1 / 2:[/info] auto-limit")
+    if "vram-cliff" in raw:
+        console.print("[info]Phase 1 / 2:[/info] vram-cliff")
         try:
-            al_cfg = AutoLimitConfig(**_merge_shared_params(raw, "auto-limit"))
+            al_cfg = VramCliffConfig(**_merge_shared_params(raw, "vram-cliff"))
         except Exception as exc:
-            console.print(f"[error]Invalid [auto-limit] config:[/error] {exc}")
+            console.print(f"[error]Invalid [vram-cliff] config:[/error] {exc}")
             raise typer.Exit(code=1) from exc
 
         model_names = ", ".join(
@@ -1463,7 +1463,7 @@ def run_all(
         any_failed = False
 
         for mp in al_cfg.model_paths:
-            safe = execute_auto_limit(
+            safe = execute_vram_cliff(
                 model_path=mp,
                 min_ctx=al_cfg.min_ctx,
                 max_ctx=al_cfg.max_ctx,
@@ -1474,7 +1474,7 @@ def run_all(
 
             if safe == 0:
                 console.print(
-                    f"\n[error]auto-limit failed for[/error] [hw]{mp.name}[/hw] "
+                    f"\n[error]vram-cliff failed for[/error] [hw]{mp.name}[/hw] "
                     f"— could not find a working context size."
                 )
                 any_failed = True
@@ -1488,21 +1488,21 @@ def run_all(
 
         if not caps:
             console.print(
-                "\n[error]auto-limit failed for all models. "
+                "\n[error]vram-cliff failed for all models. "
                 "Skipping sweep.[/error]"
             )
             raise typer.Exit(code=1)
 
         if any_failed:
             console.print(
-                "\n[warning]Some models failed auto-limit and will be skipped "
+                "\n[warning]Some models failed vram-cliff and will be skipped "
                 "in the sweep.[/warning]"
             )
 
         max_ctx_caps = caps
         console.print()  # blank line before phase 2
     else:
-        console.print("[info]No [auto-limit] section — skipping to sweep.[/info]\n")
+        console.print("[info]No [vram-cliff] section — skipping to sweep.[/info]\n")
 
     # -- Phase 2: sweep ---------------------------------------------------
     if "sweep" not in raw:

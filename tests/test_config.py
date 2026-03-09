@@ -205,17 +205,17 @@ class TestWriteResult:
 
 
 # ==========================================================================
-# AutoLimitConfig
+# VramCliffConfig
 # ==========================================================================
 
 
-class TestAutoLimitConfig:
-    """Validate the Pydantic model for [auto-limit] config."""
+class TestVramCliffConfig:
+    """Validate the Pydantic model for [vram-cliff] config."""
 
     def test_defaults(self, tmp_model: Path) -> None:
-        from ppb import AutoLimitConfig
+        from ppb import VramCliffConfig
 
-        cfg = AutoLimitConfig(model_path=str(tmp_model))
+        cfg = VramCliffConfig(model_path=str(tmp_model))
         assert cfg.min_ctx == 2048
         assert cfg.max_ctx == 131072
         assert cfg.tolerance == 1024
@@ -223,37 +223,37 @@ class TestAutoLimitConfig:
         assert cfg.runner_params == {}
 
     def test_model_paths_single_file(self, tmp_model: Path) -> None:
-        from ppb import AutoLimitConfig
+        from ppb import VramCliffConfig
 
-        cfg = AutoLimitConfig(model_path=str(tmp_model))
+        cfg = VramCliffConfig(model_path=str(tmp_model))
         assert cfg.model_paths == [tmp_model.resolve()]
 
     def test_model_paths_directory(self, tmp_model_dir: Path) -> None:
-        from ppb import AutoLimitConfig
+        from ppb import VramCliffConfig
 
-        cfg = AutoLimitConfig(model_path=str(tmp_model_dir))
+        cfg = VramCliffConfig(model_path=str(tmp_model_dir))
         names = sorted(p.name for p in cfg.model_paths)
         assert names == ["alpha.gguf", "beta.gguf"]
 
     def test_model_paths_glob(self, tmp_model_dir: Path) -> None:
-        from ppb import AutoLimitConfig
+        from ppb import VramCliffConfig
 
         pattern = str(tmp_model_dir / "alpha*")
-        cfg = AutoLimitConfig(model_path=pattern)
+        cfg = VramCliffConfig(model_path=pattern)
         assert len(cfg.model_paths) == 1
         assert cfg.model_paths[0].name == "alpha.gguf"
 
     def test_missing_model_file(self, tmp_path: Path) -> None:
         from pydantic import ValidationError
-        from ppb import AutoLimitConfig
+        from ppb import VramCliffConfig
 
         with pytest.raises(ValidationError, match="No files match pattern"):
-            AutoLimitConfig(model_path=str(tmp_path / "nonexistent.gguf"))
+            VramCliffConfig(model_path=str(tmp_path / "nonexistent.gguf"))
 
     def test_all_fields_override(self, tmp_model: Path) -> None:
-        from ppb import AutoLimitConfig
+        from ppb import VramCliffConfig
 
-        cfg = AutoLimitConfig(
+        cfg = VramCliffConfig(
             model_path=str(tmp_model),
             min_ctx=512,
             max_ctx=65536,

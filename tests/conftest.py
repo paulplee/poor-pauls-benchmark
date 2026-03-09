@@ -123,11 +123,11 @@ def sweep_toml_with_runner(tmp_path: Path, tmp_model: Path) -> Path:
 
 @pytest.fixture()
 def suite_toml(tmp_path: Path, tmp_model: Path) -> Path:
-    """Write a full-suite TOML with [auto-limit] and [sweep] (runner_type=fake)."""
+    """Write a full-suite TOML with [vram-cliff] and [sweep] (runner_type=fake)."""
     cfg = tmp_path / "suite.toml"
     cfg.write_text(
         textwrap.dedent(f"""\
-        [auto-limit]
+        [vram-cliff]
         model_path = "{tmp_model}"
         min_ctx = 1024
         max_ctx = 4096
@@ -145,8 +145,8 @@ def suite_toml(tmp_path: Path, tmp_model: Path) -> Path:
 
 
 @pytest.fixture()
-def suite_toml_no_autolimit(tmp_path: Path, tmp_model: Path) -> Path:
-    """Write a TOML with only [sweep], no [auto-limit]."""
+def suite_toml_no_vramcliff(tmp_path: Path, tmp_model: Path) -> Path:
+    """Write a TOML with only [sweep], no [vram-cliff]."""
     cfg = tmp_path / "sweep_only.toml"
     cfg.write_text(
         textwrap.dedent(f"""\
