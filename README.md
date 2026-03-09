@@ -459,14 +459,14 @@ The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish
 
 1. **Phase 1 — vram-cliff:** Discovers the max safe context window for each model.
 2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1.
-3. **Phase 3 — publish** *(optional)*: If the TOML has a `[publish]` section with `enabled = true`, flattens the results and uploads them to the central PPB leaderboard on Hugging Face.
+3. **Phase 3 — publish** *(optional)*: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
 
 ```bash
 python ppb.py all suites/my_gpu.toml
 python ppb.py all suites/my_gpu.toml --results results/my_run.jsonl
 ```
 
-If the TOML has no `[vram-cliff]` section, Phase 1 is skipped and the sweep runs unmodified.  If there is no `[publish]` section (or `enabled = false`), Phase 3 is skipped.
+If the TOML has no `[vram-cliff]` section, Phase 1 is skipped and the sweep runs unmodified.  If there is no `[publish]` section, Phase 3 is skipped.
 
 #### Example suite TOML
 
@@ -486,7 +486,6 @@ n_batch    = [512, 1024]
 
 # Optional: auto-publish after the sweep completes
 [publish]
-enabled   = true
 submitter = "Your Name"
 # upload  = true   # set false to write CSV only (default: true)
 ```

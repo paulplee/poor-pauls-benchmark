@@ -1517,7 +1517,7 @@ def run_all(
     )
 
     # -- Phase 3: publish (optional) ---------------------------------------
-    if "publish" in raw and raw["publish"].get("enabled"):
+    if "publish" in raw:
         console.print("\n[info]Phase 3 / 3:[/info] publish to Hugging Face")
         pub_cfg = raw["publish"]
         submitter = pub_cfg.get("submitter", "")
@@ -1550,10 +1550,6 @@ def run_all(
                 )
         else:
             console.print("[warning]No rows to publish.[/warning]")
-    elif "publish" in raw:
-        console.print(
-            "\n[info]Publish section found but [bold]enabled[/bold] is not true — skipping.[/info]"
-        )
 
 
 # ---------------------------------------------------------------------------

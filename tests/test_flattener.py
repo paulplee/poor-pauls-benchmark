@@ -19,7 +19,12 @@ def _make_hardware():
         "cpu": {"model": "AMD Ryzen 7 7800X3D", "cores": "16"},
         "ram": {"total_gb": 124.9},
         "gpus": [
-            {"name": "NVIDIA RTX 5090", "vram_total_gb": 32.0, "driver": "590.40"}
+            {
+                "name": "NVIDIA RTX 5090",
+                "vram_total_gb": 32.0,
+                "driver": "590.40",
+                "cuda_version": "13.0",
+            }
         ],
         "runtime": {"python_version": "3.13.12"},
     }
@@ -28,7 +33,7 @@ def _make_hardware():
 LLAMA_BENCH_ROW = {
     "timestamp": "2026-03-08T12:00:00+00:00",
     "runner_type": "llama-bench",
-    "model_path": "/data/models/model.gguf",
+    "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 8192,
     "n_batch": 512,
     "hardware": _make_hardware(),
@@ -53,7 +58,7 @@ LLAMA_BENCH_ROW = {
 LLAMA_SERVER_ROW = {
     "timestamp": "2026-03-08T12:10:00+00:00",
     "runner_type": "llama-server",
-    "model_path": "/data/models/model.gguf",
+    "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 16384,
     "n_batch": 512,
     "hardware": _make_hardware(),
@@ -71,7 +76,7 @@ LLAMA_SERVER_ROW = {
 LOADTEST_ROW = {
     "timestamp": "2026-03-08T12:20:00+00:00",
     "runner_type": "llama-server-loadtest",
-    "model_path": "/data/models/model.gguf",
+    "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 8192,
     "n_batch": 512,
     "hardware": _make_hardware(),
@@ -89,6 +94,62 @@ LOADTEST_ROW = {
 
 
 # ---------------------------------------------------------------------------
+# model_id derivation
+# ---------------------------------------------------------------------------
+
+class TestModelId:
+    def test_strips_quant_suffix(self):
+        row = {**LLAMA_BENCH_ROW, "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf"}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["model_id"] == "Qwen3.5-9B"
+
+    def test_strips_other_quant_formats(self):
+        cases = [
+            ("/m/Llama-3.1-8B-Q4_K_M.gguf", "Llama-3.1-8B"),
+            ("/m/Phi-4-F16.gguf", "Phi-4"),
+            ("/m/model-IQ2_XXS.gguf", "model"),
+            ("/m/Falcon-7B-BF16.gguf", "Falcon-7B"),
+        ]
+        for path, expected in cases:
+            row = {**LLAMA_BENCH_ROW, "model_path": path}
+            flat = flatten_benchmark_row(row)[0]
+            assert flat["model_id"] == expected, f"Failed for {path}"
+
+    def test_plain_gguf_no_quant(self):
+        row = {**LLAMA_BENCH_ROW, "model_path": "/data/models/my-model.gguf"}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["model_id"] == "my-model"
+
+    def test_none_when_no_model_path(self):
+        row = {**LLAMA_BENCH_ROW, "model_path": None}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["model_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# backends enrichment
+# ---------------------------------------------------------------------------
+
+class TestBackendsEnrichment:
+    def test_cuda_version_appended(self):
+        """When hardware has cuda_version, backends should read 'CUDA 13.0'."""
+        flat = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
+        assert flat["backends"] == "CUDA 13.0"
+
+    def test_no_cuda_version_keeps_plain(self):
+        """When gpus list is empty, backends stays as-is."""
+        row = {**LLAMA_BENCH_ROW, "hardware": {**_make_hardware(), "gpus": []}}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["backends"] == "CUDA"
+
+    def test_non_cuda_backend_untouched(self):
+        row = {**LLAMA_BENCH_ROW}
+        row["results"] = [{**LLAMA_BENCH_ROW["results"][0], "backends": "Metal"}]
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["backends"] == "Metal"
+
+
+# ---------------------------------------------------------------------------
 # llama-bench
 # ---------------------------------------------------------------------------
 
@@ -101,7 +162,7 @@ class TestLlamaBench:
         row = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
         assert row["timestamp"] == "2026-03-08T12:00:00+00:00"
         assert row["runner_type"] == "llama-bench"
-        assert row["model_path"] == "/data/models/model.gguf"
+        assert row["model_id"] == "Qwen3.5-9B"
         assert row["n_ctx"] == 8192
         assert row["n_batch"] == 512
 
@@ -113,18 +174,13 @@ class TestLlamaBench:
         assert row["gpu_name"] == "NVIDIA RTX 5090"
         assert row["gpu_vram_gb"] == 32.0
         assert row["gpu_driver"] == "590.40"
-        assert row["python_version"] == "3.13.12"
 
     def test_per_item_fields(self):
         rows = flatten_benchmark_row(LLAMA_BENCH_ROW)
         # First item: prompt processing
-        assert rows[0]["n_prompt"] == 512
-        assert rows[0]["n_gen"] == 0
         assert rows[0]["throughput_tok_s"] == 1200.5
-        assert rows[0]["backends"] == "CUDA"
+        assert rows[0]["backends"] == "CUDA 13.0"
         # Second item: generation
-        assert rows[1]["n_prompt"] == 0
-        assert rows[1]["n_gen"] == 128
         assert rows[1]["throughput_tok_s"] == 131.0
 
     def test_raw_payload_roundtrips(self):
@@ -133,7 +189,7 @@ class TestLlamaBench:
         assert restored["runner_type"] == "llama-bench"
         assert len(restored["results"]) == 2
 
-    def test_gpu_info_fallback_when_gpus_empty(self):
+    def test_gpu_name_fallback_when_gpus_empty(self):
         """When hardware.gpus is empty, gpu_name falls back to result-level gpu_info."""
         row = {**LLAMA_BENCH_ROW, "hardware": {**_make_hardware(), "gpus": []}}
         flat = flatten_benchmark_row(row)[0]
