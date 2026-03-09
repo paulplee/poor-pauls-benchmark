@@ -436,6 +436,10 @@ def _ensure_models(
 
     *hf_identifier* has the form ``repo_id/actual_filename`` and is stored
     in the JSONL envelope as the ``model`` field.
+
+    mmproj sidecar files (``mmproj-*.gguf``) are excluded — they are
+    multimodal-projector weights that must be paired with a base model via
+    ``--mmproj``; they cannot be benchmarked as standalone models.
     """
     paths = download_model(
         repo_id,
@@ -443,7 +447,15 @@ def _ensure_models(
         models_dir=Path(models_dir),
         token=token,
     )
-    return [(p, f"{repo_id}/{p.name}") for p in paths]
+    filtered = [p for p in paths if not p.name.startswith("mmproj-")]
+    excluded = len(paths) - len(filtered)
+    if excluded:
+        log.info(
+            "Excluded %d mmproj sidecar file(s) from benchmark targets "
+            "(pass --mmproj to llama-server if you need multimodal support)",
+            excluded,
+        )
+    return [(p, f"{repo_id}/{p.name}") for p in filtered]
 
 
 class SweepConfig(BaseModel):
@@ -1558,6 +1570,7 @@ def run_all(
                     f"\n[error]vram-cliff failed for[/error] [hw]{hf_id}[/hw] "
                     f"— could not find a working context size."
                 )
+                caps[mp] = 0  # sentinel: exclude all combos for this model
                 any_failed = True
             else:
                 caps[mp] = safe
@@ -1610,6 +1623,13 @@ def run_all(
         submitter = pub_cfg.get("submitter", "")
         token = pub_cfg.get("token") or None  # normalise "" → None → env fallback
         do_upload = pub_cfg.get("upload", True)  # default True for ppb-all compat
+
+        if not resolved_results.exists():
+            console.print(
+                "[warning]No results file found — all runs may have failed. "
+                "Skipping publish.[/warning]"
+            )
+            return
 
         flat_rows = _flatten_results_file(resolved_results, submitter=submitter)
         if flat_rows:
