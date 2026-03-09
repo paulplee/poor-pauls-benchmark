@@ -13,7 +13,7 @@ from huggingface_hub import HfApi
 from huggingface_hub.errors import HfHubHTTPError
 
 # Central leaderboard repository — all submissions land here.
-PPB_HF_REPO = "poor-paul/ppb-results"
+PPB_HF_REPO = "paulplee/ppb-results"
 
 
 def publish_to_hf(
@@ -73,7 +73,7 @@ def publish_to_hf(
     try:
         api.upload_file(
             path_or_fileobj=tmp_path,
-            path_in_repo=f"submissions/{dest_filename}",
+            path_in_repo=f"data/{dest_filename}",
             repo_id=PPB_HF_REPO,
             repo_type="dataset",
         )

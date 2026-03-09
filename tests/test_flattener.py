@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from utils.flattener import flatten_benchmark_row
+from utils.flattener import MASTER_SCHEMA, flatten_benchmark_row
 
 
 # ---------------------------------------------------------------------------
@@ -210,3 +210,40 @@ class TestEdgeCases:
         }
         flat = flatten_benchmark_row(row)[0]
         assert flat["throughput_tok_s"] is None
+
+
+# ---------------------------------------------------------------------------
+# Unified schema — every row must have exactly the MASTER_SCHEMA keys
+# ---------------------------------------------------------------------------
+
+class TestUnifiedSchema:
+    """Ensure every runner produces rows with the exact MASTER_SCHEMA keys."""
+
+    _expected_keys = set(MASTER_SCHEMA)
+
+    @pytest.mark.parametrize(
+        "fixture",
+        [LLAMA_BENCH_ROW, LLAMA_SERVER_ROW, LOADTEST_ROW],
+        ids=["llama-bench", "llama-server", "llama-server-loadtest"],
+    )
+    def test_all_runners_have_exact_schema(self, fixture):
+        for flat in flatten_benchmark_row(fixture):
+            assert set(flat) == self._expected_keys
+
+    def test_unknown_runner_has_exact_schema(self):
+        row = {
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "runner_type": "future-runner",
+            "model_path": "/data/model.gguf",
+            "n_ctx": 4096,
+            "n_batch": 256,
+            "hardware": {},
+            "results": {"something": 42},
+        }
+        for flat in flatten_benchmark_row(row):
+            assert set(flat) == self._expected_keys
+
+    def test_missing_hardware_has_exact_schema(self):
+        row = {**LLAMA_SERVER_ROW, "hardware": None}
+        for flat in flatten_benchmark_row(row):
+            assert set(flat) == self._expected_keys

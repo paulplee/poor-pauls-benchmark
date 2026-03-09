@@ -1655,11 +1655,9 @@ def export_cmd(
 
 @app.command(name="publish")
 def publish_cmd(
-    results: Path = typer.Option(
+    results: list[Path] = typer.Argument(
         ...,
-        "--results",
-        "-r",
-        help="Path to a raw JSONL results file",
+        help="One or more raw JSONL results files (shell globs supported)",
         exists=True,
         readable=True,
     ),
@@ -1678,8 +1676,9 @@ def publish_cmd(
 ) -> None:
     """Flatten results to a local CSV and optionally upload to the PPB leaderboard.
 
-    By default, only writes a CSV file alongside the input JSONL — perfect for
-    reviewing in Excel before sharing.  Add --upload to push to Hugging Face.
+    Accepts one or more JSONL result files (shell globs like ``results/*.jsonl``
+    are expanded by the shell).  A CSV is written alongside each input file.
+    Add ``--upload`` to push all rows to Hugging Face in one batch.
     """
     submitter = typer.prompt(
         "Display name for the leaderboard (leave blank to skip)",
@@ -1687,21 +1686,31 @@ def publish_cmd(
         show_default=False,
     )
 
-    console.print("[info]Reading and flattening results…[/info]")
-    flat_rows = _flatten_results_file(results, submitter=submitter)
+    all_flat_rows: list[dict[str, Any]] = []
 
-    if not flat_rows:
-        console.print("[warning]No rows found in results file.[/warning]")
+    for results_file in results:
+        console.print(f"[info]Reading and flattening {results_file.name}…[/info]")
+        flat_rows = _flatten_results_file(results_file, submitter=submitter)
+
+        if not flat_rows:
+            console.print(f"[warning]No rows found in {results_file.name} — skipping.[/warning]")
+            continue
+
+        # -- Always write a local CSV per file -----------------------------
+        csv_path = results_file.with_suffix(".csv")
+        _write_csv(flat_rows, csv_path)
+        console.print(
+            f"  [success]✅ {len(flat_rows)} row(s) → CSV[/success] → "
+            f"[bold]{csv_path.resolve()}[/bold]"
+        )
+
+        all_flat_rows.extend(flat_rows)
+
+    if not all_flat_rows:
+        console.print("[warning]No rows found in any results file.[/warning]")
         raise typer.Exit(code=1)
 
-    # -- Always write a local CSV ------------------------------------------
-    csv_path = results.with_suffix(".csv")
-    _write_csv(flat_rows, csv_path)
-    console.print(
-        f"\n[success]✅ Exported {len(flat_rows)} row(s) to CSV[/success] → "
-        f"[bold]{csv_path.resolve()}[/bold]\n"
-        f"  📊 Excel-ready!"
-    )
+    console.print(f"\n  📊 {len(all_flat_rows)} total row(s) across {len(results)} file(s) — Excel-ready!")
 
     # -- Upload to HF (opt-in) ---------------------------------------------
     if not upload:
@@ -1712,7 +1721,7 @@ def publish_cmd(
 
     console.print("  Uploading to Hugging Face…")
     try:
-        url = publish_to_hf(flat_rows, token=token)
+        url = publish_to_hf(all_flat_rows, token=token)
     except Exception as exc:
         console.print(f"\n[error]Publish failed:[/error] {exc}")
         raise typer.Exit(code=1) from exc

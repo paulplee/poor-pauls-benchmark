@@ -566,7 +566,7 @@ Authentication for `--upload` uses (in order):
 2. `HF_TOKEN` environment variable (recommended — set in `.env`)
 3. Cached `huggingface-cli login` credential
 
-Results land in `submissions/results_<timestamp>_<uuid>.jsonl` inside the [`poor-paul/ppb-results`](https://huggingface.co/datasets/poor-paul/ppb-results) repository.
+Results land in `data/results_<timestamp>_<uuid>.jsonl` inside the [`poor-paul/ppb-results`](https://huggingface.co/datasets/paulplee/ppb-results) repository.
 
 For a fully automated "shoot and forget" workflow, add a `[publish]` section to your suite TOML and use `ppb all` — see [§4](#4-run-the-full-suite-all).
 
