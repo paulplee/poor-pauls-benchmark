@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field
 import typer
 from huggingface_hub import HfApi, RepoFile, hf_hub_download
 from huggingface_hub.errors import RepositoryNotFoundError
@@ -47,7 +47,7 @@ from rich.theme import Theme
 from datasets import download_dataset
 from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
-from utils.flattener import flatten_benchmark_row
+from utils.flattener import compute_file_sha256, flatten_benchmark_row
 from utils.publisher import publish_to_hf
 
 # ---------------------------------------------------------------------------
@@ -399,77 +399,63 @@ _hw_sniffer = HardwareSniffer()
 # ---------------------------------------------------------------------------
 
 
-def _resolve_model_path(raw: str) -> list[Path]:
-    """Expand a model_path string into a concrete list of ``.gguf`` files.
+def _ensure_models(
+    repo_id: str,
+    filename: str,
+    models_dir: str | Path = "./models",
+    token: str | None = None,
+) -> list[tuple[Path, str]]:
+    """Download model(s) from HF and return ``(local_path, hf_identifier)`` pairs.
 
-    Accepts:
-    * A single file path.
-    * A directory — every ``.gguf`` file inside (non-recursive).
-    * A glob pattern (e.g. ``~/models/*IQ4*.gguf``).
+    *hf_identifier* has the form ``repo_id/actual_filename`` and is stored
+    in the JSONL envelope as the ``model`` field.
     """
-    expanded = Path(raw).expanduser()
-    resolved = expanded.resolve()
-
-    if resolved.is_dir():
-        paths = sorted(resolved.glob("*.gguf"))
-        if not paths:
-            raise ValueError(f"No .gguf files found in directory: {resolved}")
-    elif resolved.is_file():
-        paths = [resolved]
-    else:
-        parent = expanded.parent.resolve()
-        pattern = expanded.name
-        if not parent.exists():
-            raise ValueError(f"model_path does not exist: {resolved}")
-        paths = sorted(p.resolve() for p in parent.glob(pattern))
-        if not paths:
-            raise ValueError(f"No files match pattern: {raw}")
-
-    return paths
+    paths = download_model(
+        repo_id, filename, models_dir=Path(models_dir), token=token,
+    )
+    return [(p, f"{repo_id}/{p.name}") for p in paths]
 
 
 class SweepConfig(BaseModel):
     """Validated representation of the ``[sweep]`` block in a sweep TOML file.
 
-    ``model_path`` may be:
-
-    * A path to a single ``.gguf`` file.
-    * A path to a **directory** — every ``.gguf`` file inside is tested.
-    * A **glob pattern** (e.g. ``~/models/*IQ4*.gguf``) — all matching files
-      are tested.
+    ``repo_id`` / ``filename`` identify a Hugging Face GGUF model.
+    ``filename`` may be a glob pattern (e.g. ``"*Q4_K_M.gguf"``).
 
     Example TOML::
 
         [sweep]
-        model_path = "./models/model.gguf"          # single file
-        model_path = "~/models/"                    # whole directory
-        model_path = "~/models/*Q4_K_M*.gguf"       # glob
-        n_ctx    = [8192, 16384, 32768]
-        n_batch  = [512, 1024]
+        repo_id    = "unsloth/Qwen3.5-9B-GGUF"
+        filename   = "Qwen3.5-9B-Q8_0.gguf"
+        models_dir = "./models"
+        n_ctx      = [8192, 16384, 32768]
+        n_batch    = [512, 1024]
     """
 
-    model_path: str  # raw value: single file, directory, or glob pattern
+    repo_id: str
+    filename: str
+    models_dir: str = "./models"
     n_ctx: list[int]
     n_batch: list[int]
     concurrent_users: list[int] = Field(default_factory=lambda: [1])
     runner_type: str = "llama-bench"
     runner_params: dict[str, Any] = Field(default_factory=dict)
 
-    # Populated by the model_validator below; not read from TOML.
-    model_paths: list[Path] = Field(default_factory=list)
+    # Populated externally by _ensure_models(); not read from TOML.
+    resolved_models: list[tuple[Path, str]] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def resolve_model_paths(self) -> "SweepConfig":
-        """Expand *model_path* into a concrete list of ``.gguf`` files."""
-        self.model_paths = _resolve_model_path(self.model_path)
-        return self
+    class Config:
+        arbitrary_types_allowed = True
 
     def combos(self) -> list["BenchCombo"]:
         """Return the full Cartesian product of models × n_ctx × n_batch × concurrent_users."""
         return [
-            BenchCombo(model_path=model, n_ctx=ctx, n_batch=batch, concurrent_users=users)
-            for model, ctx, batch, users in itertools.product(
-                self.model_paths, self.n_ctx, self.n_batch, self.concurrent_users,
+            BenchCombo(
+                model_path=local, model=hf_id,
+                n_ctx=ctx, n_batch=batch, concurrent_users=users,
+            )
+            for (local, hf_id), ctx, batch, users in itertools.product(
+                self.resolved_models, self.n_ctx, self.n_batch, self.concurrent_users,
             )
         ]
 
@@ -479,6 +465,7 @@ class BenchCombo:
     """A single (model, n_ctx, n_batch, concurrent_users) parameter combination."""
 
     model_path: Path
+    model: str  # HF identifier: repo_id/filename
     n_ctx: int
     n_batch: int
     concurrent_users: int = 1
@@ -487,34 +474,35 @@ class BenchCombo:
 class VramCliffConfig(BaseModel):
     """Validated representation of the ``[vram-cliff]`` block in a suite TOML.
 
-    ``model_path`` uses the same resolution rules as
-    :class:`SweepConfig` — a single file, directory, or glob pattern.
-    When multiple models match, vram-cliff probes each one independently.
+    ``repo_id`` / ``filename`` use the same HF coordinates as
+    :class:`SweepConfig`.  When the glob matches multiple models,
+    vram-cliff probes each one independently.
 
     Example TOML::
 
         [vram-cliff]
-        model_path = "~/models/"      # probe every .gguf in the directory
+        repo_id    = "unsloth/Qwen3.5-9B-GGUF"
+        filename   = "*.gguf"
+        models_dir = "./models"
         min_ctx    = 2048
         max_ctx    = 131072
         tolerance  = 1024
     """
 
-    model_path: str
+    repo_id: str
+    filename: str
+    models_dir: str = "./models"
     min_ctx: int = 2048
     max_ctx: int = 131072
     tolerance: int = 1024
     runner_type: str = "llama-bench"
     runner_params: dict[str, Any] = Field(default_factory=dict)
 
-    # Populated by the model_validator below; not read from TOML.
-    model_paths: list[Path] = Field(default_factory=list)
+    # Populated externally by _ensure_models(); not read from TOML.
+    resolved_models: list[tuple[Path, str]] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def resolve_models(self) -> "VramCliffConfig":
-        """Expand *model_path* into a concrete list of ``.gguf`` files."""
-        self.model_paths = _resolve_model_path(self.model_path)
-        return self
+    class Config:
+        arbitrary_types_allowed = True
 
 
 # ---------------------------------------------------------------------------
@@ -662,15 +650,6 @@ def download_model(
         overall = progress.add_task("[bold]Total", total=len(matches))
 
         for filename in matches:
-            # Fast-path: skip the network round-trip when the file is already
-            # present in the target directory.
-            local_file = dest / filename
-            if local_file.exists():
-                console.print(f"  [info]↩ Cached[/info]  {filename}")
-                downloaded_paths.append(local_file.resolve())
-                progress.advance(overall)
-                continue
-
             downloaded: str = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
@@ -737,7 +716,7 @@ def load_suite_config(
 
 
 # Keys that may appear at the TOML root and are inherited by sections.
-_SHARED_TOML_KEYS = {"model_path", "runner_type", "runner_params"}
+_SHARED_TOML_KEYS = {"repo_id", "filename", "models_dir", "runner_type", "runner_params"}
 
 
 def _merge_shared_params(raw: dict, section: str) -> dict:
@@ -893,6 +872,12 @@ def execute_sweep(
         except Exception as exc:  # pydantic ValidationError
             console.print(f"[error]Invalid sweep config:[/error] {exc}")
             raise typer.Exit(code=1) from exc
+
+        # Download / cache models if not already resolved
+        if not cfg.resolved_models:
+            cfg.resolved_models = _ensure_models(
+                cfg.repo_id, cfg.filename, cfg.models_dir,
+            )
     else:
         raise ValueError("One of config_path or sweep_config is required.")
 
@@ -914,10 +899,10 @@ def execute_sweep(
 
     total = len(combos)
 
-    model_names = ", ".join(f"[hw]{m.name}[/hw]" for m in cfg.model_paths)
+    model_names = ", ".join(f"[hw]{hf_id}[/hw]" for _, hf_id in cfg.resolved_models)
     sweep_info = (
         f"[info]Sweep:[/info] [bold]{total}[/bold] combination(s) "
-        f"across [bold]{len(cfg.model_paths)}[/bold] model(s): {model_names}\n"
+        f"across [bold]{len(cfg.resolved_models)}[/bold] model(s): {model_names}\n"
         f"  Runner  : {cfg.runner_type}\n"
         f"  n_ctx   : {cfg.n_ctx}\n"
         f"  n_batch : {cfg.n_batch}\n"
@@ -966,7 +951,7 @@ def execute_sweep(
                     record = {
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "runner_type": cfg.runner_type,
-                        "model_path": str(combo.model_path),
+                        "model": combo.model,
                         "n_ctx": combo.n_ctx,
                         "n_batch": combo.n_batch,
                         "hardware": _hw_sniffer.snapshot(),
@@ -1018,50 +1003,6 @@ app = typer.Typer(
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-
-
-@app.command()
-def download(
-    repo_id: str = typer.Argument(
-        ...,
-        help="Hugging Face repo ID (e.g. unsloth/Qwen3.5-0.8B-GGUF)",
-    ),
-    filename: str = typer.Argument(
-        ..., help='Glob pattern for the GGUF file (e.g. "*Q4_K_M.gguf" or "*.gguf")'
-    ),
-    token: Optional[str] = typer.Option(
-        None,
-        "--token",
-        "-t",
-        envvar="HF_TOKEN",
-        help="Hugging Face API token (or set HF_TOKEN env-var)",
-    ),
-    models_dir: Optional[Path] = typer.Option(
-        None,
-        "--models-dir",
-        "-d",
-        envvar="PPB_MODELS_DIR",
-        help="Destination directory for models (default: ./models)",
-    ),
-) -> None:
-    """Download GGUF model(s) from Hugging Face Hub."""
-    console.print(
-        f"[info]Downloading[/info] [bold]{filename}[/bold] from [bold]{repo_id}[/bold] …"
-    )
-    try:
-        paths = download_model(repo_id, filename, token=token, models_dir=models_dir)
-        for p in paths:
-            log.info("Downloaded → %s", p)
-    except FileNotFoundError as exc:
-        console.print(f"[error]{exc}[/error]")
-        raise typer.Exit(code=1) from exc
-    except RepositoryNotFoundError:
-        # Detailed message already printed by download_model.
-        raise typer.Exit(code=1)
-    except Exception as exc:
-        console.print(f"[error]Download failed:[/error] {exc}")
-        log.exception("Unexpected error during download")
-        raise typer.Exit(code=1) from exc
 
 
 @app.command(name="download-dataset")
@@ -1117,8 +1058,14 @@ def sweep(
         None,
         help="Path to a TOML suite file containing a [sweep] section",
     ),
-    model: Optional[str] = typer.Option(
-        None, "--model", "-m", help="Path to GGUF model file/dir/glob (overrides TOML)"
+    repo_id: Optional[str] = typer.Option(
+        None, "--repo-id", "-R", help="HF repo ID (e.g. unsloth/Qwen3.5-9B-GGUF)"
+    ),
+    filename_pattern: Optional[str] = typer.Option(
+        None, "--filename", "-f", help='GGUF filename or glob (e.g. "*Q4_K_M.gguf")'
+    ),
+    models_dir: Optional[str] = typer.Option(
+        None, "--models-dir", "-d", help="Local directory for downloaded models"
     ),
     n_ctx: Optional[str] = typer.Option(
         None, "--n-ctx", help="Comma-separated context sizes, e.g. '8192,16384,32768'"
@@ -1146,7 +1093,7 @@ def sweep(
     """Run a declarative parameter sweep.
 
     Can be driven by a TOML config (``ppb sweep suite.toml``) or purely
-    by CLI flags (``ppb sweep --model ./m.gguf --n-ctx 8192,16384 --n-batch 512``).
+    by CLI flags (``ppb sweep --repo-id org/repo --filename '*.gguf' --n-ctx 8192 --n-batch 512``).
     CLI flags override TOML values when both are provided.
     """
 
@@ -1173,8 +1120,12 @@ def sweep(
 
         sweep_raw: dict[str, Any] = _merge_shared_params(raw, "sweep")
         # CLI overrides
-        if model is not None:
-            sweep_raw["model_path"] = model
+        if repo_id is not None:
+            sweep_raw["repo_id"] = repo_id
+        if filename_pattern is not None:
+            sweep_raw["filename"] = filename_pattern
+        if models_dir is not None:
+            sweep_raw["models_dir"] = models_dir
         if n_ctx is not None:
             sweep_raw["n_ctx"] = _parse_int_list(n_ctx, "n-ctx")
         if n_batch is not None:
@@ -1190,16 +1141,26 @@ def sweep(
             console.print(f"[error]Invalid sweep config:[/error] {exc}")
             raise typer.Exit(code=1) from exc
 
+        # Download / cache models
+        try:
+            cfg.resolved_models = _ensure_models(
+                cfg.repo_id, cfg.filename, cfg.models_dir,
+            )
+        except (FileNotFoundError, RepositoryNotFoundError) as exc:
+            console.print(f"[error]{exc}[/error]")
+            raise typer.Exit(code=1) from exc
+
         resolved_results = _resolve_results_file(
             cfg_path, results_file, raw.get("results")
         )
     else:
         # ---- Pure-CLI mode ------------------------------------------------
-        if not model:
+        if not repo_id or not filename_pattern:
             console.print(
-                "[error]Provide a TOML config or --model flag.[/error]\n"
+                "[error]Provide a TOML config or --repo-id + --filename flags.[/error]\n"
                 "  Usage: ppb sweep suite.toml\n"
-                "     or: ppb sweep --model ./m.gguf --n-ctx 8192,16384 --n-batch 512"
+                "     or: ppb sweep --repo-id org/repo --filename '*.gguf' "
+                "--n-ctx 8192,16384 --n-batch 512"
             )
             raise typer.Exit(code=1)
         if not n_ctx or not n_batch:
@@ -1211,7 +1172,9 @@ def sweep(
         try:
             cu = _parse_int_list(concurrent_users, "concurrent-users") if concurrent_users else [1]
             cfg = SweepConfig(
-                model_path=model,
+                repo_id=repo_id,
+                filename=filename_pattern,
+                models_dir=models_dir or "./models",
                 n_ctx=_parse_int_list(n_ctx, "n-ctx"),
                 n_batch=_parse_int_list(n_batch, "n-batch"),
                 runner_type=runner or "llama-bench",
@@ -1219,6 +1182,15 @@ def sweep(
             )
         except Exception as exc:
             console.print(f"[error]Invalid sweep config:[/error] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        # Download / cache models
+        try:
+            cfg.resolved_models = _ensure_models(
+                cfg.repo_id, cfg.filename, cfg.models_dir,
+            )
+        except (FileNotFoundError, RepositoryNotFoundError) as exc:
+            console.print(f"[error]{exc}[/error]")
             raise typer.Exit(code=1) from exc
 
         resolved_results = _resolve_results_file(None, results_file, None)
@@ -1286,8 +1258,14 @@ def vram_cliff(
         None,
         help="Path to a TOML suite file containing a [vram-cliff] section",
     ),
-    model: Optional[str] = typer.Option(
-        None, "--model", "-m", help="Path to GGUF model file/dir/glob (overrides TOML)"
+    repo_id: Optional[str] = typer.Option(
+        None, "--repo-id", "-R", help="HF repo ID (e.g. unsloth/Qwen3.5-9B-GGUF)"
+    ),
+    filename_pattern: Optional[str] = typer.Option(
+        None, "--filename", "-f", help='GGUF filename or glob (e.g. "*Q4_K_M.gguf")'
+    ),
+    models_dir: Optional[str] = typer.Option(
+        None, "--models-dir", "-d", help="Local directory for downloaded models"
     ),
     min_ctx: Optional[int] = typer.Option(
         None, "--min_ctx", help="Minimum context length to probe (default: 2048)"
@@ -1309,15 +1287,17 @@ def vram_cliff(
 ) -> None:
     """Binary-search for the maximum context window before OOM.
 
-    Accepts a single model file, a directory of ``.gguf`` files, or a
-    glob pattern — the search runs independently for each matched model.
+    Downloads models from Hugging Face if not already cached, then runs
+    the search independently for each matched model.
 
     Can be driven by a TOML config (``ppb vram-cliff suite.toml``) or purely
-    by CLI flags (``ppb vram-cliff --model ./models/``).
+    by CLI flags (``ppb vram-cliff --repo-id org/repo --filename '*.gguf'``).
     CLI flags override TOML values.
     """
     # --- Load TOML defaults if a config was provided -------------------------
-    al_model: str | None = model
+    al_repo_id: str | None = repo_id
+    al_filename: str | None = filename_pattern
+    al_models_dir: str = models_dir or "./models"
     al_min: int = 2048
     al_max: int = 131072
     al_tol: int = 1024
@@ -1336,19 +1316,25 @@ def vram_cliff(
             except Exception as exc:
                 console.print(f"[error]Invalid [vram-cliff] config:[/error] {exc}")
                 raise typer.Exit(code=1) from exc
-            al_model = al_model or al_cfg.model_path
+            al_repo_id = al_repo_id or al_cfg.repo_id
+            al_filename = al_filename or al_cfg.filename
+            al_models_dir = models_dir or al_cfg.models_dir
             al_min = al_cfg.min_ctx
             al_max = al_cfg.max_ctx
             al_tol = al_cfg.tolerance
             al_runner = al_cfg.runner_type
             al_runner_params = al_cfg.runner_params
-        elif model is None:
+        elif repo_id is None:
             console.print(
-                "[error]No [vram-cliff] section in config and no --model flag.[/error]"
+                "[error]No [vram-cliff] section in config and no --repo-id flag.[/error]"
             )
             raise typer.Exit(code=1)
-    elif model is None:
-        console.print("[error]Provide a TOML config or --model flag.[/error]")
+    elif repo_id is None:
+        console.print("[error]Provide a TOML config or --repo-id + --filename flags.[/error]")
+        raise typer.Exit(code=1)
+
+    if not al_repo_id or not al_filename:
+        console.print("[error]Both repo_id and filename are required.[/error]")
         raise typer.Exit(code=1)
 
     # CLI overrides beat TOML
@@ -1361,23 +1347,23 @@ def vram_cliff(
     if runner is not None:
         al_runner = runner
 
-    # Resolve model path(s) using the same file/dir/glob rules as sweep.
+    # Download / cache models
     try:
-        model_paths = _resolve_model_path(al_model)  # type: ignore[arg-type]
-    except ValueError as exc:
+        resolved = _ensure_models(al_repo_id, al_filename, al_models_dir)
+    except (FileNotFoundError, RepositoryNotFoundError, Exception) as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1) from exc
 
-    model_names = ", ".join(f"[hw]{m.name}[/hw]" for m in model_paths)
+    model_names = ", ".join(f"[hw]{hf_id}[/hw]" for _, hf_id in resolved)
     console.print(
-        f"[info]VRAM Cliff[/info] probing {len(model_paths)} model(s): {model_names}\n"
+        f"[info]VRAM Cliff[/info] probing {len(resolved)} model(s): {model_names}\n"
         f"  Range     : [bold]{al_min:,}[/bold] → [bold]{al_max:,}[/bold] tokens\n"
         f"  Tolerance : [bold]{al_tol:,}[/bold] tokens"
     )
 
     all_passed = True
 
-    for mp in model_paths:
+    for mp, hf_id in resolved:
         safe = execute_vram_cliff(
             model_path=mp,
             min_ctx=al_min,
@@ -1390,13 +1376,13 @@ def vram_cliff(
         if safe == 0:
             console.print(
                 f"\n[error]Could not find a working context size for[/error] "
-                f"[hw]{mp.name}[/hw]\n"
+                f"[hw]{hf_id}[/hw]\n"
                 f"  Even n_ctx={al_min:,} failed — check that the model loads at all."
             )
             all_passed = False
         else:
             console.print(
-                f"\n[success]✓ Maximum safe context for[/success] [hw]{mp.name}[/hw]\n"
+                f"\n[success]✓ Maximum safe context for[/success] [hw]{hf_id}[/hw]\n"
                 f"\n    [bold green]{safe:,} tokens[/bold green]\n"
             )
 
@@ -1421,10 +1407,10 @@ def run_all(
 ) -> None:
     """Run the full benchmark suite: vram-cliff → sweep.
 
-    1. **vram-cliff** — discover the maximum safe context window for each
-       model (file, directory, or glob pattern).
-    2. **sweep** — run the parameter sweep, skipping any combo whose
-       ``n_ctx`` exceeds the per-model limit found in step 1.
+    1. **Download** — fetch models from Hugging Face (if not already cached).
+    2. **vram-cliff** — discover the maximum safe context window for each model.
+    3. **sweep** — run the parameter sweep, skipping any combo whose
+       ``n_ctx`` exceeds the per-model limit found in step 2.
 
     Both steps read their configuration from the same TOML file.
     If the TOML has no ``[vram-cliff]`` section, the vram-cliff step
@@ -1438,6 +1424,24 @@ def run_all(
         f"  Results → [bold]{resolved_results.resolve()}[/bold]\n"
     )
 
+    # -- Download models (shared repo_id/filename from root or sections) ----
+    # Determine HF coordinates — prefer root-level shared keys.
+    shared = {k: v for k, v in raw.items() if k in _SHARED_TOML_KEYS}
+    r_id = shared.get("repo_id") or (raw.get("sweep", {}).get("repo_id")) or (raw.get("vram-cliff", {}).get("repo_id"))
+    r_fn = shared.get("filename") or (raw.get("sweep", {}).get("filename")) or (raw.get("vram-cliff", {}).get("filename"))
+    r_dir = shared.get("models_dir") or (raw.get("sweep", {}).get("models_dir")) or (raw.get("vram-cliff", {}).get("models_dir")) or "./models"
+
+    if not r_id or not r_fn:
+        console.print("[error]repo_id and filename are required (in TOML root or sections).[/error]")
+        raise typer.Exit(code=1)
+
+    console.print("[info]Downloading / verifying models…[/info]")
+    try:
+        resolved_models = _ensure_models(r_id, r_fn, r_dir)
+    except (FileNotFoundError, RepositoryNotFoundError, Exception) as exc:
+        console.print(f"[error]Model download failed:[/error] {exc}")
+        raise typer.Exit(code=1) from exc
+
     # -- Phase 1: vram-cliff (optional) -----------------------------------
     max_ctx_caps: dict[Path, int] | None = None
 
@@ -1448,12 +1452,13 @@ def run_all(
         except Exception as exc:
             console.print(f"[error]Invalid [vram-cliff] config:[/error] {exc}")
             raise typer.Exit(code=1) from exc
+        al_cfg.resolved_models = resolved_models
 
         model_names = ", ".join(
-            f"[hw]{m.name}[/hw]" for m in al_cfg.model_paths
+            f"[hw]{hf_id}[/hw]" for _, hf_id in resolved_models
         )
         console.print(
-            f"  Probing {len(al_cfg.model_paths)} model(s): {model_names}\n"
+            f"  Probing {len(resolved_models)} model(s): {model_names}\n"
             f"  Range     : [bold]{al_cfg.min_ctx:,}[/bold] → "
             f"[bold]{al_cfg.max_ctx:,}[/bold] tokens\n"
             f"  Tolerance : [bold]{al_cfg.tolerance:,}[/bold] tokens"
@@ -1462,7 +1467,7 @@ def run_all(
         caps: dict[Path, int] = {}
         any_failed = False
 
-        for mp in al_cfg.model_paths:
+        for mp, hf_id in resolved_models:
             safe = execute_vram_cliff(
                 model_path=mp,
                 min_ctx=al_cfg.min_ctx,
@@ -1474,7 +1479,7 @@ def run_all(
 
             if safe == 0:
                 console.print(
-                    f"\n[error]vram-cliff failed for[/error] [hw]{mp.name}[/hw] "
+                    f"\n[error]vram-cliff failed for[/error] [hw]{hf_id}[/hw] "
                     f"— could not find a working context size."
                 )
                 any_failed = True
@@ -1482,7 +1487,7 @@ def run_all(
                 caps[mp] = safe
                 console.print(
                     f"\n[success]✓ Max safe context for[/success] "
-                    f"[hw]{mp.name}[/hw]: "
+                    f"[hw]{hf_id}[/hw]: "
                     f"[bold green]{safe:,} tokens[/bold green]"
                 )
 
@@ -1510,8 +1515,15 @@ def run_all(
         return
 
     console.print("[info]Phase 2 / 2:[/info] sweep")
+    try:
+        sweep_cfg = SweepConfig(**_merge_shared_params(raw, "sweep"))
+    except Exception as exc:
+        console.print(f"[error]Invalid sweep config:[/error] {exc}")
+        raise typer.Exit(code=1) from exc
+    sweep_cfg.resolved_models = resolved_models
+
     execute_sweep(
-        config_path=config,
+        sweep_config=sweep_cfg,
         results_file=resolved_results,
         max_ctx_caps=max_ctx_caps,
     )
@@ -1563,6 +1575,10 @@ def _flatten_results_file(
     submitter: str = "",
 ) -> list[dict[str, Any]]:
     """Read a raw JSONL file and return flattened rows (without raw_payload)."""
+    submission_id = uuid.uuid4().hex
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    source_sha = compute_file_sha256(results_path)
+
     flat_rows: list[dict[str, Any]] = []
     with results_path.open(encoding="utf-8") as fh:
         for line in fh:
@@ -1575,6 +1591,9 @@ def _flatten_results_file(
                 flat.pop("raw_payload", None)
                 if submitter:
                     flat["submitter"] = submitter
+                flat["submission_id"] = submission_id
+                flat["submitted_at"] = submitted_at
+                flat["source_file_sha256"] = source_sha
                 flat_rows.append(flat)
     return flat_rows
 

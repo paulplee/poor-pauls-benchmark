@@ -11,10 +11,9 @@
 #
 # Usage:
 #   uv run ppb.py sweep  suites/my_gpu.toml                   # sweep only (TOML)
-#   uv run ppb.py sweep  --model ./m.gguf --n-ctx 8192 \      # sweep (pure CLI)
-#                         --n-batch 512
+#   uv run ppb.py sweep  --repo-id org/repo --filename '*.gguf' \
+#                         --n-ctx 8192 --n-batch 512            # sweep (pure CLI)
 #   uv run ppb.py vram-cliff suites/my_gpu.toml              # vram-cliff only
-#   uv run ppb.py vram-cliff --model ./m.gguf                 # vram-cliff (CLI)
 #   uv run ppb.py all    suites/my_gpu.toml                    # vram-cliff → sweep
 #   uv run ppb.py all    suites/my_gpu.toml --results r.jsonl  # override output
 
@@ -32,22 +31,24 @@
 # ===================================================================
 
 # -------------------------------------------------------------------
-# model_path (required)
-#   Accepts any of the following:
-#     • Path to a single .gguf file   → tests that model only
-#     • Path to a directory           → tests every .gguf file inside
-#     • Glob pattern                  → tests all matching files
+# repo_id (required)
+#   Hugging Face repository ID for the GGUF model.
+#
+# filename (required)
+#   GGUF filename or glob pattern matched against the repo.
+#
+# models_dir (optional — default: "./models")
+#   Local directory where downloaded models are stored.
 #
 #   Examples:
-#     model_path = "./models/Qwen3.5-0.8B-IQ4_XS.gguf"   # single file
-#     model_path = "./models/"                              # whole directory
-#     model_path = "./models/Qwen3.5*IQ4*.gguf"            # glob
-#
-#   Both [vram-cliff] and [sweep] accept all three formats.
-#
-#   Relative paths are resolved from the directory where you run ppb.
+#     repo_id    = "unsloth/Qwen3.5-0.8B-GGUF"
+#     filename   = "Qwen3.5-0.8B-IQ4_XS.gguf"   # single file
+#     filename   = "*.gguf"                       # all quants
+#     models_dir = "./models"
 # -------------------------------------------------------------------
-# model_path = "./models/"
+# repo_id    = "unsloth/Qwen3.5-0.8B-GGUF"
+# filename   = "*.gguf"
+# models_dir = "./models"
 
 # -------------------------------------------------------------------
 # runner_type (optional — default: "llama-bench")

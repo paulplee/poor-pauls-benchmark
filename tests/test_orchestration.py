@@ -35,14 +35,20 @@ def _register_fake_runner():
     _REGISTRY.pop("fake", None)
 
 
-def _sweep_toml(tmp_path: Path, model_path: str, **extra) -> Path:
-    """Write a sweep TOML file with runner_type='fake'."""
+def _sweep_toml(tmp_path: Path, tmp_model: Path, **extra) -> Path:
+    """Write a sweep TOML file with runner_type='fake'.
+
+    Uses repo_id/filename/models_dir instead of model_path.
+    Callers must also mock ``ppb._ensure_models`` to bypass HF downloads.
+    """
     runner_params = extra.pop("runner_params", None)
 
     lines = [
         "[sweep]",
         'runner_type = "fake"',
-        f'model_path = "{model_path}"',
+        'repo_id = "test-org/test-repo"',
+        f'filename = "{tmp_model.name}"',
+        f'models_dir = "{tmp_model.parent}"',
     ]
     for key, val in extra.items():
         lines.append(f"{key} = {val}")
@@ -62,6 +68,11 @@ def _sweep_toml(tmp_path: Path, model_path: str, **extra) -> Path:
     return cfg
 
 
+def _mock_ensure_models(tmp_model: Path):
+    """Return a mock side_effect for ``ppb._ensure_models``."""
+    return lambda *a, **kw: [(tmp_model, f"test-org/test-repo/{tmp_model.name}")]
+
+
 # ==========================================================================
 # execute_sweep
 # ==========================================================================
@@ -73,17 +84,18 @@ class TestExecuteSweep:
     def test_basic_sweep_writes_jsonl(self, tmp_path: Path, tmp_model: Path) -> None:
         from ppb import execute_sweep
 
-        cfg = _sweep_toml(tmp_path, str(tmp_model))
+        cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
 
-        execute_sweep(results_file=results, config_path=cfg)
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg)
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 1  # 1 model × 1 ctx × 1 batch
 
         record = json.loads(lines[0])
         assert record["runner_type"] == "fake"
-        assert record["model_path"] == str(tmp_model)
+        assert record["model"] == f"test-org/test-repo/{tmp_model.name}"
         assert record["n_ctx"] == 512
         assert record["n_batch"] == 256
         assert "timestamp" in record
@@ -94,10 +106,11 @@ class TestExecuteSweep:
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, str(tmp_model), n_ctx="[512, 1024]", n_batch="[256, 512]"
+            tmp_path, tmp_model, n_ctx="[512, 1024]", n_batch="[256, 512]"
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(results_file=results, config_path=cfg)
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg)
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 4  # 1×2×2
@@ -110,7 +123,7 @@ class TestExecuteSweep:
 
         cfg = _sweep_toml(
             tmp_path,
-            str(tmp_model),
+            tmp_model,
             runner_params={"custom_key": "custom_value"},
         )
         results = tmp_path / "results.jsonl"
@@ -124,7 +137,8 @@ class TestExecuteSweep:
             captured.append(r)
             return r
 
-        with patch("ppb.get_runner", side_effect=spy_get):
+        with patch("ppb.get_runner", side_effect=spy_get), \
+             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(results_file=results, config_path=cfg)
 
         assert len(captured) == 1
@@ -145,10 +159,11 @@ class TestExecuteSweep:
             captured.append(r)
             return r
 
-        cfg = _sweep_toml(tmp_path, str(tmp_model))
+        cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
 
-        with patch("ppb.get_runner", side_effect=spy_get):
+        with patch("ppb.get_runner", side_effect=spy_get), \
+             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(results_file=results, config_path=cfg)
 
         assert captured[0].teardown_called
@@ -168,10 +183,11 @@ class TestExecuteSweep:
             captured.append(r)
             return r
 
-        cfg = _sweep_toml(tmp_path, str(tmp_model))
+        cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
 
-        with patch("ppb.get_runner", side_effect=spy_get):
+        with patch("ppb.get_runner", side_effect=spy_get), \
+             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(results_file=results, config_path=cfg)
 
         assert captured[0].teardown_called
@@ -191,10 +207,11 @@ class TestExecuteSweep:
             r.run_return = None
             return r
 
-        cfg = _sweep_toml(tmp_path, str(tmp_model))
+        cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
 
-        with patch("ppb.get_runner", side_effect=spy_get):
+        with patch("ppb.get_runner", side_effect=spy_get), \
+             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(results_file=results, config_path=cfg)
 
         content = results.read_text().strip() if results.exists() else ""
@@ -206,15 +223,16 @@ class TestExecuteSweep:
         """Every JSONL record must have the stable envelope fields."""
         from ppb import execute_sweep
 
-        cfg = _sweep_toml(tmp_path, str(tmp_model))
+        cfg = _sweep_toml(tmp_path, tmp_model)
         results = tmp_path / "results.jsonl"
-        execute_sweep(results_file=results, config_path=cfg)
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg)
 
         record = json.loads(results.read_text().strip())
         required_keys = {
             "timestamp",
             "runner_type",
-            "model_path",
+            "model",
             "n_ctx",
             "n_batch",
             "hardware",
@@ -241,12 +259,13 @@ class TestExecuteSweep:
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, str(tmp_model),
+            tmp_path, tmp_model,
             n_ctx="[512]", n_batch="[256]",
             concurrent_users="[1, 2]",
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(results_file=results, config_path=cfg)
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg)
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 2  # 1 model × 1 ctx × 1 batch × 2 users
@@ -258,12 +277,13 @@ class TestExecuteSweep:
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, str(tmp_model),
+            tmp_path, tmp_model,
             n_ctx="[512]", n_batch="[256]",
             concurrent_users="[4]",
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(results_file=results, config_path=cfg)
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg)
 
         record = json.loads(results.read_text().strip())
         assert record["concurrent_users"] == 4
@@ -275,11 +295,12 @@ class TestExecuteSweep:
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, str(tmp_model),
+            tmp_path, tmp_model,
             n_ctx="[512]", n_batch="[256]",
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(results_file=results, config_path=cfg)
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg)
 
         record = json.loads(results.read_text().strip())
         assert "concurrent_users" not in record
@@ -295,13 +316,16 @@ class TestExecuteSweep:
             textwrap.dedent(f"""\
             [sweep]
             runner_type = "nonexistent"
-            model_path = "{tmp_model}"
+            repo_id = "test-org/test-repo"
+            filename = "{tmp_model.name}"
+            models_dir = "{tmp_model.parent}"
             n_ctx = [512]
             n_batch = [256]
             """)
         )
 
-        with pytest.raises((ValueError, SystemExit, ClickExit)):
+        with pytest.raises((ValueError, SystemExit, ClickExit)), \
+             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             execute_sweep(results_file=tmp_path / "r.jsonl", config_path=cfg)
 
 
@@ -386,13 +410,14 @@ class TestExecuteSweepMaxCtxCap:
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, str(tmp_model), n_ctx="[512, 1024, 4096]", n_batch="[256]"
+            tmp_path, tmp_model, n_ctx="[512, 1024, 4096]", n_batch="[256]"
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(
-            results_file=results, config_path=cfg,
-            max_ctx_caps={tmp_model.resolve(): 1024},
-        )
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(
+                results_file=results, config_path=cfg,
+                max_ctx_caps={tmp_model.resolve(): 1024},
+            )
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 2  # 512 and 1024 pass, 4096 skipped
@@ -405,10 +430,11 @@ class TestExecuteSweepMaxCtxCap:
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, str(tmp_model), n_ctx="[512, 1024, 4096]", n_batch="[256]"
+            tmp_path, tmp_model, n_ctx="[512, 1024, 4096]", n_batch="[256]"
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(results_file=results, config_path=cfg, max_ctx_caps=None)
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg, max_ctx_caps=None)
 
         lines = results.read_text().strip().splitlines()
         assert len(lines) == 3
@@ -418,13 +444,14 @@ class TestExecuteSweepMaxCtxCap:
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
-            tmp_path, str(tmp_model), n_ctx="[4096, 8192]", n_batch="[256]"
+            tmp_path, tmp_model, n_ctx="[4096, 8192]", n_batch="[256]"
         )
         results = tmp_path / "results.jsonl"
-        execute_sweep(
-            results_file=results, config_path=cfg,
-            max_ctx_caps={tmp_model.resolve(): 1024},
-        )
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(
+                results_file=results, config_path=cfg,
+                max_ctx_caps={tmp_model.resolve(): 1024},
+            )
 
         content = results.read_text().strip() if results.exists() else ""
         assert content == ""
@@ -442,10 +469,13 @@ class TestExecuteSweepDirect:
         from ppb import SweepConfig, execute_sweep
 
         cfg = SweepConfig(
-            model_path=str(tmp_model),
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
+            models_dir=str(tmp_model.parent),
             n_ctx=[512],
             n_batch=[256],
             runner_type="fake",
+            resolved_models=[(tmp_model, f"test-org/test-repo/{tmp_model.name}")],
         )
         results = tmp_path / "results.jsonl"
         execute_sweep(results_file=results, sweep_config=cfg)
@@ -460,12 +490,13 @@ class TestExecuteSweepDirect:
         from ppb import SweepConfig, execute_sweep
 
         cfg = SweepConfig(
-            model_path=str(tmp_model),
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
             n_ctx=[512],
             n_batch=[256],
             runner_type="fake",
         )
-        toml_path = _sweep_toml(tmp_path, str(tmp_model))
+        toml_path = _sweep_toml(tmp_path, tmp_model)
         with pytest.raises(ValueError, match="not both"):
             execute_sweep(
                 results_file=tmp_path / "r.jsonl",
@@ -560,9 +591,10 @@ class TestRunAll:
 
         runner = CliRunner()
         results = tmp_path / "all_results.jsonl"
-        result = runner.invoke(
-            app, ["all", str(suite_toml), "--results", str(results)]
-        )
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            result = runner.invoke(
+                app, ["all", str(suite_toml), "--results", str(results)]
+            )
         # Should complete without hard error
         assert result.exit_code == 0
         # sweep should have written some results
@@ -571,7 +603,7 @@ class TestRunAll:
         assert len(lines) > 0
 
     def test_all_without_vramcliff_section(
-        self, tmp_path: Path, suite_toml_no_vramcliff: Path
+        self, tmp_path: Path, suite_toml_no_vramcliff: Path, tmp_model: Path
     ) -> None:
         """Without [vram-cliff], sweep runs unmodified."""
         from typer.testing import CliRunner
@@ -579,9 +611,10 @@ class TestRunAll:
 
         runner = CliRunner()
         results = tmp_path / "res.jsonl"
-        result = runner.invoke(
-            app, ["all", str(suite_toml_no_vramcliff), "--results", str(results)]
-        )
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            result = runner.invoke(
+                app, ["all", str(suite_toml_no_vramcliff), "--results", str(results)]
+            )
         assert result.exit_code == 0
         assert results.exists()
         lines = results.read_text().strip().splitlines()
@@ -596,8 +629,11 @@ class TestRunAll:
         cfg = tmp_path / "fail_suite.toml"
         cfg.write_text(
             textwrap.dedent(f"""\
+            repo_id = "test-org/test-repo"
+            filename = "{tmp_model.name}"
+            models_dir = "{tmp_model.parent}"
+
             [vram-cliff]
-            model_path = "{tmp_model}"
             min_ctx = 1024
             max_ctx = 2048
             tolerance = 1024
@@ -605,7 +641,6 @@ class TestRunAll:
 
             [sweep]
             runner_type = "fake"
-            model_path = "{tmp_model}"
             n_ctx = [512]
             n_batch = [256]
             """)
@@ -620,7 +655,8 @@ class TestRunAll:
             return r
 
         runner = CliRunner()
-        with patch("ppb.get_runner", side_effect=spy_get):
+        with patch("ppb.get_runner", side_effect=spy_get), \
+             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
             result = runner.invoke(
                 app, ["all", str(cfg), "--results", str(tmp_path / "r.jsonl")]
             )
@@ -642,7 +678,8 @@ class TestBackwardCompat:
         from ppb import SweepConfig
 
         cfg = SweepConfig(
-            model_path=str(tmp_model),
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
             n_ctx=[512],
             n_batch=[256],
         )
@@ -658,7 +695,8 @@ class TestBackwardCompat:
         toml_path.write_text(
             textwrap.dedent(f"""\
             [sweep]
-            model_path = "{tmp_model}"
+            repo_id = "test-org/test-repo"
+            filename = "{tmp_model.name}"
             n_ctx = [512]
             n_batch = [256]
             """)

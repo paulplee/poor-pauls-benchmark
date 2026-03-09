@@ -22,7 +22,7 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 - **Auto-Discover VRAM Limits:** Using a binary search algorithm, PPB automatically probes your hardware to find the exact maximum context size a specific model can handle before triggering an OOM error.
 - **Declarative Parameter Sweeps:** Define your test matrices in a simple TOML file. PPB will automatically iterate through every combination of GGUF models, batch size, context length, and GPU layers.
 - **Real-World UX Metrics:** The `llama-server` runner streams completions from real ShareGPT conversational prompts, measuring **Time-To-First-Token (TTFT)** and **Inter-Token Latency (ITL)** — the numbers that matter for interactive applications.
-- **Integrated Model Downloader:** Native integration with Hugging Face Hub to download, cache, and symlink GGUF models directly via the CLI.
+- **Integrated Model Downloader:** Native integration with Hugging Face Hub to automatically download, cache, and verify GGUF models as part of any benchmark run.
 - **Automated Hardware Fingerprinting:** PPB automatically detects your OS, RAM, CPU architecture, and GPU details (via `pynvml` on Linux/Windows or `system_profiler` on macOS). Hardware profiles are embedded in every result record and can be viewed any time with `ppb hw-info`.
 - **Concurrent User Simulation:** Measure how latency degrades under load by setting `concurrent_users = [1, 2, 4, 8, 16, 32]` (or any values you like — there is no hard upper limit) in your sweep config. The `llama-server-loadtest` runner auto-discovers maximum sustainable concurrency.
 - **Stable Result Envelope:** Every JSONL record includes `runner_type`, `timestamp`, and `hardware` — so results from different runners or years apart remain comparable.
@@ -92,28 +92,20 @@ python -m pytest tests/ -v
 
 ## Usage Guide
 
-### 1. Download a Model
-
-* Note: This is a only a convenience command. If you already have models sitting somewhere, just specify the `model_path` when you run the benchmark.
-
-Easily fetch GGUF files from Hugging Face:
-
-```bash
-# Download all the Q4 variants of the unsloth/Qwen3.5-0.8B-GGUF series
-python ppb.py download unsloth/Qwen3.5-0.8B-GGUF "*Q4*.gguf"
-```
-
-### 2. Find Your VRAM Cliff (`vram-cliff`)
+### 1. Find Your VRAM Cliff (`vram-cliff`)
 
 PPB can automatically discover the maximum context window your hardware supports before running out of memory, using a binary search algorithm.
 
 **CLI-only mode:**
 
 ```bash
-python ppb.py vram-cliff --model ./models/Qwen3.5-0.8B-Q4_K_M.gguf
-# Or a whole directory / glob pattern:
-python ppb.py vram-cliff --model ./models/
-python ppb.py vram-cliff --model "./models/*Q4*.gguf"
+python ppb.py vram-cliff \
+  --repo-id unsloth/Qwen3.5-0.8B-GGUF \
+  --filename "Qwen3.5-0.8B-Q4_K_M.gguf"
+# Or a glob pattern to test multiple quants:
+python ppb.py vram-cliff \
+  --repo-id unsloth/Qwen3.5-0.8B-GGUF \
+  --filename "*Q4*.gguf"
 ```
 
 **TOML-driven mode** (reads the `[vram-cliff]` section from a suite file):
@@ -126,7 +118,9 @@ python ppb.py vram-cliff suites/my_gpu.toml
 
 ```bash
 python ppb.py vram-cliff \
-  --model ~/models/Qwen3.5-0.8B-Q4_K_M.gguf \
+  --repo-id unsloth/Qwen3.5-0.8B-GGUF \
+  --filename "Qwen3.5-0.8B-Q4_K_M.gguf" \
+  --models-dir ~/models \
   --min_ctx 2048 \
   --max_ctx 131072 \
   --tolerance 1024 \
@@ -159,19 +153,23 @@ Sample output (each iteration shows per-probe duration):
 
 #### vram-cliff options
 
-| Flag          | Default        | Description                                                  |
-| ------------- | -------------- | ------------------------------------------------------------ |
-| `CONFIG`      | _(optional)_   | Path to a TOML suite file containing a `[vram-cliff]` section. |
-| `--model`     | _(from TOML)_  | Path to a GGUF file, directory, or glob pattern (overrides TOML). |
-| `--min_ctx`   | `2048`         | Lower bound for the binary search.                           |
-| `--max_ctx`   | `131072`       | Upper bound for the binary search.                           |
-| `--tolerance` | `1024`         | Stop searching when the remaining window is this narrow.     |
-| `--runner`    | `llama-bench`  | Runner backend to use for probing.                           |
+| Flag           | Default        | Description                                                  |
+| -------------- | -------------- | ------------------------------------------------------------ |
+| `CONFIG`       | _(optional)_   | Path to a TOML suite file containing a `[vram-cliff]` section. |
+| `--repo-id`    | _(from TOML)_  | HF repository ID, e.g. `unsloth/Qwen3.5-0.8B-GGUF`.        |
+| `--filename`   | _(from TOML)_  | GGUF filename or glob pattern, e.g. `"*Q4*.gguf"`.          |
+| `--models-dir` | `./models`     | Local directory to cache downloaded models.                   |
+| `--min_ctx`    | `2048`         | Lower bound for the binary search.                           |
+| `--max_ctx`    | `131072`       | Upper bound for the binary search.                           |
+| `--tolerance`  | `1024`         | Stop searching when the remaining window is this narrow.     |
+| `--runner`     | `llama-bench`  | Runner backend to use for probing.                           |
 
 #### vram-cliff TOML section
 
 ```toml
-model_path  = "~/models/Qwen3.5-0.8B-Q4_K_M.gguf"   # single file, dir, or glob
+repo_id     = "unsloth/Qwen3.5-0.8B-GGUF"             # HF repo
+filename    = "Qwen3.5-0.8B-Q4_K_M.gguf"              # exact file or glob
+models_dir  = "./models"                               # local cache dir
 runner_type = "llama-bench"  # optional (shared across sections)
 
 [vram-cliff]
@@ -180,14 +178,16 @@ max_ctx    = 131072     # optional (default: 131072)
 tolerance  = 1024       # optional (default: 1024)
 ```
 
-When `model_path` points to a directory or glob pattern, vram-cliff probes **each matched model independently** and reports per-model results.
+When `filename` is a glob pattern (e.g. `"*Q4*.gguf"`), vram-cliff probes **each matched model independently** and reports per-model results.
 
-### 3. Run a Parameter Sweep
+### 2. Run a Parameter Sweep
 
 Create a `suite.toml` file to define your test matrix (a starter config is included at [`suites/suite.example.toml`](suites/suite.example.toml)):
 
 ```toml
-model_path = "./models/Qwen3.5-0.8B-Q4_K_M.gguf"
+repo_id    = "unsloth/Qwen3.5-0.8B-GGUF"
+filename   = "Qwen3.5-0.8B-Q4_K_M.gguf"
+models_dir = "./models"
 
 [sweep]
 n_ctx    = [8192, 16384, 32768]
@@ -205,7 +205,8 @@ python ppb.py sweep suites/my_gpu.toml --results results/my_results.jsonl
 
 ```bash
 python ppb.py sweep \
-  --model ./models/Qwen3.5-0.8B-GGUF \
+  --repo-id unsloth/Qwen3.5-0.8B-GGUF \
+  --filename "Qwen3.5-0.8B-Q4_K_M.gguf" \
   --n-ctx 8192,16384,32768 \
   --n-batch 512,1024
 ```
@@ -227,26 +228,29 @@ Sample sweep output (per-combo duration shown):
 
 #### Sweep config reference
 
-Shared fields (`model_path`, `runner_type`, `runner_params`) can live at the **top level** and are inherited by both `[vram-cliff]` and `[sweep]`. Section-level values override the root. Sweep-specific fields:
+Shared fields (`repo_id`, `filename`, `models_dir`, `runner_type`, `runner_params`) can live at the **top level** and are inherited by both `[vram-cliff]` and `[sweep]`. Section-level values override the root. Sweep-specific fields:
 
 | Key             | Type             | Required | Default         | Description |
 | --------------- | ---------------- | -------- | --------------- | ----------- |
-| `model_path`    | string (path)    | ✅       |                 | Path to a `.gguf` file, directory of `.gguf` files, or a glob pattern. Relative paths are resolved from the working directory. |
+| `repo_id`       | string           | ✅       |                 | Hugging Face repository ID, e.g. `unsloth/Qwen3.5-0.8B-GGUF`. |
+| `filename`      | string           | ✅       |                 | GGUF filename or glob pattern (e.g. `"*Q4*.gguf"`). Models are downloaded automatically. |
+| `models_dir`    | string (path)    |          | `"./models"`    | Local directory to cache downloaded models. |
 | `n_ctx`         | list of integers | ✅       |                 | Context sizes to test. Controls KV cache depth — larger values stress longer-context workloads, e.g. `[8192, 16384, 32768]`. |
 | `n_batch`       | list of integers | ✅       |                 | Batch sizes for prompt processing, e.g. `[512, 1024]`. Used by `llama-bench`; accepted but unused by `llama-server` (it manages its own batching). |
 | `concurrent_users` | list of integers |          | `[1]`           | Number of simulated users sending requests in parallel. Only meaningful for `llama-server` and `llama-server-loadtest` runners. Any positive integers are accepted — e.g. `[1, 2, 4, 8, 16, 32]`. There is no hard upper limit. |
 | `runner_type`   | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below. |
 | `runner_params` | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below. |
 
-PPB computes the full Cartesian product of `model_paths × n_ctx × n_batch × concurrent_users`, so 2 models × 3 contexts × 2 batches × 3 user counts = 36 combinations. When `concurrent_users` is omitted (defaults to `[1]`), the product stays the same as before.
+PPB computes the full Cartesian product of `models × n_ctx × n_batch × concurrent_users`, so 2 models × 3 contexts × 2 batches × 3 user counts = 36 combinations. When `concurrent_users` is omitted (defaults to `[1]`), the product stays the same as before.
 
 ##### Example: exhaustive sweep across multiple quantisations
 
 ```toml
 [sweep]
-model_path = "~/models/*Q4*.gguf"   # all Q4 quants in the folder
-n_ctx   = [8192, 16384, 32768]
-n_batch = [256, 512, 1024]
+repo_id  = "unsloth/Qwen3.5-0.8B-GGUF"
+filename = "*Q4*.gguf"   # all Q4 quants in the repo
+n_ctx    = [8192, 16384, 32768]
+n_batch  = [256, 512, 1024]
 ```
 
 This tests every matched model at all 9 `(n_ctx, n_batch)` combinations.
@@ -256,7 +260,8 @@ This tests every matched model at all 9 `(n_ctx, n_batch)` combinations.
 ```toml
 [sweep]
 runner_type = "llama-bench"
-model_path  = "~/models/"
+repo_id     = "unsloth/Qwen3.5-0.8B-GGUF"
+filename    = "Qwen3.5-0.8B-Q4_K_M.gguf"
 n_ctx       = [8192]
 n_batch     = [512]
 
@@ -303,7 +308,8 @@ python ppb.py download-dataset --repo "my-org/my-dataset" --filename "convos.jso
 
 ```toml
 # suites/my_server.toml
-model_path  = "./models/Qwen3.5-0.8B-Q4_K_M.gguf"
+repo_id     = "unsloth/Qwen3.5-0.8B-GGUF"
+filename    = "Qwen3.5-0.8B-Q4_K_M.gguf"
 runner_type = "llama-server"
 
 [sweep]
@@ -392,7 +398,7 @@ Each line written to the JSONL file is a self-contained record with a **stable e
 {
   "timestamp": "2026-03-04T10:00:00+00:00",
   "runner_type": "llama-bench",
-  "model_path": "/abs/path/to/model.gguf",
+  "model": "unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf",
   "n_ctx": 8192,
   "n_batch": 512,
   "hardware": {
@@ -451,9 +457,9 @@ The `--results` CLI flag always takes priority over the TOML value.
 | ------------------- | ----------------- | ------------------------------------------------- |
 | `PPB_LLAMA_BENCH`   | `llama-bench`     | Path or name of the `llama-bench` binary.         |
 | `PPB_LLAMA_SERVER`  | `llama-server`    | Path or name of the `llama-server` binary.        |
-| `PPB_MODELS_DIR`    | `./models`        | Default directory used by the `download` command.  |
+| `PPB_MODELS_DIR`    | `./models`        | Default directory for caching downloaded models.   |
 
-### 4. Run the Full Suite (`all`)
+### 3. Run the Full Suite (`all`)
 
 The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish** into a single invocation:
 
@@ -472,7 +478,9 @@ If the TOML has no `[vram-cliff]` section, Phase 1 is skipped and the sweep runs
 
 ```toml
 # Shared — declared once, inherited by both sections
-model_path  = "~/models/"                    # file, dir, or glob — probes each model
+repo_id     = "unsloth/Qwen3.5-0.8B-GGUF"
+filename    = "*Q4*.gguf"                    # glob — tests every matched quant
+models_dir  = "./models"
 results     = "results/my_benchmark.jsonl"   # optional
 
 [vram-cliff]
@@ -490,10 +498,10 @@ submitter = "Your Name"
 # upload  = true   # set false to write CSV only (default: true)
 ```
 
-When multiple models are matched, Phase 1 probes each one independently.
+When the filename glob matches multiple models, Phase 1 probes each one independently.
 The per-model caps are then passed to Phase 2, which skips combos that exceed each model's limit — no manual editing required.
 
-### 5. View Your Hardware Profile
+### 4. View Your Hardware Profile
 
 Quickly check what PPB detects about your system:
 
@@ -529,7 +537,7 @@ Sample output:
 
 This same profile is automatically included in every benchmark record written to `results.jsonl`.
 
-### 6. Export Results
+### 5. Export Results
 
 Convert raw JSONL benchmark files into flat CSV or normalized JSONL — ready for spreadsheets, Pandas, or Arrow ingestion:
 
@@ -545,7 +553,7 @@ Nested fields (hardware, per-GPU info, runner-specific metrics) are flattened in
 
 Output format is inferred from the file extension: `.csv` → CSV, anything else → JSONL.
 
-### 7. Publish to Leaderboard
+### 6. Publish to Leaderboard
 
 Flatten your raw JSONL results to a local CSV and optionally upload to the central PPB dataset on Hugging Face:
 
@@ -581,7 +589,8 @@ Add `concurrent_users` to your sweep config to test exact user counts:
 
 ```toml
 [sweep]
-model_path   = "~/models/Qwen3.5-9B-Q4_K_M.gguf"
+repo_id      = "unsloth/Qwen3.5-9B-GGUF"
+filename     = "Qwen3.5-9B-Q4_K_M.gguf"
 n_ctx        = [8192]
 n_batch      = [512]
 runner_type  = "llama-server"
@@ -597,7 +606,9 @@ prompt_distribution = "shared"   # all users get the same prompt (default)
 Or from the CLI:
 
 ```bash
-uv run ppb.py sweep --model ~/models/*.gguf --n-ctx 8192 --n-batch 512 \
+uv run ppb.py sweep \
+    --repo-id unsloth/Qwen3.5-9B-GGUF --filename "*Q4*.gguf" \
+    --n-ctx 8192 --n-batch 512 \
     --runner llama-server --concurrent-users 1,2,4,8,16,32
 ```
 
@@ -617,7 +628,8 @@ The load-test runner **automatically escalates** concurrency until it finds the 
 
 ```toml
 [sweep]
-model_path   = "~/models/Qwen3.5-9B-Q4_K_M.gguf"
+repo_id      = "unsloth/Qwen3.5-9B-GGUF"
+filename     = "Qwen3.5-9B-Q4_K_M.gguf"
 n_ctx        = [8192]
 n_batch      = [512]
 runner_type  = "llama-server-loadtest"
@@ -674,7 +686,8 @@ register_runner("my-runner", MyRunner)
 ```toml
 [sweep]
 runner_type = "my-runner"
-model_path  = "~/models/model.gguf"
+repo_id     = "my-org/my-model-GGUF"
+filename    = "model.gguf"
 n_ctx       = [8192]
 n_batch     = [512]
 

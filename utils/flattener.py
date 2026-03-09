@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import json
 import re
-from pathlib import PurePosixPath
+import uuid
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -19,7 +22,9 @@ from typing import Any
 
 MASTER_SCHEMA: dict[str, None] = {
     # Identity
-    "model_id": None,
+    "model": None,
+    "model_base": None,
+    "quant": None,
     # Hardware
     "gpu_name": None,
     "gpu_vram_gb": None,
@@ -49,25 +54,155 @@ MASTER_SCHEMA: dict[str, None] = {
     "p50_itl_ms": None,
     "p99_itl_ms": None,
     "max_sustainable_users": None,
+    # Provenance / dedup
+    "schema_version": None,
+    "benchmark_version": None,
+    "submission_id": None,
+    "row_id": None,
+    "submitted_at": None,
+    "machine_fingerprint": None,
+    "run_fingerprint": None,
+    "result_fingerprint": None,
+    "source_file_sha256": None,
     # Raw
     "raw_payload": None,
 }
 
-# Regex to strip quantisation suffix + .gguf extension from a model filename.
-# e.g. "Qwen3.5-9B-Q8_0.gguf" → "Qwen3.5-9B"
-_QUANT_SUFFIX_RE = re.compile(r"[-_][QqFfIiBb][A-Za-z0-9_]*\.gguf$")
+# ---------------------------------------------------------------------------
+# Provenance / fingerprint helpers
+# ---------------------------------------------------------------------------
+
+_SCHEMA_VERSION = 1
 
 
-def _derive_model_id(model_path: str | None) -> str | None:
-    """Best-effort model ID from the file path (strip quant suffix + .gguf)."""
-    if not model_path:
-        return None
-    basename = PurePosixPath(model_path).name
-    result = _QUANT_SUFFIX_RE.sub("", basename)
-    # If regex didn't match, just drop the extension
-    if result == basename:
-        result = basename.removesuffix(".gguf")
-    return result or None
+def _get_benchmark_version() -> str:
+    """Return the installed package version, or ``'unknown'``."""
+    try:
+        return importlib.metadata.version("poor-pauls-benchmark")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _norm(value: Any) -> Any:
+    """Normalize a value for deterministic hashing.
+
+    Strings are trimmed and lowercased.  Numerics and ``None`` pass through
+    unchanged so that ``json.dumps`` produces a stable canonical form.
+    """
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
+
+
+def _sha256_dict(d: dict[str, Any]) -> str:
+    """Canonical SHA-256 hex digest of a dict (sorted keys, deterministic)."""
+    payload = json.dumps(d, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _compute_machine_fingerprint(flat: dict[str, Any]) -> str:
+    """SHA-256 of stable hardware-identity fields."""
+    return _sha256_dict({
+        "os_machine": _norm(flat.get("os_machine")),
+        "cpu_model": _norm(flat.get("cpu_model")),
+        "ram_total_gb": flat.get("ram_total_gb"),
+        "gpu_name": _norm(flat.get("gpu_name")),
+        "gpu_vram_gb": flat.get("gpu_vram_gb"),
+        "os_release": _norm(flat.get("os_release")),
+    })
+
+
+def _compute_run_fingerprint(
+    flat: dict[str, Any],
+    machine_fp: str,
+    benchmark_version: str,
+) -> str:
+    """SHA-256 of benchmark-identity fields (same config on same machine)."""
+    return _sha256_dict({
+        "runner_type": _norm(flat.get("runner_type")),
+        "model": _norm(flat.get("model")),
+        "n_ctx": flat.get("n_ctx"),
+        "n_batch": flat.get("n_batch"),
+        "concurrent_users": flat.get("concurrent_users"),
+        "machine_fingerprint": machine_fp,
+        "benchmark_version": _norm(benchmark_version),
+    })
+
+
+def _compute_result_fingerprint(
+    flat: dict[str, Any],
+    run_fp: str,
+) -> str:
+    """SHA-256 of run identity + measured metrics — uniquely identifies one result."""
+    return _sha256_dict({
+        "run_fingerprint": run_fp,
+        "throughput_tok_s": flat.get("throughput_tok_s"),
+        "avg_ttft_ms": flat.get("avg_ttft_ms"),
+        "avg_itl_ms": flat.get("avg_itl_ms"),
+        "p99_ttft_ms": flat.get("p99_ttft_ms"),
+        "p99_itl_ms": flat.get("p99_itl_ms"),
+    })
+
+
+def compute_file_sha256(path: Path) -> str:
+    """Return the SHA-256 hex digest of a file (streamed, memory-safe)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(8192):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _stamp_provenance(flat: dict[str, Any]) -> None:
+    """Set provenance fields on a flat row (in-place).
+
+    ``submission_id``, ``submitted_at``, and ``source_file_sha256`` are left
+    as ``None`` — they are batch-level values set by the caller.
+    """
+    bv = _get_benchmark_version()
+    machine_fp = _compute_machine_fingerprint(flat)
+    run_fp = _compute_run_fingerprint(flat, machine_fp, bv)
+    result_fp = _compute_result_fingerprint(flat, run_fp)
+
+    flat["schema_version"] = _SCHEMA_VERSION
+    flat["benchmark_version"] = bv
+    flat["row_id"] = uuid.uuid4().hex
+    flat["machine_fingerprint"] = machine_fp
+    flat["run_fingerprint"] = run_fp
+    flat["result_fingerprint"] = result_fp
+
+
+# ---------------------------------------------------------------------------
+# Model filename parsing
+# ---------------------------------------------------------------------------
+
+# Regex to capture a quantisation suffix before .gguf.
+# e.g. "Qwen3.5-9B-Q8_0.gguf" → separator="-", quant="Q8_0"
+_QUANT_SUFFIX_RE = re.compile(r"[-_]([QqFfIiBb][A-Za-z0-9_]*)\.gguf$")
+
+
+def _parse_model_filename(filename: str | None) -> tuple[str | None, str | None]:
+    """Extract (model_base, quant) from a GGUF filename.
+
+    Examples::
+
+        >>> _parse_model_filename("Qwen3.5-9B-Q8_0.gguf")
+        ('Qwen3.5-9B', 'Q8_0')
+        >>> _parse_model_filename("my-model.gguf")
+        ('my-model', None)
+        >>> _parse_model_filename(None)
+        (None, None)
+    """
+    if not filename:
+        return None, None
+    m = _QUANT_SUFFIX_RE.search(filename)
+    if m:
+        base = filename[: m.start()]
+        quant = m.group(1)
+        return (base or None), quant
+    # No quant suffix — just drop .gguf
+    base = filename.removesuffix(".gguf")
+    return (base or None), None
 
 
 def _enrich_backends(backends: str | None, cuda_version: str | None) -> str | None:
@@ -118,6 +253,7 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat.update(envelope)
         flat.update(hw_fields)
         flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
         return [flat]
 
 
@@ -126,10 +262,15 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
     """Pull the common top-level fields shared by every runner."""
+    model = row.get("model")
+    fname = PurePosixPath(model).name if model else None
+    base, quant = _parse_model_filename(fname)
     return {
         "timestamp": row.get("timestamp"),
         "runner_type": row.get("runner_type"),
-        "model_id": _derive_model_id(row.get("model_path")),
+        "model": model,
+        "model_base": base,
+        "quant": quant,
         "n_ctx": row.get("n_ctx"),
         "n_batch": row.get("n_batch"),
         "concurrent_users": row.get("concurrent_users"),
@@ -186,6 +327,7 @@ def _flatten_llama_bench(
         )
         flat["throughput_tok_s"] = item.get("avg_ts")
         flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
         rows.append(flat)
     return rows
 
@@ -211,6 +353,7 @@ def _flatten_llama_server(
     if flat.get("concurrent_users") is None:
         flat["concurrent_users"] = results.get("concurrent_users")
     flat["raw_payload"] = raw_payload
+    _stamp_provenance(flat)
     return flat
 
 
@@ -236,4 +379,5 @@ def _flatten_llama_server_loadtest(
             best_throughput = val
     flat["throughput_tok_s"] = best_throughput
     flat["raw_payload"] = raw_payload
+    _stamp_provenance(flat)
     return flat

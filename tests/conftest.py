@@ -94,7 +94,9 @@ def sweep_toml(tmp_path: Path, tmp_model: Path) -> Path:
     cfg.write_text(
         textwrap.dedent(f"""\
         [sweep]
-        model_path = "{tmp_model}"
+        repo_id = "test-org/test-repo"
+        filename = "{tmp_model.name}"
+        models_dir = "{tmp_model.parent}"
         n_ctx = [512, 1024]
         n_batch = [256]
         """)
@@ -110,7 +112,9 @@ def sweep_toml_with_runner(tmp_path: Path, tmp_model: Path) -> Path:
         textwrap.dedent(f"""\
         [sweep]
         runner_type = "fake"
-        model_path = "{tmp_model}"
+        repo_id = "test-org/test-repo"
+        filename = "{tmp_model.name}"
+        models_dir = "{tmp_model.parent}"
         n_ctx = [512, 1024]
         n_batch = [256]
 
@@ -127,8 +131,11 @@ def suite_toml(tmp_path: Path, tmp_model: Path) -> Path:
     cfg = tmp_path / "suite.toml"
     cfg.write_text(
         textwrap.dedent(f"""\
+        repo_id = "test-org/test-repo"
+        filename = "{tmp_model.name}"
+        models_dir = "{tmp_model.parent}"
+
         [vram-cliff]
-        model_path = "{tmp_model}"
         min_ctx = 1024
         max_ctx = 4096
         tolerance = 1024
@@ -136,7 +143,6 @@ def suite_toml(tmp_path: Path, tmp_model: Path) -> Path:
 
         [sweep]
         runner_type = "fake"
-        model_path = "{tmp_model}"
         n_ctx = [512, 1024, 4096]
         n_batch = [256]
         """)
@@ -150,9 +156,12 @@ def suite_toml_no_vramcliff(tmp_path: Path, tmp_model: Path) -> Path:
     cfg = tmp_path / "sweep_only.toml"
     cfg.write_text(
         textwrap.dedent(f"""\
+        repo_id = "test-org/test-repo"
+        filename = "{tmp_model.name}"
+        models_dir = "{tmp_model.parent}"
+
         [sweep]
         runner_type = "fake"
-        model_path = "{tmp_model}"
         n_ctx = [512, 1024]
         n_batch = [256]
         """)
@@ -170,7 +179,9 @@ def suite_toml_with_results(tmp_path: Path, tmp_model: Path) -> Path:
 
         [sweep]
         runner_type = "fake"
-        model_path = "{tmp_model}"
+        repo_id = "test-org/test-repo"
+        filename = "{tmp_model.name}"
+        models_dir = "{tmp_model.parent}"
         n_ctx = [512]
         n_batch = [256]
         """)

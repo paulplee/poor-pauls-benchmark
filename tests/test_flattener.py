@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import tempfile
+from pathlib import Path
 
 import pytest
 
-from utils.flattener import MASTER_SCHEMA, flatten_benchmark_row
+from utils.flattener import MASTER_SCHEMA, compute_file_sha256, flatten_benchmark_row
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +36,7 @@ def _make_hardware():
 LLAMA_BENCH_ROW = {
     "timestamp": "2026-03-08T12:00:00+00:00",
     "runner_type": "llama-bench",
-    "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf",
+    "model": "test-org/test-repo/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 8192,
     "n_batch": 512,
     "hardware": _make_hardware(),
@@ -58,7 +61,7 @@ LLAMA_BENCH_ROW = {
 LLAMA_SERVER_ROW = {
     "timestamp": "2026-03-08T12:10:00+00:00",
     "runner_type": "llama-server",
-    "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf",
+    "model": "test-org/test-repo/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 16384,
     "n_batch": 512,
     "hardware": _make_hardware(),
@@ -76,7 +79,7 @@ LLAMA_SERVER_ROW = {
 LOADTEST_ROW = {
     "timestamp": "2026-03-08T12:20:00+00:00",
     "runner_type": "llama-server-loadtest",
-    "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf",
+    "model": "test-org/test-repo/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 8192,
     "n_batch": 512,
     "hardware": _make_hardware(),
@@ -94,36 +97,42 @@ LOADTEST_ROW = {
 
 
 # ---------------------------------------------------------------------------
-# model_id derivation
+# Model parsing (model_base / quant extraction)
 # ---------------------------------------------------------------------------
 
-class TestModelId:
-    def test_strips_quant_suffix(self):
-        row = {**LLAMA_BENCH_ROW, "model_path": "/data/models/Qwen3.5-9B-Q8_0.gguf"}
+class TestModelParsing:
+    def test_extracts_base_and_quant(self):
+        row = {**LLAMA_BENCH_ROW, "model": "org/repo/Qwen3.5-9B-Q8_0.gguf"}
         flat = flatten_benchmark_row(row)[0]
-        assert flat["model_id"] == "Qwen3.5-9B"
+        assert flat["model"] == "org/repo/Qwen3.5-9B-Q8_0.gguf"
+        assert flat["model_base"] == "Qwen3.5-9B"
+        assert flat["quant"] == "Q8_0"
 
-    def test_strips_other_quant_formats(self):
+    def test_various_quant_formats(self):
         cases = [
-            ("/m/Llama-3.1-8B-Q4_K_M.gguf", "Llama-3.1-8B"),
-            ("/m/Phi-4-F16.gguf", "Phi-4"),
-            ("/m/model-IQ2_XXS.gguf", "model"),
-            ("/m/Falcon-7B-BF16.gguf", "Falcon-7B"),
+            ("org/repo/Llama-3.1-8B-Q4_K_M.gguf", "Llama-3.1-8B", "Q4_K_M"),
+            ("org/repo/Phi-4-F16.gguf", "Phi-4", "F16"),
+            ("org/repo/model-IQ2_XXS.gguf", "model", "IQ2_XXS"),
+            ("org/repo/Falcon-7B-BF16.gguf", "Falcon-7B", "BF16"),
         ]
-        for path, expected in cases:
-            row = {**LLAMA_BENCH_ROW, "model_path": path}
+        for model, expected_base, expected_quant in cases:
+            row = {**LLAMA_BENCH_ROW, "model": model}
             flat = flatten_benchmark_row(row)[0]
-            assert flat["model_id"] == expected, f"Failed for {path}"
+            assert flat["model_base"] == expected_base, f"Failed base for {model}"
+            assert flat["quant"] == expected_quant, f"Failed quant for {model}"
 
     def test_plain_gguf_no_quant(self):
-        row = {**LLAMA_BENCH_ROW, "model_path": "/data/models/my-model.gguf"}
+        row = {**LLAMA_BENCH_ROW, "model": "org/repo/my-model.gguf"}
         flat = flatten_benchmark_row(row)[0]
-        assert flat["model_id"] == "my-model"
+        assert flat["model_base"] == "my-model"
+        assert flat["quant"] is None
 
-    def test_none_when_no_model_path(self):
-        row = {**LLAMA_BENCH_ROW, "model_path": None}
+    def test_none_when_no_model(self):
+        row = {**LLAMA_BENCH_ROW, "model": None}
         flat = flatten_benchmark_row(row)[0]
-        assert flat["model_id"] is None
+        assert flat["model"] is None
+        assert flat["model_base"] is None
+        assert flat["quant"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +171,8 @@ class TestLlamaBench:
         row = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
         assert row["timestamp"] == "2026-03-08T12:00:00+00:00"
         assert row["runner_type"] == "llama-bench"
-        assert row["model_id"] == "Qwen3.5-9B"
+        assert row["model_base"] == "Qwen3.5-9B"
+        assert row["quant"] == "Q8_0"
         assert row["n_ctx"] == 8192
         assert row["n_batch"] == 512
 
@@ -243,7 +253,7 @@ class TestEdgeCases:
         row = {
             "timestamp": "2026-01-01T00:00:00+00:00",
             "runner_type": "future-runner",
-            "model_path": "/data/model.gguf",
+            "model": "org/repo/model.gguf",
             "n_ctx": 4096,
             "n_batch": 256,
             "hardware": {},
@@ -290,7 +300,7 @@ class TestUnifiedSchema:
         row = {
             "timestamp": "2026-01-01T00:00:00+00:00",
             "runner_type": "future-runner",
-            "model_path": "/data/model.gguf",
+            "model": "org/repo/model.gguf",
             "n_ctx": 4096,
             "n_batch": 256,
             "hardware": {},
@@ -303,3 +313,87 @@ class TestUnifiedSchema:
         row = {**LLAMA_SERVER_ROW, "hardware": None}
         for flat in flatten_benchmark_row(row):
             assert set(flat) == self._expected_keys
+
+
+# ---------------------------------------------------------------------------
+# Provenance / fingerprint fields
+# ---------------------------------------------------------------------------
+
+class TestProvenance:
+    def test_schema_version_is_1(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["schema_version"] == 1
+
+    def test_benchmark_version_present(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert isinstance(flat["benchmark_version"], str)
+        assert len(flat["benchmark_version"]) > 0
+
+    def test_row_id_unique_across_exploded_rows(self):
+        rows = flatten_benchmark_row(LLAMA_BENCH_ROW)
+        assert len(rows) == 2
+        assert rows[0]["row_id"] != rows[1]["row_id"]
+
+    def test_machine_fingerprint_deterministic(self):
+        a = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        b = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert a["machine_fingerprint"] == b["machine_fingerprint"]
+        assert len(a["machine_fingerprint"]) == 64  # SHA-256 hex
+
+    def test_machine_fingerprint_changes_with_hardware(self):
+        row_a = LLAMA_SERVER_ROW
+        hw_b = {**_make_hardware()}
+        hw_b["gpus"] = [{**hw_b["gpus"][0], "name": "NVIDIA RTX 4090"}]
+        row_b = {**LLAMA_SERVER_ROW, "hardware": hw_b}
+        fp_a = flatten_benchmark_row(row_a)[0]["machine_fingerprint"]
+        fp_b = flatten_benchmark_row(row_b)[0]["machine_fingerprint"]
+        assert fp_a != fp_b
+
+    def test_run_fingerprint_deterministic(self):
+        a = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        b = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert a["run_fingerprint"] == b["run_fingerprint"]
+        assert len(a["run_fingerprint"]) == 64
+
+    def test_run_fingerprint_changes_with_n_ctx(self):
+        row_a = LLAMA_SERVER_ROW
+        row_b = {**LLAMA_SERVER_ROW, "n_ctx": 4096}
+        fp_a = flatten_benchmark_row(row_a)[0]["run_fingerprint"]
+        fp_b = flatten_benchmark_row(row_b)[0]["run_fingerprint"]
+        assert fp_a != fp_b
+
+    def test_result_fingerprint_changes_with_throughput(self):
+        row_a = LLAMA_BENCH_ROW
+        altered_results = [{**LLAMA_BENCH_ROW["results"][0], "avg_ts": 9999.9}]
+        row_b = {**LLAMA_BENCH_ROW, "results": altered_results}
+        fp_a = flatten_benchmark_row(row_a)[0]["result_fingerprint"]
+        fp_b = flatten_benchmark_row(row_b)[0]["result_fingerprint"]
+        assert fp_a != fp_b
+
+    def test_result_fingerprint_stable_for_same_metrics(self):
+        a = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        b = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert a["result_fingerprint"] == b["result_fingerprint"]
+
+    def test_caller_fields_default_to_none(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["submission_id"] is None
+        assert flat["submitted_at"] is None
+        assert flat["source_file_sha256"] is None
+
+
+# ---------------------------------------------------------------------------
+# File hashing
+# ---------------------------------------------------------------------------
+
+class TestFileHash:
+    def test_compute_file_sha256_matches_hashlib(self):
+        content = b"hello world\nsome benchmark data\n"
+        expected = hashlib.sha256(content).hexdigest()
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        try:
+            assert compute_file_sha256(tmp_path) == expected
+        finally:
+            tmp_path.unlink()
