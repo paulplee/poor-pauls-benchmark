@@ -440,7 +440,7 @@ class TestExecuteSweepMaxCtxCap:
         assert len(lines) == 3
 
     def test_all_combos_above_cap(self, tmp_path: Path, tmp_model: Path) -> None:
-        """When every combo exceeds cap, no results are written."""
+        """When every requested n_ctx exceeds cap, the cap is injected and used."""
         from ppb import execute_sweep
 
         cfg = _sweep_toml(
@@ -453,8 +453,11 @@ class TestExecuteSweepMaxCtxCap:
                 max_ctx_caps={tmp_model.resolve(): 1024},
             )
 
-        content = results.read_text().strip() if results.exists() else ""
-        assert content == ""
+        # The cap (1024) is injected as an n_ctx value, so 1 combo runs.
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["n_ctx"] == 1024
 
 
 # ==========================================================================

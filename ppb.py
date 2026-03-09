@@ -437,9 +437,8 @@ def _ensure_models(
     *hf_identifier* has the form ``repo_id/actual_filename`` and is stored
     in the JSONL envelope as the ``model`` field.
 
-    mmproj sidecar files (``mmproj-*.gguf``) are excluded — they are
-    multimodal-projector weights that must be paired with a base model via
-    ``--mmproj``; they cannot be benchmarked as standalone models.
+    mmproj sidecar files are excluded by :func:`download_model` before
+    anything is downloaded.
     """
     paths = download_model(
         repo_id,
@@ -447,15 +446,7 @@ def _ensure_models(
         models_dir=Path(models_dir),
         token=token,
     )
-    filtered = [p for p in paths if not p.name.startswith("mmproj-")]
-    excluded = len(paths) - len(filtered)
-    if excluded:
-        log.info(
-            "Excluded %d mmproj sidecar file(s) from benchmark targets "
-            "(pass --mmproj to llama-server if you need multimodal support)",
-            excluded,
-        )
-    return [(p, f"{repo_id}/{p.name}") for p in filtered]
+    return [(p, f"{repo_id}/{p.name}") for p in paths]
 
 
 class SweepConfig(BaseModel):
@@ -669,6 +660,11 @@ def download_model(
         raise
 
     matches = fnmatch.filter(repo_files, filename_pattern)
+
+    # Silently exclude mmproj sidecar files — they are multimodal-projector
+    # weights that cannot be benchmarked as standalone models.  Users
+    # routinely use "*.gguf" globs that unintentionally pick them up.
+    matches = [m for m in matches if not Path(m).name.startswith("mmproj-")]
 
     if not matches:
         raise FileNotFoundError(
@@ -941,6 +937,20 @@ def execute_sweep(
 
     # Apply per-model max_ctx caps (from vram-cliff)
     if max_ctx_caps:
+        # Inject each model's discovered max context into the sweep's n_ctx
+        # list so there's always at least one runnable size per model, even
+        # when every user-requested n_ctx exceeds the hardware limit.
+        cap_values = {v for v in max_ctx_caps.values() if v > 0}
+        new_ctx = sorted(set(cfg.n_ctx) | cap_values)
+        if new_ctx != sorted(cfg.n_ctx):
+            added = cap_values - set(cfg.n_ctx)
+            console.print(
+                f"  [info]Injecting vram-cliff cap(s) into sweep n_ctx:[/info] "
+                f"{', '.join(f'{v:,}' for v in sorted(added))}"
+            )
+            cfg.n_ctx = new_ctx
+            combos = cfg.combos()
+
         original = len(combos)
         combos = [
             c
@@ -1580,7 +1590,7 @@ def run_all(
                     f"[bold green]{safe:,} tokens[/bold green]"
                 )
 
-        if not caps:
+        if not any(v > 0 for v in caps.values()):
             console.print(
                 "\n[error]vram-cliff failed for all models. Skipping sweep.[/error]"
             )

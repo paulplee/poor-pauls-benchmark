@@ -108,25 +108,35 @@ class ServerMixin:
         url = f"http://127.0.0.1:{self._port}/health"
         deadline = time.monotonic() + self._health_timeout
 
-        while time.monotonic() < deadline:
-            # Check server hasn't crashed.
-            if proc.poll() is not None:
-                stderr = proc.stderr.read() if proc.stderr else ""
-                raise OSError(
-                    f"llama-server exited with code {proc.returncode} "
-                    f"before becoming healthy.\nstderr: {stderr[:500]}"
-                )
-            try:
-                resp = httpx.get(url, timeout=2.0)
-                if resp.status_code == 200:
-                    log.debug("llama-server healthy on port %d", self._port)
-                    return proc
-            except httpx.ConnectError:
-                pass  # server not listening yet
-            except httpx.TimeoutException:
-                pass  # health endpoint slow
+        # Suppress httpx's per-request INFO logs during health polling —
+        # the repeated "503 Service Unavailable" lines are just noise while
+        # the server is loading a model.
+        httpx_logger = logging.getLogger("httpx")
+        prev_httpx_level = httpx_logger.level
+        httpx_logger.setLevel(logging.WARNING)
 
-            time.sleep(_HEALTH_POLL_INTERVAL_S)
+        try:
+            while time.monotonic() < deadline:
+                # Check server hasn't crashed.
+                if proc.poll() is not None:
+                    stderr = proc.stderr.read() if proc.stderr else ""
+                    raise OSError(
+                        f"llama-server exited with code {proc.returncode} "
+                        f"before becoming healthy.\nstderr: {stderr[:500]}"
+                    )
+                try:
+                    resp = httpx.get(url, timeout=2.0)
+                    if resp.status_code == 200:
+                        log.debug("llama-server healthy on port %d", self._port)
+                        return proc
+                except httpx.ConnectError:
+                    pass  # server not listening yet
+                except httpx.TimeoutException:
+                    pass  # health endpoint slow
+
+                time.sleep(_HEALTH_POLL_INTERVAL_S)
+        finally:
+            httpx_logger.setLevel(prev_httpx_level)
 
         # Timed out — kill and raise.
         self.stop_server(proc)
