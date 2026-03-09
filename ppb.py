@@ -7,6 +7,7 @@ pluggable runner architecture.  Built-in runners: ``llama-bench``
 """
 
 import contextlib
+import csv
 import fnmatch
 import itertools
 import json
@@ -17,8 +18,10 @@ import platform
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import tomllib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +47,8 @@ from rich.theme import Theme
 from datasets import download_dataset
 from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
+from utils.flattener import flatten_benchmark_row
+from utils.publisher import publish_to_hf
 
 # ---------------------------------------------------------------------------
 # Rich console & logging setup
@@ -893,7 +898,7 @@ def execute_sweep(
 
     combos = cfg.combos()
 
-    # Apply per-model max-ctx caps (from auto-limit)
+    # Apply per-model max_ctx caps (from auto-limit)
     if max_ctx_caps:
         original = len(combos)
         combos = [
@@ -1285,10 +1290,10 @@ def auto_limit(
         None, "--model", "-m", help="Path to GGUF model file/dir/glob (overrides TOML)"
     ),
     min_ctx: Optional[int] = typer.Option(
-        None, "--min-ctx", help="Minimum context length to probe (default: 2048)"
+        None, "--min_ctx", help="Minimum context length to probe (default: 2048)"
     ),
     max_ctx: Optional[int] = typer.Option(
-        None, "--max-ctx", help="Maximum context length to probe (default: 131072)"
+        None, "--max_ctx", help="Maximum context length to probe (default: 131072)"
     ),
     tolerance: Optional[int] = typer.Option(
         None,
@@ -1509,6 +1514,171 @@ def run_all(
         config_path=config,
         results_file=resolved_results,
         max_ctx_caps=max_ctx_caps,
+    )
+
+    # -- Phase 3: publish (optional) ---------------------------------------
+    if "publish" in raw and raw["publish"].get("enabled"):
+        console.print("\n[info]Phase 3 / 3:[/info] publish to Hugging Face")
+        pub_cfg = raw["publish"]
+        submitter = pub_cfg.get("submitter", "")
+        token = pub_cfg.get("token")
+
+        flat_rows = _flatten_results_file(resolved_results, submitter=submitter)
+        if flat_rows:
+            try:
+                url = publish_to_hf(flat_rows, token=token)
+                console.print(
+                    f"\n[success]✅ Published {len(flat_rows)} row(s) to Hugging Face.[/success]\n"
+                    f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
+                )
+            except Exception as exc:
+                console.print(f"\n[error]Publish failed:[/error] {exc}")
+        else:
+            console.print("[warning]No rows to publish.[/warning]")
+    elif "publish" in raw:
+        console.print(
+            "\n[info]Publish section found but [bold]enabled[/bold] is not true — skipping.[/info]"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Flatten / Export / Publish helpers
+# ---------------------------------------------------------------------------
+
+
+def _flatten_results_file(
+    results_path: Path,
+    *,
+    submitter: str = "",
+) -> list[dict[str, Any]]:
+    """Read a raw JSONL file and return flattened rows (without raw_payload)."""
+    flat_rows: list[dict[str, Any]] = []
+    with results_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            for flat in flatten_benchmark_row(row):
+                # Strip raw_payload (too large for HF / Arrow)
+                flat.pop("raw_payload", None)
+                if submitter:
+                    flat["submitter"] = submitter
+                flat_rows.append(flat)
+    return flat_rows
+
+
+@app.command(name="export")
+def export_cmd(
+    input_file: Path = typer.Option(
+        ...,
+        "--input",
+        "-i",
+        help="Path to a raw JSONL results file",
+        exists=True,
+        readable=True,
+    ),
+    output_file: Path = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="Destination path (.csv or .jsonl)",
+    ),
+) -> None:
+    """Export raw JSONL results to a flat CSV or JSONL file."""
+    flat_rows: list[dict[str, Any]] = []
+    with input_file.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            flat_rows.extend(flatten_benchmark_row(row))
+
+    if not flat_rows:
+        console.print("[warning]No rows found in input file.[/warning]")
+        raise typer.Exit(code=1)
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    suffix = output_file.suffix.lower()
+
+    if suffix == ".csv":
+        # Union of all keys across rows, preserving insertion order
+        fieldnames: list[str] = []
+        seen: set[str] = set()
+        for r in flat_rows:
+            for k in r:
+                if k not in seen:
+                    fieldnames.append(k)
+                    seen.add(k)
+
+        with output_file.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(flat_rows)
+    elif suffix == ".jsonl":
+        with output_file.open("w", encoding="utf-8") as fh:
+            for r in flat_rows:
+                fh.write(json.dumps(r, default=str) + "\n")
+    else:
+        console.print(
+            f"[error]Unsupported output format:[/error] {suffix}\n"
+            "  Use .csv or .jsonl"
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"\n[success]✅ Exported {len(flat_rows)} row(s)[/success] → "
+        f"[bold]{output_file.resolve()}[/bold]\n"
+        f"  {'📊 Excel-ready!' if suffix == '.csv' else '📄 Flat JSONL — Arrow-friendly!'}"
+    )
+
+
+@app.command(name="publish")
+def publish_cmd(
+    results: Path = typer.Option(
+        ...,
+        "--results",
+        "-r",
+        help="Path to a raw JSONL results file",
+        exists=True,
+        readable=True,
+    ),
+    token: Optional[str] = typer.Option(
+        None,
+        "--token",
+        "-t",
+        envvar="HF_TOKEN",
+        help="Hugging Face API token (or set HF_TOKEN / run huggingface-cli login)",
+    ),
+) -> None:
+    """Publish flattened benchmark results to the PPB Hugging Face leaderboard."""
+    submitter = typer.prompt(
+        "Display name for the leaderboard (leave blank to skip)",
+        default="",
+        show_default=False,
+    )
+
+    console.print("[info]Reading and flattening results…[/info]")
+    flat_rows = _flatten_results_file(results, submitter=submitter)
+
+    if not flat_rows:
+        console.print("[warning]No rows found in results file.[/warning]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"  Flattened [bold]{len(flat_rows)}[/bold] row(s). Uploading…"
+    )
+
+    try:
+        url = publish_to_hf(flat_rows, token=token)
+    except Exception as exc:
+        console.print(f"\n[error]Publish failed:[/error] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"\n[success]✅ Success! Your normalized data has been pushed to Hugging Face.[/success]\n"
+        f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
     )
 
 

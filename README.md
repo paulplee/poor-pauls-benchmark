@@ -38,6 +38,10 @@ runners/
   llama_bench.py       # Built-in llama-bench runner (raw throughput)
   llama_server.py      # Built-in llama-server runner (TTFT / ITL latency)
   llama_server_loadtest.py  # Load-test runner (max concurrency discovery)
+utils/
+  __init__.py          # Package init
+  flattener.py         # Normalize nested JSONL → flat, Arrow-friendly dicts
+  publisher.py         # Upload flattened results to HF leaderboard repo
 datasets/
   __init__.py          # Dataset download & loading helpers
   sharegpt.py          # ShareGPT download (HF Hub) + prompt extraction
@@ -123,8 +127,8 @@ python ppb.py auto-limit suites/my_gpu.toml
 ```bash
 python ppb.py auto-limit \
   --model ~/models/Qwen3.5-0.8B-Q4_K_M.gguf \
-  --min-ctx 2048 \
-  --max-ctx 131072 \
+  --min_ctx 2048 \
+  --max_ctx 131072 \
   --tolerance 1024 \
   --runner llama-bench
 ```
@@ -159,8 +163,8 @@ Sample output (each iteration shows per-probe duration):
 | ------------- | -------------- | ------------------------------------------------------------ |
 | `CONFIG`      | _(optional)_   | Path to a TOML suite file containing an `[auto-limit]` section. |
 | `--model`     | _(from TOML)_  | Path to a GGUF file, directory, or glob pattern (overrides TOML). |
-| `--min-ctx`   | `2048`         | Lower bound for the binary search.                           |
-| `--max-ctx`   | `131072`       | Upper bound for the binary search.                           |
+| `--min_ctx`   | `2048`         | Lower bound for the binary search.                           |
+| `--max_ctx`   | `131072`       | Upper bound for the binary search.                           |
 | `--tolerance` | `1024`         | Stop searching when the remaining window is this narrow.     |
 | `--runner`    | `llama-bench`  | Runner backend to use for probing.                           |
 
@@ -451,17 +455,18 @@ The `--results` CLI flag always takes priority over the TOML value.
 
 ### 4. Run the Full Suite (`all`)
 
-The `all` command combines **auto-limit** and **sweep** into a single invocation:
+The `all` command combines **auto-limit**, **sweep**, and (optionally) **publish** into a single invocation:
 
 1. **Phase 1 — auto-limit:** Discovers the max safe context window for each model.
 2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1.
+3. **Phase 3 — publish** *(optional)*: If the TOML has a `[publish]` section with `enabled = true`, flattens the results and uploads them to the central PPB leaderboard on Hugging Face.
 
 ```bash
 python ppb.py all suites/my_gpu.toml
 python ppb.py all suites/my_gpu.toml --results results/my_run.jsonl
 ```
 
-If the TOML has no `[auto-limit]` section, Phase 1 is skipped and the sweep runs unmodified.
+If the TOML has no `[auto-limit]` section, Phase 1 is skipped and the sweep runs unmodified.  If there is no `[publish]` section (or `enabled = false`), Phase 3 is skipped.
 
 #### Example suite TOML
 
@@ -478,6 +483,12 @@ tolerance  = 1024
 [sweep]
 n_ctx      = [8192, 16384, 32768, 65536, 131072]
 n_batch    = [512, 1024]
+
+# Optional: auto-publish after the sweep completes
+[publish]
+enabled   = true
+submitter = "Your Name"
+# token   = ""   # or set HF_TOKEN env var
 ```
 
 When multiple models are matched, Phase 1 probes each one independently.
@@ -518,6 +529,40 @@ Sample output:
 | `gpu_cores` *(macOS)* | system_profiler | Apple Silicon GPU core count |
 
 This same profile is automatically included in every benchmark record written to `results.jsonl`.
+
+### 6. Export Results
+
+Convert raw JSONL benchmark files into flat CSV or normalized JSONL — ready for spreadsheets, Pandas, or Arrow ingestion:
+
+```bash
+# Export to CSV
+python ppb.py export --input results/my_run.jsonl --output results/my_run.csv
+
+# Export to flat JSONL (one row per result)
+python ppb.py export -i results/my_run.jsonl -o results/my_run_flat.jsonl
+```
+
+Nested fields (hardware, per-GPU info, runner-specific metrics) are flattened into top-level columns.  `llama-bench` rows with multiple result items are exploded — each item becomes its own row.  The original raw record is preserved in a `raw_payload` column.
+
+Output format is inferred from the file extension: `.csv` → CSV, anything else → JSONL.
+
+### 7. Publish to Leaderboard
+
+Upload your flattened results directly to the central PPB dataset on Hugging Face:
+
+```bash
+python ppb.py publish --results results/my_run.jsonl
+```
+
+You'll be prompted for a display name.  Authentication uses (in order):
+
+1. `--token` flag
+2. `HF_TOKEN` environment variable
+3. Cached `huggingface-cli login` credential
+
+Results land in `submissions/results_<timestamp>_<uuid>.jsonl` inside the [`poor-paul/ppb-results`](https://huggingface.co/datasets/poor-paul/ppb-results) repository.
+
+For a fully automated "shoot and forget" workflow, add a `[publish]` section to your suite TOML and use `ppb all` — see [§4](#4-run-the-full-suite-all).
 
 ---
 
@@ -645,11 +690,19 @@ custom_option = "value"
 
 We are crowdsourcing a definitive database of Tokens-per-Second and Tokens-per-Watt across consumer hardware.
 
-To add your machine to the public database:
+The fastest way to contribute:
+
+```bash
+# One command — benchmark + publish
+python ppb.py all suites/my_gpu.toml   # add [publish] section to auto-upload
+```
+
+Or manually:
 
 1. Run a benchmark sweep: `python ppb.py all suites/my_gpu.toml`.
-2. Open an Issue in this repository titled "Benchmark Submission: [Your Hardware]".
-3. Attach or paste the contents of your results file from the `results/` directory.
+2. Publish your results: `python ppb.py publish --results results/my_run.jsonl`.
+
+You can also open an Issue titled "Benchmark Submission: [Your Hardware]" and attach your results file.
 
 The public leaderboard is hosted at: [poorpaul.dev](https://poorpaul.dev)
 
