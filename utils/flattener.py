@@ -102,14 +102,16 @@ def _sha256_dict(d: dict[str, Any]) -> str:
 
 def _compute_machine_fingerprint(flat: dict[str, Any]) -> str:
     """SHA-256 of stable hardware-identity fields."""
-    return _sha256_dict({
-        "os_machine": _norm(flat.get("os_machine")),
-        "cpu_model": _norm(flat.get("cpu_model")),
-        "ram_total_gb": flat.get("ram_total_gb"),
-        "gpu_name": _norm(flat.get("gpu_name")),
-        "gpu_vram_gb": flat.get("gpu_vram_gb"),
-        "os_release": _norm(flat.get("os_release")),
-    })
+    return _sha256_dict(
+        {
+            "os_machine": _norm(flat.get("os_machine")),
+            "cpu_model": _norm(flat.get("cpu_model")),
+            "ram_total_gb": flat.get("ram_total_gb"),
+            "gpu_name": _norm(flat.get("gpu_name")),
+            "gpu_vram_gb": flat.get("gpu_vram_gb"),
+            "os_release": _norm(flat.get("os_release")),
+        }
+    )
 
 
 def _compute_run_fingerprint(
@@ -118,15 +120,17 @@ def _compute_run_fingerprint(
     benchmark_version: str,
 ) -> str:
     """SHA-256 of benchmark-identity fields (same config on same machine)."""
-    return _sha256_dict({
-        "runner_type": _norm(flat.get("runner_type")),
-        "model": _norm(flat.get("model")),
-        "n_ctx": flat.get("n_ctx"),
-        "n_batch": flat.get("n_batch"),
-        "concurrent_users": flat.get("concurrent_users"),
-        "machine_fingerprint": machine_fp,
-        "benchmark_version": _norm(benchmark_version),
-    })
+    return _sha256_dict(
+        {
+            "runner_type": _norm(flat.get("runner_type")),
+            "model": _norm(flat.get("model")),
+            "n_ctx": flat.get("n_ctx"),
+            "n_batch": flat.get("n_batch"),
+            "concurrent_users": flat.get("concurrent_users"),
+            "machine_fingerprint": machine_fp,
+            "benchmark_version": _norm(benchmark_version),
+        }
+    )
 
 
 def _compute_result_fingerprint(
@@ -134,14 +138,16 @@ def _compute_result_fingerprint(
     run_fp: str,
 ) -> str:
     """SHA-256 of run identity + measured metrics — uniquely identifies one result."""
-    return _sha256_dict({
-        "run_fingerprint": run_fp,
-        "throughput_tok_s": flat.get("throughput_tok_s"),
-        "avg_ttft_ms": flat.get("avg_ttft_ms"),
-        "avg_itl_ms": flat.get("avg_itl_ms"),
-        "p99_ttft_ms": flat.get("p99_ttft_ms"),
-        "p99_itl_ms": flat.get("p99_itl_ms"),
-    })
+    return _sha256_dict(
+        {
+            "run_fingerprint": run_fp,
+            "throughput_tok_s": flat.get("throughput_tok_s"),
+            "avg_ttft_ms": flat.get("avg_ttft_ms"),
+            "avg_itl_ms": flat.get("avg_itl_ms"),
+            "p99_ttft_ms": flat.get("p99_ttft_ms"),
+            "p99_itl_ms": flat.get("p99_itl_ms"),
+        }
+    )
 
 
 def compute_file_sha256(path: Path) -> str:
@@ -242,11 +248,19 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
     raw_payload = json.dumps(row, default=str)
 
     if runner_type == "llama-bench" and isinstance(results, list):
-        return _flatten_llama_bench(envelope, hw_fields, cuda_version, results, raw_payload)
+        return _flatten_llama_bench(
+            envelope, hw_fields, cuda_version, results, raw_payload
+        )
     elif runner_type == "llama-server" and isinstance(results, dict):
-        return [_flatten_llama_server(envelope, hw_fields, cuda_version, results, raw_payload)]
+        return [
+            _flatten_llama_server(
+                envelope, hw_fields, cuda_version, results, raw_payload
+            )
+        ]
     elif runner_type == "llama-server-loadtest" and isinstance(results, dict):
-        return [_flatten_llama_server_loadtest(envelope, hw_fields, results, raw_payload)]
+        return [
+            _flatten_llama_server_loadtest(envelope, hw_fields, results, raw_payload)
+        ]
     else:
         # Unknown / unsupported runner — emit one row with Nones
         flat = _new_row()
@@ -322,9 +336,7 @@ def _flatten_llama_bench(
         if flat.get("gpu_name") is None and item.get("gpu_info"):
             flat["gpu_name"] = item.get("gpu_info")
         # Enrich backends with CUDA version when available
-        flat["backends"] = _enrich_backends(
-            item.get("backends"), cuda_version
-        )
+        flat["backends"] = _enrich_backends(item.get("backends"), cuda_version)
         flat["throughput_tok_s"] = item.get("avg_ts")
         flat["raw_payload"] = raw_payload
         _stamp_provenance(flat)

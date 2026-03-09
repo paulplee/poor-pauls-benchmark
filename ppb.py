@@ -18,7 +18,6 @@ import platform
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 import tomllib
 import uuid
@@ -175,7 +174,7 @@ class HardwareSniffer:
                         if line.startswith("MemTotal:"):
                             kb = int(line.split()[1])
                             data["total_bytes"] = kb * 1024
-                            data["total_gb"] = round(kb / (1024 ** 2), 1)
+                            data["total_gb"] = round(kb / (1024**2), 1)
                             break
             except OSError:
                 pass
@@ -189,7 +188,7 @@ class HardwareSniffer:
                 )
                 total = int(out.strip())
                 data["total_bytes"] = total
-                data["total_gb"] = round(total / (1024 ** 3), 1)
+                data["total_gb"] = round(total / (1024**3), 1)
             except (subprocess.SubprocessError, FileNotFoundError, ValueError):
                 pass
 
@@ -214,7 +213,7 @@ class HardwareSniffer:
                 stat.dwLength = ctypes.sizeof(stat)
                 ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
                 data["total_bytes"] = stat.ullTotalPhys
-                data["total_gb"] = round(stat.ullTotalPhys / (1024 ** 3), 1)
+                data["total_gb"] = round(stat.ullTotalPhys / (1024**3), 1)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -257,7 +256,7 @@ class HardwareSniffer:
                         "name": name,
                         "driver": driver_str,
                         "vram_total_bytes": mem.total,
-                        "vram_total_gb": round(float(mem.total) / (1024 ** 3), 1),
+                        "vram_total_gb": round(float(mem.total) / (1024**3), 1),
                     }
 
                     if cuda_ver:
@@ -279,7 +278,9 @@ class HardwareSniffer:
 
                     # PCIe gen + width (bottleneck for large model loading)
                     try:
-                        gpu["pcie_gen"] = pynvml.nvmlDeviceGetMaxPcieLinkGeneration(handle)
+                        gpu["pcie_gen"] = pynvml.nvmlDeviceGetMaxPcieLinkGeneration(
+                            handle
+                        )
                         gpu["pcie_width"] = pynvml.nvmlDeviceGetMaxPcieLinkWidth(handle)
                     except pynvml.NVMLError:
                         pass
@@ -310,7 +311,7 @@ class HardwareSniffer:
                                 "index": int(parts[0]),
                                 "name": parts[1],
                                 "driver": parts[2],
-                                "vram_total_bytes": int(vram_mb * 1024 ** 2),
+                                "vram_total_bytes": int(vram_mb * 1024**2),
                                 "vram_total_gb": round(vram_mb / 1024, 1),
                             }
                             if len(parts) > 4 and parts[4]:
@@ -365,9 +366,13 @@ class HardwareSniffer:
                                 timeout=5,
                             )
                             current["vram_total_gb"] = round(
-                                int(mem_out.strip()) / (1024 ** 3), 1
+                                int(mem_out.strip()) / (1024**3), 1
                             )
-                        except (subprocess.SubprocessError, FileNotFoundError, ValueError):
+                        except (
+                            subprocess.SubprocessError,
+                            FileNotFoundError,
+                            ValueError,
+                        ):
                             pass
                     gpus.append(current)
             except (subprocess.SubprocessError, FileNotFoundError):
@@ -399,7 +404,11 @@ class HardwareSniffer:
                     _ver_re = re.compile(r"\bversion\b|\bbuild\b", re.IGNORECASE)
                     for line in proc.stdout.splitlines():
                         line = line.strip()
-                        if line and _ver_re.search(line) and not line.lower().startswith("usage:"):
+                        if (
+                            line
+                            and _ver_re.search(line)
+                            and not line.lower().startswith("usage:")
+                        ):
                             data["llama_bench"] = line
                             break
             except (subprocess.SubprocessError, FileNotFoundError, OSError):
@@ -429,7 +438,10 @@ def _ensure_models(
     in the JSONL envelope as the ``model`` field.
     """
     paths = download_model(
-        repo_id, filename, models_dir=Path(models_dir), token=token,
+        repo_id,
+        filename,
+        models_dir=Path(models_dir),
+        token=token,
     )
     return [(p, f"{repo_id}/{p.name}") for p in paths]
 
@@ -469,11 +481,17 @@ class SweepConfig(BaseModel):
         """Return the full Cartesian product of models × n_ctx × n_batch × concurrent_users."""
         return [
             BenchCombo(
-                model_path=local, model=hf_id,
-                n_ctx=ctx, n_batch=batch, concurrent_users=users,
+                model_path=local,
+                model=hf_id,
+                n_ctx=ctx,
+                n_batch=batch,
+                concurrent_users=users,
             )
             for (local, hf_id), ctx, batch, users in itertools.product(
-                self.resolved_models, self.n_ctx, self.n_batch, self.concurrent_users,
+                self.resolved_models,
+                self.n_ctx,
+                self.n_batch,
+                self.concurrent_users,
             )
         ]
 
@@ -734,7 +752,13 @@ def load_suite_config(
 
 
 # Keys that may appear at the TOML root and are inherited by sections.
-_SHARED_TOML_KEYS = {"repo_id", "filename", "models_dir", "runner_type", "runner_params"}
+_SHARED_TOML_KEYS = {
+    "repo_id",
+    "filename",
+    "models_dir",
+    "runner_type",
+    "runner_params",
+}
 
 
 def _merge_shared_params(raw: dict, section: str) -> dict:
@@ -894,7 +918,9 @@ def execute_sweep(
         # Download / cache models if not already resolved
         if not cfg.resolved_models:
             cfg.resolved_models = _ensure_models(
-                cfg.repo_id, cfg.filename, cfg.models_dir,
+                cfg.repo_id,
+                cfg.filename,
+                cfg.models_dir,
             )
     else:
         raise ValueError("One of config_path or sweep_config is required.")
@@ -905,9 +931,9 @@ def execute_sweep(
     if max_ctx_caps:
         original = len(combos)
         combos = [
-            c for c in combos
-            if c.model_path not in max_ctx_caps
-            or c.n_ctx <= max_ctx_caps[c.model_path]
+            c
+            for c in combos
+            if c.model_path not in max_ctx_caps or c.n_ctx <= max_ctx_caps[c.model_path]
         ]
         skipped = original - len(combos)
         if skipped:
@@ -947,7 +973,9 @@ def execute_sweep(
             task = progress.add_task("Sweep", total=total, combo="starting…")
 
             for i, combo in enumerate(combos, start=1):
-                label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
+                label = (
+                    f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
+                )
                 if combo.concurrent_users > 1:
                     label += f" users={combo.concurrent_users}"
                 progress.update(task, combo=label)
@@ -981,7 +1009,9 @@ def execute_sweep(
 
                 dur = f"  ({elapsed:.1f}s)"
                 if record is None:
-                    console.print(f"  [error]✗[/error] [{i}/{total}] {label} — FAILED{dur}")
+                    console.print(
+                        f"  [error]✗[/error] [{i}/{total}] {label} — FAILED{dur}"
+                    )
                     failed += 1
                 else:
                     # Pull out the tok/s figure if llama-bench emits it
@@ -991,7 +1021,9 @@ def execute_sweep(
                         tps = f"  {tps_val:.1f} tok/s"
                     except (KeyError, IndexError, TypeError):
                         pass
-                    console.print(f"  [success]✓[/success] [{i}/{total}] {label}{tps}{dur}")
+                    console.print(
+                        f"  [success]✓[/success] [{i}/{total}] {label}{tps}{dur}"
+                    )
                     passed += 1
 
                 progress.advance(task)
@@ -1054,16 +1086,15 @@ def download_dataset_cmd(
     explicitly — useful for offline or air-gapped environments.
     """
     console.print(
-        f"[info]Downloading[/info] [bold]{filename}[/bold] from "
-        f"[bold]{repo}[/bold] …"
+        f"[info]Downloading[/info] [bold]{filename}[/bold] from [bold]{repo}[/bold] …"
     )
     try:
         path = download_dataset(
-            repo_id=repo, filename=filename, dataset_dir=dataset_dir,
+            repo_id=repo,
+            filename=filename,
+            dataset_dir=dataset_dir,
         )
-        console.print(
-            f"[success]✓ Dataset ready:[/success] [bold]{path}[/bold]"
-        )
+        console.print(f"[success]✓ Dataset ready:[/success] [bold]{path}[/bold]")
     except Exception as exc:
         console.print(f"[error]Dataset download failed:[/error] {exc}")
         log.exception("Unexpected error during dataset download")
@@ -1151,7 +1182,9 @@ def sweep(
         if runner is not None:
             sweep_raw["runner_type"] = runner
         if concurrent_users is not None:
-            sweep_raw["concurrent_users"] = _parse_int_list(concurrent_users, "concurrent-users")
+            sweep_raw["concurrent_users"] = _parse_int_list(
+                concurrent_users, "concurrent-users"
+            )
 
         try:
             cfg = SweepConfig(**sweep_raw)
@@ -1162,7 +1195,9 @@ def sweep(
         # Download / cache models
         try:
             cfg.resolved_models = _ensure_models(
-                cfg.repo_id, cfg.filename, cfg.models_dir,
+                cfg.repo_id,
+                cfg.filename,
+                cfg.models_dir,
             )
         except (FileNotFoundError, RepositoryNotFoundError) as exc:
             console.print(f"[error]{exc}[/error]")
@@ -1188,7 +1223,11 @@ def sweep(
             raise typer.Exit(code=1)
 
         try:
-            cu = _parse_int_list(concurrent_users, "concurrent-users") if concurrent_users else [1]
+            cu = (
+                _parse_int_list(concurrent_users, "concurrent-users")
+                if concurrent_users
+                else [1]
+            )
             cfg = SweepConfig(
                 repo_id=repo_id,
                 filename=filename_pattern,
@@ -1205,7 +1244,9 @@ def sweep(
         # Download / cache models
         try:
             cfg.resolved_models = _ensure_models(
-                cfg.repo_id, cfg.filename, cfg.models_dir,
+                cfg.repo_id,
+                cfg.filename,
+                cfg.models_dir,
             )
         except (FileNotFoundError, RepositoryNotFoundError) as exc:
             console.print(f"[error]{exc}[/error]")
@@ -1213,7 +1254,7 @@ def sweep(
 
         resolved_results = _resolve_results_file(None, results_file, None)
 
-    console.print(f"[info]Starting sweep[/info] …")
+    console.print("[info]Starting sweep[/info] …")
     execute_sweep(results_file=resolved_results, sweep_config=cfg)
 
 
@@ -1223,7 +1264,9 @@ def hw_info() -> None:
     hw = _hw_sniffer.snapshot()
 
     console.print("\n[info]Hardware Profile[/info]")
-    console.print(f"  OS          : [bold]{hw['os']['system']} {hw['os']['release']}[/bold]  ({hw['os']['machine']})")
+    console.print(
+        f"  OS          : [bold]{hw['os']['system']} {hw['os']['release']}[/bold]  ({hw['os']['machine']})"
+    )
 
     cpu = hw["cpu"]
     cpu_label = cpu.get("model", cpu.get("processor", "unknown"))
@@ -1348,7 +1391,9 @@ def vram_cliff(
             )
             raise typer.Exit(code=1)
     elif repo_id is None:
-        console.print("[error]Provide a TOML config or --repo-id + --filename flags.[/error]")
+        console.print(
+            "[error]Provide a TOML config or --repo-id + --filename flags.[/error]"
+        )
         raise typer.Exit(code=1)
 
     if not al_repo_id or not al_filename:
@@ -1445,12 +1490,27 @@ def run_all(
     # -- Download models (shared repo_id/filename from root or sections) ----
     # Determine HF coordinates — prefer root-level shared keys.
     shared = {k: v for k, v in raw.items() if k in _SHARED_TOML_KEYS}
-    r_id = shared.get("repo_id") or (raw.get("sweep", {}).get("repo_id")) or (raw.get("vram-cliff", {}).get("repo_id"))
-    r_fn = shared.get("filename") or (raw.get("sweep", {}).get("filename")) or (raw.get("vram-cliff", {}).get("filename"))
-    r_dir = shared.get("models_dir") or (raw.get("sweep", {}).get("models_dir")) or (raw.get("vram-cliff", {}).get("models_dir")) or "./models"
+    r_id = (
+        shared.get("repo_id")
+        or (raw.get("sweep", {}).get("repo_id"))
+        or (raw.get("vram-cliff", {}).get("repo_id"))
+    )
+    r_fn = (
+        shared.get("filename")
+        or (raw.get("sweep", {}).get("filename"))
+        or (raw.get("vram-cliff", {}).get("filename"))
+    )
+    r_dir = (
+        shared.get("models_dir")
+        or (raw.get("sweep", {}).get("models_dir"))
+        or (raw.get("vram-cliff", {}).get("models_dir"))
+        or "./models"
+    )
 
     if not r_id or not r_fn:
-        console.print("[error]repo_id and filename are required (in TOML root or sections).[/error]")
+        console.print(
+            "[error]repo_id and filename are required (in TOML root or sections).[/error]"
+        )
         raise typer.Exit(code=1)
 
     console.print("[info]Downloading / verifying models…[/info]")
@@ -1472,9 +1532,7 @@ def run_all(
             raise typer.Exit(code=1) from exc
         al_cfg.resolved_models = resolved_models
 
-        model_names = ", ".join(
-            f"[hw]{hf_id}[/hw]" for _, hf_id in resolved_models
-        )
+        model_names = ", ".join(f"[hw]{hf_id}[/hw]" for _, hf_id in resolved_models)
         console.print(
             f"  Probing {len(resolved_models)} model(s): {model_names}\n"
             f"  Range     : [bold]{al_cfg.min_ctx:,}[/bold] → "
@@ -1511,8 +1569,7 @@ def run_all(
 
         if not caps:
             console.print(
-                "\n[error]vram-cliff failed for all models. "
-                "Skipping sweep.[/error]"
+                "\n[error]vram-cliff failed for all models. Skipping sweep.[/error]"
             )
             raise typer.Exit(code=1)
 
@@ -1674,8 +1731,7 @@ def export_cmd(
                 fh.write(json.dumps(r, default=str) + "\n")
     else:
         console.print(
-            f"[error]Unsupported output format:[/error] {suffix}\n"
-            "  Use .csv or .jsonl"
+            f"[error]Unsupported output format:[/error] {suffix}\n  Use .csv or .jsonl"
         )
         raise typer.Exit(code=1)
 
@@ -1726,7 +1782,9 @@ def publish_cmd(
         flat_rows = _flatten_results_file(results_file, submitter=submitter)
 
         if not flat_rows:
-            console.print(f"[warning]No rows found in {results_file.name} — skipping.[/warning]")
+            console.print(
+                f"[warning]No rows found in {results_file.name} — skipping.[/warning]"
+            )
             continue
 
         # -- Always write a local CSV per file -----------------------------
@@ -1743,7 +1801,9 @@ def publish_cmd(
         console.print("[warning]No rows found in any results file.[/warning]")
         raise typer.Exit(code=1)
 
-    console.print(f"\n  📊 {len(all_flat_rows)} total row(s) across {len(results)} file(s) — Excel-ready!")
+    console.print(
+        f"\n  📊 {len(all_flat_rows)} total row(s) across {len(results)} file(s) — Excel-ready!"
+    )
 
     # -- Upload to HF (opt-in) ---------------------------------------------
     if not upload:
@@ -1760,8 +1820,8 @@ def publish_cmd(
         raise typer.Exit(code=1) from exc
 
     console.print(
-        f"\n[success]✅ Published to Hugging Face![/success]\n"
-        f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
+        "\n[success]✅ Published to Hugging Face![/success]\n"
+        "  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
     )
 
 
