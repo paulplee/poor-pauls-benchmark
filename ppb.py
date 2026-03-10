@@ -71,6 +71,9 @@ logging.basicConfig(
     datefmt="[%X]",
     handlers=[RichHandler(console=console, rich_tracebacks=True)],
 )
+# httpx logs every request at INFO level; suppress it globally — per-request
+# lines (health polls, completion POSTs) are noise for an end-user tool.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("ppb")
 
 # ---------------------------------------------------------------------------
