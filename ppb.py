@@ -1706,17 +1706,12 @@ def _flatten_results_file(
 
 
 def _write_csv(flat_rows: list[dict[str, Any]], output_path: Path) -> None:
-    """Write flat rows to a CSV file (union of all keys, insertion order)."""
+    """Write flat rows to a CSV file using the canonical COLUMN_ORDER."""
+    from utils.flattener import COLUMN_ORDER
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames: list[str] = []
-    seen: set[str] = set()
-    for r in flat_rows:
-        for k in r:
-            if k not in seen:
-                fieldnames.append(k)
-                seen.add(k)
     with output_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(fh, fieldnames=COLUMN_ORDER, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(flat_rows)
 

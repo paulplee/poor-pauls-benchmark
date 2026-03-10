@@ -16,63 +16,69 @@ from typing import Any
 # as ``null`` in JSON and as an empty cell in CSV.  This guarantees that
 # Apache Arrow / Hugging Face datasets see identical columns across files.
 #
-# Column order matters — it defines the CSV column order and the HF display.
-# Priority columns are listed first.
+# COLUMN_ORDER defines the canonical output order, intentionally optimised
+# for human readability in the Hugging Face dataset viewer:
+#   - benchmark identity and configuration first
+#   - performance metrics next
+#   - OS / hardware context after
+#   - provenance / fingerprint fields last
 # ---------------------------------------------------------------------------
 
-MASTER_SCHEMA: dict[str, None] = {
-    # Identity
-    "model": None,
-    "model_base": None,
-    "quant": None,
+COLUMN_ORDER: list[str] = [
+    # Benchmark identity
+    "model",
+    "model_base",
+    "quant",
+    "runner_type",
     # Hardware
-    "gpu_name": None,
-    "gpu_vram_gb": None,
-    "gpu_driver": None,
-    "backends": None,
-    "cpu_model": None,
+    "gpu_name",
+    "gpu_vram_gb",
+    "gpu_driver",
+    "backends",
+    "cpu_model",
     # Configuration
-    "n_ctx": None,
+    "n_ctx",
+    "n_batch",
+    "concurrent_users",
     # Performance — raw speed
-    "throughput_tok_s": None,
+    "throughput_tok_s",
     # Performance — user experience
-    "avg_ttft_ms": None,
-    "p99_ttft_ms": None,
-    # Metadata
-    "timestamp": None,
-    "runner_type": None,
-    "n_batch": None,
-    "submitter": None,
-    "os_system": None,
-    "os_release": None,
-    "os_machine": None,
-    "cpu_cores": None,
-    "ram_total_gb": None,
-    "concurrent_users": None,
-    "p50_ttft_ms": None,
-    "avg_itl_ms": None,
-    "p50_itl_ms": None,
-    "p99_itl_ms": None,
-    "max_sustainable_users": None,
+    "avg_ttft_ms",
+    "p50_ttft_ms",
+    "p99_ttft_ms",
+    "avg_itl_ms",
+    "p50_itl_ms",
+    "p99_itl_ms",
+    # OS / system context
+    "os_system",
+    "os_release",
+    "os_machine",
+    "cpu_cores",
+    "ram_total_gb",
+    # Submission metadata
+    "submitter",
+    "timestamp",
+    "submitted_at",
     # Provenance / dedup
-    "schema_version": None,
-    "benchmark_version": None,
-    "submission_id": None,
-    "row_id": None,
-    "submitted_at": None,
-    "machine_fingerprint": None,
-    "run_fingerprint": None,
-    "result_fingerprint": None,
-    "source_file_sha256": None,
-    # Raw
-    "raw_payload": None,
-}
+    "schema_version",
+    "benchmark_version",
+    "submission_id",
+    "row_id",
+    "machine_fingerprint",
+    "run_fingerprint",
+    "result_fingerprint",
+    "source_file_sha256",
+]
+
+# raw_payload is included in the row for internal use / HF uploads,
+# but excluded from CSV output (not in COLUMN_ORDER).
+MASTER_SCHEMA: dict[str, None] = dict.fromkeys(COLUMN_ORDER + ["raw_payload"])
 
 # ---------------------------------------------------------------------------
 # Provenance / fingerprint helpers
 # ---------------------------------------------------------------------------
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def _get_benchmark_version() -> str:
@@ -260,17 +266,17 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
     raw_payload = json.dumps(row, default=str)
 
     if runner_type == "llama-bench" and isinstance(results, list):
-        return _flatten_llama_bench(
+        rows = _flatten_llama_bench(
             envelope, hw_fields, cuda_version, results, raw_payload
         )
     elif runner_type == "llama-server" and isinstance(results, dict):
-        return [
+        rows = [
             _flatten_llama_server(
                 envelope, hw_fields, cuda_version, results, raw_payload
             )
         ]
     elif runner_type == "llama-server-loadtest" and isinstance(results, dict):
-        return [
+        rows = [
             _flatten_llama_server_loadtest(envelope, hw_fields, results, raw_payload)
         ]
     else:
@@ -280,7 +286,12 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat.update(hw_fields)
         flat["raw_payload"] = raw_payload
         _stamp_provenance(flat)
-        return [flat]
+        rows = [flat]
+
+    # Return rows with all MASTER_SCHEMA keys in canonical order.
+    # raw_payload is included; COLUMN_ORDER (used by _write_csv) excludes it.
+    schema_keys = list(MASTER_SCHEMA)
+    return [{k: r.get(k) for k in schema_keys} for r in rows]
 
 
 # -- helpers ---------------------------------------------------------------
@@ -398,10 +409,8 @@ def _flatten_llama_server_loadtest(
     flat = _new_row()
     flat.update(envelope)
     flat.update(hw_fields)
-    flat["max_sustainable_users"] = results.get("max_sustainable_users")
-
-    # Best aggregate throughput comes from the last successful entry
-    # in the concurrency curve.
+    # max_sustainable_users is not in the public schema; derive concurrent_users
+    # from the highest tested level in the concurrency curve instead.
     curve = results.get("concurrency_curve") or []
     best_throughput = None
     for level in curve:

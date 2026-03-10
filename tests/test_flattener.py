@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from utils.flattener import MASTER_SCHEMA, compute_file_sha256, flatten_benchmark_row
+from utils.flattener import COLUMN_ORDER, MASTER_SCHEMA, compute_file_sha256, flatten_benchmark_row
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,6 @@ LOADTEST_ROW = {
     "n_batch": 512,
     "hardware": _make_hardware(),
     "results": {
-        "max_sustainable_users": 8,
         "error_threshold": 0.1,
         "concurrency_curve": [
             {"concurrent_users": 1, "aggregate_throughput_tok_s": 55.0},
@@ -235,9 +234,11 @@ class TestLoadtest:
         rows = flatten_benchmark_row(LOADTEST_ROW)
         assert len(rows) == 1
 
-    def test_max_users(self):
+    def test_max_sustainable_users_absent(self):
+        """max_sustainable_users was removed from the schema in v2."""
         row = flatten_benchmark_row(LOADTEST_ROW)[0]
-        assert row["max_sustainable_users"] == 8
+        assert "max_sustainable_users" not in row
+        assert "max_concurrent_users" not in row
 
     def test_best_throughput_from_curve(self):
         row = flatten_benchmark_row(LOADTEST_ROW)[0]
@@ -320,9 +321,9 @@ class TestUnifiedSchema:
 # ---------------------------------------------------------------------------
 
 class TestProvenance:
-    def test_schema_version_is_1(self):
+    def test_schema_version_is_2(self):
         flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
-        assert flat["schema_version"] == 1
+        assert flat["schema_version"] == 2
 
     def test_benchmark_version_present(self):
         flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
@@ -348,6 +349,35 @@ class TestProvenance:
         fp_a = flatten_benchmark_row(row_a)[0]["machine_fingerprint"]
         fp_b = flatten_benchmark_row(row_b)[0]["machine_fingerprint"]
         assert fp_a != fp_b
+
+
+# ---------------------------------------------------------------------------
+# Column order
+# ---------------------------------------------------------------------------
+
+class TestColumnOrder:
+    """COLUMN_ORDER drives CSV headers and HF viewer column order."""
+
+    def test_column_order_does_not_include_raw_payload(self):
+        assert "raw_payload" not in COLUMN_ORDER
+
+    def test_column_order_does_not_include_removed_fields(self):
+        assert "max_sustainable_users" not in COLUMN_ORDER
+        assert "max_concurrent_users" not in COLUMN_ORDER
+
+    @pytest.mark.parametrize(
+        "fixture",
+        [LLAMA_BENCH_ROW, LLAMA_SERVER_ROW, LOADTEST_ROW],
+        ids=["llama-bench", "llama-server", "llama-server-loadtest"],
+    )
+    def test_flat_row_keys_start_with_column_order(self, fixture):
+        """All public columns appear in canonical order at the start of the row."""
+        flat = flatten_benchmark_row(fixture)[0]
+        public_keys = [k for k in flat if k != "raw_payload"]
+        assert public_keys == COLUMN_ORDER
+
+    def test_master_schema_keys_are_column_order_plus_raw_payload(self):
+        assert list(MASTER_SCHEMA) == COLUMN_ORDER + ["raw_payload"]
 
     def test_run_fingerprint_deterministic(self):
         a = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
