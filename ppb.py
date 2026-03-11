@@ -18,6 +18,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 import tomllib
 import uuid
@@ -47,7 +48,7 @@ from datasets import download_dataset
 from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
 from utils.flattener import compute_file_sha256, flatten_benchmark_row
-from utils.publisher import publish_to_hf
+from utils.publisher import check_hf_token, publish_to_hf
 
 # ---------------------------------------------------------------------------
 # Rich console & logging setup
@@ -80,7 +81,7 @@ log = logging.getLogger("ppb")
 # .env & defaults
 # ---------------------------------------------------------------------------
 
-load_dotenv()  # reads .env in the current working directory (if present)
+load_dotenv(override=True)  # .env always wins over pre-set shell env vars
 
 DEFAULT_MODELS_DIR = Path(os.getenv("PPB_MODELS_DIR", "./models"))
 DEFAULT_RESULTS_FILE = Path(os.getenv("PPB_RESULTS_FILE", "./results.jsonl"))
@@ -308,27 +309,33 @@ class HardwareSniffer:
                     )
                     for line in out.strip().splitlines():
                         parts = [p.strip() for p in line.split(",")]
-                        if len(parts) >= 4:
-                            vram_mb = float(parts[3])
-                            gpu = {
-                                "index": int(parts[0]),
-                                "name": parts[1],
-                                "driver": parts[2],
-                                "vram_total_bytes": int(vram_mb * 1024**2),
-                                "vram_total_gb": round(vram_mb / 1024, 1),
-                            }
-                            if len(parts) > 4 and parts[4]:
-                                gpu["compute_capability"] = parts[4]
-                            if len(parts) > 5 and parts[5]:
-                                with contextlib.suppress(ValueError):
-                                    gpu["power_limit_w"] = round(float(parts[5]))
-                            if len(parts) > 6 and parts[6]:
-                                with contextlib.suppress(ValueError):
-                                    gpu["pcie_gen"] = int(parts[6])
-                            if len(parts) > 7 and parts[7]:
-                                with contextlib.suppress(ValueError):
-                                    gpu["pcie_width"] = int(parts[7])
-                            gpus.append(gpu)
+                        if len(parts) < 4:
+                            continue
+                        gpu: dict = {
+                            "index": int(parts[0]),
+                            "name": parts[1],
+                            "driver": parts[2],
+                        }
+                        # memory.total is "[N/A]" on unified-memory GPUs (e.g.
+                        # NVIDIA GB10 Grace Blackwell) — treat system RAM as VRAM.
+                        vram_str = parts[3]
+                        if vram_str and vram_str not in ("[N/A]", "N/A"):
+                            with contextlib.suppress(ValueError):
+                                vram_mb = float(vram_str)
+                                gpu["vram_total_bytes"] = int(vram_mb * 1024**2)
+                                gpu["vram_total_gb"] = round(vram_mb / 1024, 1)
+                        if len(parts) > 4 and parts[4] not in ("[N/A]", "N/A", ""):
+                            gpu["compute_capability"] = parts[4]
+                        if len(parts) > 5 and parts[5] not in ("[N/A]", "N/A", ""):
+                            with contextlib.suppress(ValueError):
+                                gpu["power_limit_w"] = round(float(parts[5]))
+                        if len(parts) > 6 and parts[6] not in ("[N/A]", "N/A", ""):
+                            with contextlib.suppress(ValueError):
+                                gpu["pcie_gen"] = int(parts[6])
+                        if len(parts) > 7 and parts[7] not in ("[N/A]", "N/A", ""):
+                            with contextlib.suppress(ValueError):
+                                gpu["pcie_width"] = int(parts[7])
+                        gpus.append(gpu)
                 except (subprocess.SubprocessError, FileNotFoundError, ValueError):
                     pass
 
@@ -422,6 +429,226 @@ class HardwareSniffer:
 
 # Module-level singleton
 _hw_sniffer = HardwareSniffer()
+
+
+# ---------------------------------------------------------------------------
+# GPU power sampler
+# ---------------------------------------------------------------------------
+
+
+class PowerSampler:
+    """Sample power draw in a background thread during a benchmark run.
+
+    Source priority (first one that succeeds wins):
+
+    1. **NVIDIA NVML** — GPU board power on Linux / Windows.
+    2. **Linux RAPL** — Intel / AMD CPU *package* power via the kernel
+       ``powercap`` interface (``/sys/class/powercap/intel-rapl:*/``).  No
+       root required on most distributions (Ubuntu, Fedora, …).
+    3. **macOS powermetrics** — total SoC power (CPU + GPU + ANE) on Apple
+       Silicon.  Attempted without ``sudo``; only succeeds when the process
+       already has the required privilege (e.g. running as root or with an
+       appropriate entitlement).  Silently skipped otherwise.
+
+    Usage::
+
+        sampler = PowerSampler()
+        sampler.start()
+        runner.run(config)          # ← benchmark happens here
+        avg_w, max_w = sampler.stop()
+
+    Returns ``(None, None)`` when no power source is available.
+    Polls every 0.5 s; fine-grained enough for multi-second runs with
+    negligible overhead.
+    """
+
+    _POLL_INTERVAL_S = 0.5
+
+    def __init__(self) -> None:
+        self._samples: list[float] = []
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Begin sampling in a daemon thread."""
+        self._samples = []
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> tuple[float | None, float | None]:
+        """Stop sampling and return ``(avg_watts, max_watts)``.
+
+        Safe to call even if ``start()`` was never called or no power
+        source was found.
+        """
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+        if not self._samples:
+            return None, None
+        return round(sum(self._samples) / len(self._samples), 1), round(max(self._samples), 1)
+
+    def _poll(self) -> None:
+        if self._try_nvml():
+            return
+        if platform.system() == "Linux" and self._try_rapl():
+            return
+        if platform.system() == "Darwin":
+            self._try_powermetrics()
+
+    # -- source: NVIDIA NVML -----------------------------------------------
+
+    def _try_nvml(self) -> bool:
+        """Return True and run sampling loop if NVML / NVIDIA GPU is available."""
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            pynvml.nvmlInit()
+            count = pynvml.nvmlDeviceGetCount()
+            if count == 0:
+                pynvml.nvmlShutdown()
+                return False
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            # Verify the power query is supported before entering the loop.
+            pynvml.nvmlDeviceGetPowerUsage(handle)
+            while not self._stop_event.is_set():
+                try:
+                    mw = pynvml.nvmlDeviceGetPowerUsage(handle)
+                    self._samples.append(mw / 1000.0)
+                except pynvml.NVMLError:
+                    pass
+                self._stop_event.wait(self._POLL_INTERVAL_S)
+            pynvml.nvmlShutdown()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    # -- source: Linux RAPL (Intel / AMD CPU package) ----------------------
+
+    def _try_rapl(self) -> bool:
+        """Return True and run sampling loop using Linux powercap RAPL.
+
+        Reads CPU *package* power (the whole socket — cores + uncore + iGPU)
+        from the kernel ``powercap`` sysfs interface.  No root required on
+        most modern Linux distributions.
+        """
+        # The path layout differs slightly between kernel versions / distros.
+        candidates = [
+            Path("/sys/class/powercap/intel-rapl:0/energy_uj"),
+            Path("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj"),
+        ]
+        energy_path: Path | None = None
+        for p in candidates:
+            try:
+                p.read_text()
+                energy_path = p
+                break
+            except (FileNotFoundError, PermissionError):
+                continue
+        if energy_path is None:
+            return False
+
+        # The counter wraps at max_energy_range_uj; handle that gracefully.
+        try:
+            max_range = int((energy_path.parent / "max_energy_range_uj").read_text().strip())
+        except Exception:  # noqa: BLE001
+            max_range = 2**32
+
+        try:
+            prev_uj = int(energy_path.read_text().strip())
+            prev_t = time.monotonic()
+            self._stop_event.wait(self._POLL_INTERVAL_S)
+            while not self._stop_event.is_set():
+                curr_uj = int(energy_path.read_text().strip())
+                curr_t = time.monotonic()
+                dt = curr_t - prev_t
+                d_uj = (curr_uj - prev_uj) % max_range  # wraparound-safe
+                if dt > 0:
+                    self._samples.append(round(d_uj / (dt * 1e6), 1))  # µJ → W
+                prev_uj = curr_uj
+                prev_t = curr_t
+                self._stop_event.wait(self._POLL_INTERVAL_S)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    # -- source: macOS powermetrics (Apple Silicon SoC) --------------------
+
+    def _try_powermetrics(self) -> bool:
+        """Return True and run sampling loop using macOS ``powermetrics``.
+
+        Samples total SoC *package* energy (CPU + GPU + ANE) via one
+        ``powermetrics`` subprocess per poll interval.  Requires that the
+        calling process already has root / the necessary entitlement;
+        silently returns False when permission is denied.
+        """
+        if not shutil.which("powermetrics"):
+            return False
+        interval_ms = int(self._POLL_INTERVAL_S * 1000)
+        cmd = [
+            "powermetrics",
+            "--samplers", "cpu_power",
+            "-n", "1",
+            "-i", str(interval_ms),
+            "-f", "json",
+        ]
+        # Probe: one sample to confirm we have permission and can parse.
+        try:
+            probe = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=self._POLL_INTERVAL_S + 2,
+            )
+            if probe.returncode != 0:
+                return False
+            watts = self._parse_powermetrics_json(probe.stdout, interval_ms)
+            if watts is None:
+                return False
+            self._samples.append(watts)
+        except Exception:  # noqa: BLE001
+            return False
+
+        # Confirmed working — continue sampling until stop requested.
+        while not self._stop_event.is_set():
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=self._POLL_INTERVAL_S + 2,
+                )
+                if result.returncode == 0:
+                    watts = self._parse_powermetrics_json(result.stdout, interval_ms)
+                    if watts is not None:
+                        self._samples.append(watts)
+            except Exception:  # noqa: BLE001
+                pass
+        return True
+
+    @staticmethod
+    def _parse_powermetrics_json(output: str, interval_ms: int) -> float | None:
+        """Extract total package watts from a ``powermetrics -f json`` snapshot.
+
+        ``powermetrics`` reports energy in mJ consumed during the sample
+        interval; divide by elapsed seconds to get average watts.
+        """
+        try:
+            data = json.loads(output)
+            elapsed_ns = data.get("elapsed_ns") or (interval_ms * 1_000_000)
+            elapsed_s = elapsed_ns / 1e9
+            processor = data.get("processor") or {}
+            # Apple Silicon layout: processor.packages[0].package_energy (mJ)
+            packages = processor.get("packages") or []
+            if packages:
+                energy_mj = packages[0].get("package_energy")
+                if energy_mj is not None and elapsed_s > 0:
+                    return round(energy_mj / elapsed_s / 1000, 1)  # mJ/s → W
+            # Older / Intel layout: processor.package_energy (mJ)
+            energy_mj = processor.get("package_energy")
+            if energy_mj is not None and elapsed_s > 0:
+                return round(energy_mj / elapsed_s / 1000, 1)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1012,7 +1239,10 @@ def execute_sweep(
                     "concurrent_users": combo.concurrent_users,
                 }
                 t0 = time.monotonic()
+                _power_sampler = PowerSampler()
+                _power_sampler.start()
                 raw_result = runner.run(run_config)
+                avg_power_w, max_power_w = _power_sampler.stop()
                 elapsed = time.monotonic() - t0
 
                 record: dict[str, Any] | None
@@ -1029,6 +1259,9 @@ def execute_sweep(
                         "hardware": _hw_sniffer.snapshot(),
                         "results": raw_result["results"],
                     }
+                    if avg_power_w is not None:
+                        record["avg_power_w"] = avg_power_w
+                        record["max_power_w"] = max_power_w
                     _write_result(record, results_file)
 
                 dur = f"  ({elapsed:.1f}s)"
@@ -1045,8 +1278,13 @@ def execute_sweep(
                         tps = f"  {tps_val:.1f} tok/s"
                     except (KeyError, IndexError, TypeError):
                         pass
+                    pwr = (
+                        f"  {avg_power_w:.0f}W avg"
+                        if avg_power_w is not None
+                        else ""
+                    )
                     console.print(
-                        f"  [success]✓[/success] [{i}/{total}] {label}{tps}{dur}"
+                        f"  [success]✓[/success] [{i}/{total}] {label}{tps}{pwr}{dur}"
                     )
                     passed += 1
 
@@ -1543,6 +1781,21 @@ def run_all(
     except (FileNotFoundError, RepositoryNotFoundError, Exception) as exc:
         console.print(f"[error]Model download failed:[/error] {exc}")
         raise typer.Exit(code=1) from exc
+
+    # -- Pre-flight: HF write-token check (before the long benchmark) ------
+    if raw.get("publish", {}).get("upload", False):
+        pub_token = raw["publish"].get("token") or None
+        console.print("[info]Checking Hugging Face upload permissions…[/info]")
+        try:
+            check_hf_token(pub_token)
+            console.print("  [success]✅ HF token has write access — upload will succeed.[/success]\n")
+        except PermissionError as exc:
+            console.print(f"\n[error]HF token check failed:[/error] {exc}")
+            console.print(
+                "[warning]Fix your token now to avoid losing results at the end "
+                "of a long benchmark run.[/warning]\n"
+                "  Continuing anyway — results will still be saved locally."
+            )
 
     # -- Phase 1: vram-cliff (optional) -----------------------------------
     max_ctx_caps: dict[Path, int] | None = None

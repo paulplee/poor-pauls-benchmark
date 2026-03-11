@@ -42,6 +42,9 @@ COLUMN_ORDER: list[str] = [
     "concurrent_users",
     # Performance — raw speed
     "throughput_tok_s",
+    # Performance — power efficiency
+    "avg_power_w",
+    "max_power_w",
     # Performance — user experience
     "avg_ttft_ms",
     "p50_ttft_ms",
@@ -311,6 +314,11 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         "n_ctx": row.get("n_ctx"),
         "n_batch": row.get("n_batch"),
         "concurrent_users": row.get("concurrent_users"),
+        # Power draw measured during the run (Watts).
+        # Source: NVIDIA NVML (GPU board), Linux RAPL (CPU package),
+        # or macOS powermetrics (SoC). None when unavailable.
+        "avg_power_w": row.get("avg_power_w"),
+        "max_power_w": row.get("max_power_w"),
     }
 
 

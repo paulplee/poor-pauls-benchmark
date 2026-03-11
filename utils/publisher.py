@@ -16,6 +16,50 @@ from huggingface_hub.errors import HfHubHTTPError
 PPB_HF_REPO = "paulplee/ppb-results"
 
 
+def check_hf_token(token: str | None = None) -> None:
+    """Verify that *token* (or the ambient credential) can write to the PPB dataset.
+
+    Performs an authenticated ``whoami`` call **and** a lightweight write-
+    permission probe against the target repo so that write-only vs read-only
+    token issues are caught before a long benchmark run starts.
+
+    Raises
+    ------
+    PermissionError
+        When the token is missing, invalid, or read-only.
+    """
+    api = HfApi(token=token)
+
+    # 1. Authentication: token must be valid.
+    try:
+        api.whoami()
+    except Exception as exc:
+        raise PermissionError(
+            "Hugging Face token is missing or invalid.\n"
+            "  Run  huggingface-cli login  or set the HF_TOKEN environment variable."
+        ) from exc
+
+    # 2. Write permission: probe with a tiny metadata-only call.
+    # repo_info() with expand=["files"] does not write anything but will
+    # raise a 403 if the token is read-only for this repo.
+    try:
+        api.repo_info(repo_id=PPB_HF_REPO, repo_type="dataset", expand=["files"])
+    except HfHubHTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 403:
+            raise PermissionError(
+                "Your Hugging Face token is read-only and cannot upload to the PPB dataset.\n"
+                "  Please create a write-access token at https://huggingface.co/settings/tokens\n"
+                "  and save it in your .env file as  HF_TOKEN=hf_…"
+            ) from exc
+        raise  # re-raise unexpected HF errors unmodified
+    except Exception as exc:
+        # Network errors etc. — warn but don't abort; the real upload will fail
+        # with a clearer message if there is a connectivity problem.
+        raise PermissionError(
+            f"Could not verify Hugging Face write access: {exc}"
+        ) from exc
+
+
 def publish_to_hf(
     flat_rows: list[dict[str, Any]],
     *,

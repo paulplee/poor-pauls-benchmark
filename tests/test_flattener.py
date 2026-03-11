@@ -364,6 +364,8 @@ class TestColumnOrder:
     def test_column_order_does_not_include_removed_fields(self):
         assert "max_sustainable_users" not in COLUMN_ORDER
         assert "max_concurrent_users" not in COLUMN_ORDER
+        assert "avg_gpu_power_w" not in COLUMN_ORDER
+        assert "max_gpu_power_w" not in COLUMN_ORDER
 
     @pytest.mark.parametrize(
         "fixture",
