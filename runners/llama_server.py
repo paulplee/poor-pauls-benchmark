@@ -137,6 +137,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._prompts: list[str] = []
         self._n_predict: int = _DEFAULT_N_PREDICT
         self._health_timeout: float = _HEALTH_TIMEOUT_S
+        self._stop_timeout: float = _SERVER_STOP_TIMEOUT_S
         self._process: subprocess.Popen[str] | None = None
         self._port: int = 0
         self._prompt_distribution: str = "shared"
@@ -152,6 +153,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         )
         self._prompt_distribution = str(
             runner_params.get("prompt_distribution", "shared")
+        )
+        self._stop_timeout = float(
+            runner_params.get("stop_timeout", _SERVER_STOP_TIMEOUT_S)
         )
 
         num_prompts = int(runner_params.get("num_prompts", 10))

@@ -156,6 +156,7 @@ n_batch = [512, 1024]
 # dataset_filename   = "ShareGPT_V3_unfiltered_cleaned_split.json"
 # shuffle            = false     # randomise prompt order
 # seed               = 42       # RNG seed for reproducible shuffling
+# stop_timeout       = 30       # seconds to wait for SIGTERM before SIGKILL
 
 
 # ===================================================================

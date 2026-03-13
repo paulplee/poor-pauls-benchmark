@@ -60,6 +60,7 @@ from ._server_mixin import (
     find_free_port,
     percentile,
     _HEALTH_TIMEOUT_S,
+    _SERVER_STOP_TIMEOUT_S,
     _DEFAULT_N_PREDICT,
 )
 
@@ -107,6 +108,7 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         self._prompts: list[str] = []
         self._n_predict: int = _DEFAULT_N_PREDICT
         self._health_timeout: float = _HEALTH_TIMEOUT_S
+        self._stop_timeout: float = _SERVER_STOP_TIMEOUT_S
         self._process = None
         self._port: int = 0
         self._max_users: int = _DEFAULT_MAX_USERS
@@ -133,6 +135,9 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         )
         self._prompt_distribution = str(
             runner_params.get("prompt_distribution", "shared")
+        )
+        self._stop_timeout = float(
+            runner_params.get("stop_timeout", _SERVER_STOP_TIMEOUT_S)
         )
 
         raw_steps = runner_params.get("user_steps")

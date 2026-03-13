@@ -27,7 +27,7 @@ log = logging.getLogger("ppb")
 
 _HEALTH_POLL_INTERVAL_S = 0.5  # seconds between /health polls
 _HEALTH_TIMEOUT_S = 120  # max seconds to wait for server readiness
-_SERVER_STOP_TIMEOUT_S = 5  # seconds to wait after SIGTERM before SIGKILL
+_SERVER_STOP_TIMEOUT_S = 30  # seconds to wait after SIGTERM before SIGKILL
 _DEFAULT_N_PREDICT = 256  # max tokens to generate per prompt
 
 
@@ -71,6 +71,7 @@ class ServerMixin:
 
     _cmd: str
     _health_timeout: float
+    _stop_timeout: float
     _port: int
     _process: subprocess.Popen[str] | None
 
@@ -140,10 +141,11 @@ class ServerMixin:
         if proc.poll() is not None:
             return  # already exited
 
-        log.debug("Stopping llama-server (pid %d)", proc.pid)
+        timeout = getattr(self, "_stop_timeout", _SERVER_STOP_TIMEOUT_S)
+        log.debug("Stopping llama-server (pid %d), timeout=%ds", proc.pid, timeout)
         try:
             proc.send_signal(signal.SIGTERM)
-            proc.wait(timeout=_SERVER_STOP_TIMEOUT_S)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             log.warning("SIGTERM timed out — sending SIGKILL to pid %d", proc.pid)
             proc.kill()
