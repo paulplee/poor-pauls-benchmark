@@ -490,7 +490,9 @@ class PowerSampler:
             self._thread = None
         if not self._samples:
             return None, None
-        return round(sum(self._samples) / len(self._samples), 1), round(max(self._samples), 1)
+        return round(sum(self._samples) / len(self._samples), 1), round(
+            max(self._samples), 1
+        )
 
     def _poll(self) -> None:
         if self._try_nvml():
@@ -556,7 +558,9 @@ class PowerSampler:
 
         # The counter wraps at max_energy_range_uj; handle that gracefully.
         try:
-            max_range = int((energy_path.parent / "max_energy_range_uj").read_text().strip())
+            max_range = int(
+                (energy_path.parent / "max_energy_range_uj").read_text().strip()
+            )
         except Exception:  # noqa: BLE001
             max_range = 2**32
 
@@ -585,12 +589,12 @@ class PowerSampler:
     # are summed in "CPU Energy").  We also skip "* Energy" channels whose
     # values use nJ instead of mJ, duplicating a top-level channel.
     _IOREPORT_SKIP_RE = re.compile(
-        r"^EACC_CPU\d"       # per efficiency-core
-        r"|^PACC\d+_CPU\d"   # per performance-core
-        r"|^EACC_CPU$"       # E-cluster aggregate (in "CPU Energy")
-        r"|^PACC\d+_CPU$"    # P-cluster aggregate (in "CPU Energy")
-        r"|DTL"              # per-domain technology level detail
-        r"| Energy$"         # nJ-scale aggregate duplicates ("GPU Energy")
+        r"^EACC_CPU\d"  # per efficiency-core
+        r"|^PACC\d+_CPU\d"  # per performance-core
+        r"|^EACC_CPU$"  # E-cluster aggregate (in "CPU Energy")
+        r"|^PACC\d+_CPU$"  # P-cluster aggregate (in "CPU Energy")
+        r"|DTL"  # per-domain technology level detail
+        r"| Energy$"  # nJ-scale aggregate duplicates ("GPU Energy")
     )
 
     def _try_ioreport(self) -> bool:
@@ -627,13 +631,19 @@ class PowerSampler:
         # CoreFoundation signatures
         cf.CFStringCreateWithCString.restype = CFStringRef
         cf.CFStringCreateWithCString.argtypes = [
-            CFAllocatorRef, ctypes.c_char_p, ctypes.c_uint32,
+            CFAllocatorRef,
+            ctypes.c_char_p,
+            ctypes.c_uint32,
         ]
         cf.CFRelease.restype = None
         cf.CFRelease.argtypes = [CFTypeRef]
         cf.CFPropertyListCreateData.restype = CFDataRef
         cf.CFPropertyListCreateData.argtypes = [
-            CFAllocatorRef, CFTypeRef, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p,
+            CFAllocatorRef,
+            CFTypeRef,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
         ]
         cf.CFDataGetLength.restype = CFIndex
         cf.CFDataGetLength.argtypes = [CFDataRef]
@@ -643,19 +653,27 @@ class PowerSampler:
         # IOReport signatures
         iorep.IOReportCopyChannelsInGroup.restype = CFDictionaryRef
         iorep.IOReportCopyChannelsInGroup.argtypes = [
-            CFStringRef, CFStringRef,
-            ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64,
+            CFStringRef,
+            CFStringRef,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
         ]
         iorep.IOReportCreateSubscription.restype = CFTypeRef
         iorep.IOReportCreateSubscription.argtypes = [
-            CFTypeRef, CFDictionaryRef, ctypes.POINTER(CFDictionaryRef),
-            ctypes.c_uint64, CFTypeRef,
+            CFTypeRef,
+            CFDictionaryRef,
+            ctypes.POINTER(CFDictionaryRef),
+            ctypes.c_uint64,
+            CFTypeRef,
         ]
         iorep.IOReportCreateSamples.restype = CFDictionaryRef
         iorep.IOReportCreateSamples.argtypes = [CFTypeRef, CFDictionaryRef, CFTypeRef]
         iorep.IOReportCreateSamplesDelta.restype = CFDictionaryRef
         iorep.IOReportCreateSamplesDelta.argtypes = [
-            CFDictionaryRef, CFDictionaryRef, CFTypeRef,
+            CFDictionaryRef,
+            CFDictionaryRef,
+            CFTypeRef,
         ]
 
         def _cfstr(s: bytes):  # -> CFStringRef
@@ -666,7 +684,11 @@ class PowerSampler:
             if not ref:
                 return None
             xml = cf.CFPropertyListCreateData(
-                None, ref, kCFPropertyListXMLFormat_v1_0, 0, None,
+                None,
+                ref,
+                kCFPropertyListXMLFormat_v1_0,
+                0,
+                None,
             )
             if not xml:
                 return None
@@ -712,7 +734,11 @@ class PowerSampler:
 
             sub_dict = CFDictionaryRef()
             sub = iorep.IOReportCreateSubscription(
-                None, channels, ctypes.byref(sub_dict), 0, None,
+                None,
+                channels,
+                ctypes.byref(sub_dict),
+                0,
+                None,
             )
             if not sub:
                 return False
@@ -772,15 +798,21 @@ class PowerSampler:
         interval_ms = int(self._POLL_INTERVAL_S * 1000)
         cmd = [
             "powermetrics",
-            "--samplers", "cpu_power",
-            "-n", "1",
-            "-i", str(interval_ms),
-            "-f", "json",
+            "--samplers",
+            "cpu_power",
+            "-n",
+            "1",
+            "-i",
+            str(interval_ms),
+            "-f",
+            "json",
         ]
         # Probe: one sample to confirm we have permission and can parse.
         try:
             probe = subprocess.run(
-                cmd, capture_output=True, text=True,
+                cmd,
+                capture_output=True,
+                text=True,
                 timeout=self._POLL_INTERVAL_S + 2,
             )
             if probe.returncode != 0:
@@ -796,7 +828,9 @@ class PowerSampler:
         while not self._stop_event.is_set():
             try:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True,
+                    cmd,
+                    capture_output=True,
+                    text=True,
                     timeout=self._POLL_INTERVAL_S + 2,
                 )
                 if result.returncode == 0:
@@ -1461,11 +1495,7 @@ def execute_sweep(
                         tps = f"  {tps_val:.1f} tok/s"
                     except (KeyError, IndexError, TypeError):
                         pass
-                    pwr = (
-                        f"  {avg_power_w:.0f}W avg"
-                        if avg_power_w is not None
-                        else ""
-                    )
+                    pwr = f"  {avg_power_w:.0f}W avg" if avg_power_w is not None else ""
                     console.print(
                         f"  [success]✓[/success] [{i}/{total}] {label}{tps}{pwr}{dur}"
                     )
@@ -1971,7 +2001,9 @@ def run_all(
         console.print("[info]Checking Hugging Face upload permissions…[/info]")
         try:
             check_hf_token(pub_token)
-            console.print("  [success]✅ HF token has write access — upload will succeed.[/success]\n")
+            console.print(
+                "  [success]✅ HF token has write access — upload will succeed.[/success]\n"
+            )
         except PermissionError as exc:
             console.print(f"\n[error]HF token check failed:[/error] {exc}")
             console.print(
