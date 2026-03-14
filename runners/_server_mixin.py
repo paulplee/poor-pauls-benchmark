@@ -27,7 +27,7 @@ log = logging.getLogger("ppb")
 
 _HEALTH_POLL_INTERVAL_S = 0.5  # seconds between /health polls
 _HEALTH_TIMEOUT_S = 120  # max seconds to wait for server readiness
-_SERVER_STOP_TIMEOUT_S = 30  # seconds to wait after SIGTERM before SIGKILL
+_SERVER_STOP_TIMEOUT_S = 2  # seconds to wait after SIGINT/SIGTERM before SIGKILL
 _DEFAULT_N_PREDICT = 256  # max tokens to generate per prompt
 
 
@@ -137,19 +137,30 @@ class ServerMixin:
         )
 
     def stop_server(self, proc: subprocess.Popen[str]) -> None:
-        """Gracefully stop the server: SIGTERM → wait → SIGKILL."""
+        """Gracefully stop the server: SIGINT → SIGTERM → SIGKILL."""
         if proc.poll() is not None:
             return  # already exited
 
         timeout = getattr(self, "_stop_timeout", _SERVER_STOP_TIMEOUT_S)
         log.debug("Stopping llama-server (pid %d), timeout=%ds", proc.pid, timeout)
         try:
-            proc.send_signal(signal.SIGTERM)
+            # SIGINT triggers llama-server's graceful shutdown handler;
+            # SIGTERM is often ignored when the server is under heavy load.
+            proc.send_signal(signal.SIGINT)
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            log.warning("SIGTERM timed out — sending SIGKILL to pid %d", proc.pid)
-            proc.kill()
-            proc.wait(timeout=5)
+            log.debug("SIGINT timed out — escalating to SIGTERM (pid %d)", proc.pid)
+            try:
+                proc.send_signal(signal.SIGTERM)
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                log.warning(
+                    "SIGTERM timed out — sending SIGKILL to pid %d", proc.pid
+                )
+                proc.kill()
+                proc.wait(timeout=5)
+            except OSError:
+                pass  # process already gone
         except OSError:
             pass  # process already gone
 

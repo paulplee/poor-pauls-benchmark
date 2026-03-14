@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, Mock, patch, PropertyMock
+from unittest.mock import MagicMock, Mock, call, patch, PropertyMock
 
 import pytest
 
@@ -503,8 +503,8 @@ class TestLlamaServerTeardown:
 class TestStopServer:
     """Test graceful shutdown flow."""
 
-    def test_sigterm_then_wait(self) -> None:
-        """Normal shutdown: SIGTERM → wait."""
+    def test_sigint_then_wait(self) -> None:
+        """Normal shutdown: SIGINT → wait."""
         import signal
 
         proc = MagicMock()
@@ -514,16 +514,40 @@ class TestStopServer:
         r = LlamaServerRunner()
         r._stop_server(proc)
 
-        proc.send_signal.assert_called_once_with(signal.SIGTERM)
+        proc.send_signal.assert_called_once_with(signal.SIGINT)
         proc.wait.assert_called_once()
 
-    def test_sigkill_on_timeout(self) -> None:
-        """If SIGTERM wait times out, fall back to SIGKILL."""
+    def test_sigterm_on_sigint_timeout(self) -> None:
+        """If SIGINT wait times out, escalate to SIGTERM."""
+        import signal
+
         proc = MagicMock()
         proc.poll.return_value = None
         proc.pid = 42
-        # First wait (after SIGTERM) times out; second wait (after SIGKILL) succeeds.
+        # First wait (after SIGINT) times out; second wait (after SIGTERM) succeeds.
         proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="llama-server", timeout=5),
+            None,
+        ]
+
+        r = LlamaServerRunner()
+        r._stop_server(proc)
+
+        assert proc.send_signal.call_args_list == [
+            call(signal.SIGINT),
+            call(signal.SIGTERM),
+        ]
+        proc.kill.assert_not_called()
+
+    def test_sigkill_on_timeout(self) -> None:
+        """If both SIGINT and SIGTERM time out, fall back to SIGKILL."""
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.pid = 42
+        # First wait (SIGINT) times out, second wait (SIGTERM) times out,
+        # third wait (after SIGKILL) succeeds.
+        proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="llama-server", timeout=5),
             subprocess.TimeoutExpired(cmd="llama-server", timeout=5),
             None,
         ]
