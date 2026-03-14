@@ -16,6 +16,16 @@
 #   uv run ppb.py vram-cliff suites/my_gpu.toml              # vram-cliff only
 #   uv run ppb.py all    suites/my_gpu.toml                    # vram-cliff → sweep
 #   uv run ppb.py all    suites/my_gpu.toml --results r.jsonl  # override output
+#
+# Incremental publish & auto-resume:
+#   When using `ppb all` with a [publish] section, results are published
+#   to Hugging Face after *each model* completes — not at the very end.
+#   This protects you from losing days of work if the run fails late.
+#
+#   If a run is interrupted, just re-run the same command:
+#     uv run ppb.py all suites/my_gpu.toml
+#   PPB detects the existing results file, skips models that are already
+#   fully benchmarked, and resumes from where it left off.
 
 
 # ===================================================================

@@ -726,3 +726,570 @@ class TestBackwardCompat:
         cfg = SweepConfig(**raw["sweep"])
         assert cfg.runner_type == "llama-bench"
         assert cfg.runner_params == {}
+
+
+# ==========================================================================
+# suite_run_id propagation
+# ==========================================================================
+
+
+class TestSuiteRunId:
+    """Verify suite_run_id is injected into JSONL records when provided."""
+
+    def test_suite_run_id_in_records(self, tmp_path: Path, tmp_model: Path) -> None:
+        """Every JSONL record must include suite_run_id when passed."""
+        from ppb import SweepConfig, execute_sweep
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
+            models_dir=str(tmp_model.parent),
+            n_ctx=[512, 1024],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[(tmp_model, f"test-org/test-repo/{tmp_model.name}")],
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(
+            results_file=results,
+            sweep_config=cfg,
+            suite_run_id="test-run-abc123",
+        )
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 2
+        for line in lines:
+            record = json.loads(line)
+            assert record["suite_run_id"] == "test-run-abc123"
+
+    def test_no_suite_run_id_by_default(self, tmp_path: Path, tmp_model: Path) -> None:
+        """Without suite_run_id, records must not contain the field."""
+        from ppb import SweepConfig, execute_sweep
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
+            models_dir=str(tmp_model.parent),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[(tmp_model, f"test-org/test-repo/{tmp_model.name}")],
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(results_file=results, sweep_config=cfg)
+
+        record = json.loads(results.read_text().strip())
+        assert "suite_run_id" not in record
+
+
+# ==========================================================================
+# completed_models (resume — skip models)
+# ==========================================================================
+
+
+class TestCompletedModelsSkip:
+    """Verify that completed_models causes models to be skipped."""
+
+    def test_skip_completed_model(self, tmp_path: Path) -> None:
+        """Model in completed_models set should produce no results."""
+        from ppb import SweepConfig, execute_sweep
+
+        model_a = tmp_path / "model-a.gguf"
+        model_b = tmp_path / "model-b.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+        model_b.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+                (model_b, "test-org/test-repo/model-b.gguf"),
+            ],
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(
+            results_file=results,
+            sweep_config=cfg,
+            completed_models={"test-org/test-repo/model-a.gguf"},
+        )
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 1  # only model-b ran
+        record = json.loads(lines[0])
+        assert "model-b.gguf" in record["model"]
+
+    def test_skip_all_completed(self, tmp_path: Path) -> None:
+        """When all models are completed, no results should be written."""
+        from ppb import SweepConfig, execute_sweep
+
+        model_a = tmp_path / "model-a.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+            ],
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(
+            results_file=results,
+            sweep_config=cfg,
+            completed_models={"test-org/test-repo/model-a.gguf"},
+        )
+
+        content = results.read_text().strip() if results.exists() else ""
+        assert content == ""
+
+    def test_empty_completed_models_runs_all(
+        self, tmp_path: Path, tmp_model: Path
+    ) -> None:
+        """completed_models=None should run everything normally."""
+        from ppb import SweepConfig, execute_sweep
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
+            models_dir=str(tmp_model.parent),
+            n_ctx=[512, 1024],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[(tmp_model, f"test-org/test-repo/{tmp_model.name}")],
+        )
+        results = tmp_path / "results.jsonl"
+        execute_sweep(
+            results_file=results,
+            sweep_config=cfg,
+            completed_models=None,
+        )
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 2
+
+
+# ==========================================================================
+# on_model_done callback
+# ==========================================================================
+
+
+class TestOnModelDoneCallback:
+    """Verify the on_model_done callback fires correctly."""
+
+    def test_callback_called_per_model(self, tmp_path: Path) -> None:
+        """Callback must fire once per model with correct arguments."""
+        from ppb import SweepConfig, execute_sweep
+
+        model_a = tmp_path / "model-a.gguf"
+        model_b = tmp_path / "model-b.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+        model_b.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+                (model_b, "test-org/test-repo/model-b.gguf"),
+            ],
+        )
+        results = tmp_path / "results.jsonl"
+
+        callback_calls: list[tuple[str, Path, int]] = []
+
+        def on_done(model_hf_id: str, rfile: Path, line_offset: int) -> None:
+            callback_calls.append((model_hf_id, rfile, line_offset))
+
+        execute_sweep(
+            results_file=results,
+            sweep_config=cfg,
+            on_model_done=on_done,
+        )
+
+        assert len(callback_calls) == 2
+        assert callback_calls[0][0] == "test-org/test-repo/model-a.gguf"
+        assert callback_calls[0][2] == 0  # first model starts at line 0
+        assert callback_calls[1][0] == "test-org/test-repo/model-b.gguf"
+        assert callback_calls[1][2] == 1  # second model starts at line 1
+
+    def test_callback_line_offset_with_multi_combos(self, tmp_path: Path) -> None:
+        """Line offset reflects the number of combos for previous models."""
+        from ppb import SweepConfig, execute_sweep
+
+        model_a = tmp_path / "model-a.gguf"
+        model_b = tmp_path / "model-b.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+        model_b.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512, 1024],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+                (model_b, "test-org/test-repo/model-b.gguf"),
+            ],
+        )
+        results = tmp_path / "results.jsonl"
+
+        callback_calls: list[tuple[str, Path, int]] = []
+
+        def on_done(model_hf_id: str, rfile: Path, line_offset: int) -> None:
+            callback_calls.append((model_hf_id, rfile, line_offset))
+
+        execute_sweep(
+            results_file=results,
+            sweep_config=cfg,
+            on_model_done=on_done,
+        )
+
+        assert len(callback_calls) == 2
+        # model-a has 2 combos (512×256, 1024×256) → offset 0
+        assert callback_calls[0][2] == 0
+        # model-b starts at line 2
+        assert callback_calls[1][2] == 2
+
+    def test_callback_not_called_for_skipped_models(self, tmp_path: Path) -> None:
+        """Callback must not fire for models skipped via completed_models."""
+        from ppb import SweepConfig, execute_sweep
+
+        model_a = tmp_path / "model-a.gguf"
+        model_b = tmp_path / "model-b.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+        model_b.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+                (model_b, "test-org/test-repo/model-b.gguf"),
+            ],
+        )
+        results = tmp_path / "results.jsonl"
+
+        callback_calls: list[str] = []
+
+        def on_done(model_hf_id: str, rfile: Path, line_offset: int) -> None:
+            callback_calls.append(model_hf_id)
+
+        execute_sweep(
+            results_file=results,
+            sweep_config=cfg,
+            completed_models={"test-org/test-repo/model-a.gguf"},
+            on_model_done=on_done,
+        )
+
+        assert callback_calls == ["test-org/test-repo/model-b.gguf"]
+
+
+# ==========================================================================
+# _detect_completed_models
+# ==========================================================================
+
+
+class TestDetectCompletedModels:
+    """Verify resume detection from an existing results file."""
+
+    def test_detect_two_of_three_completed(self, tmp_path: Path) -> None:
+        """Two fully-benchmarked models should be detected as completed."""
+        from ppb import SweepConfig, _detect_completed_models
+
+        model_a = tmp_path / "model-a.gguf"
+        model_b = tmp_path / "model-b.gguf"
+        model_c = tmp_path / "model-c.gguf"
+        for m in (model_a, model_b, model_c):
+            m.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512, 1024],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+                (model_b, "test-org/test-repo/model-b.gguf"),
+                (model_c, "test-org/test-repo/model-c.gguf"),
+            ],
+        )
+
+        # Write 2 records each for model-a and model-b (expected: 2 ctx × 1 batch = 2)
+        results = tmp_path / "results.jsonl"
+        records = []
+        for model_id in ["test-org/test-repo/model-a.gguf", "test-org/test-repo/model-b.gguf"]:
+            for ctx in [512, 1024]:
+                records.append(json.dumps({
+                    "model": model_id,
+                    "n_ctx": ctx,
+                    "n_batch": 256,
+                    "runner_type": "fake",
+                    "suite_run_id": "run-xyz",
+                    "concurrent_users": 1,
+                    "results": {},
+                }))
+        results.write_text("\n".join(records) + "\n")
+
+        completed, run_id = _detect_completed_models(
+            results, cfg, cfg.resolved_models, None
+        )
+        assert completed == {
+            "test-org/test-repo/model-a.gguf",
+            "test-org/test-repo/model-b.gguf",
+        }
+        assert run_id == "run-xyz"
+
+    def test_partial_model_not_completed(self, tmp_path: Path) -> None:
+        """A model with fewer records than expected should not be completed."""
+        from ppb import SweepConfig, _detect_completed_models
+
+        model_a = tmp_path / "model-a.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512, 1024],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+            ],
+        )
+
+        # Write only 1 record (expected: 2)
+        results = tmp_path / "results.jsonl"
+        results.write_text(json.dumps({
+            "model": "test-org/test-repo/model-a.gguf",
+            "n_ctx": 512,
+            "n_batch": 256,
+            "runner_type": "fake",
+            "concurrent_users": 1,
+            "results": {},
+        }) + "\n")
+
+        completed, run_id = _detect_completed_models(
+            results, cfg, cfg.resolved_models, None
+        )
+        assert completed is None
+        assert run_id is None  # no suite_run_id in old records
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        """An empty results file should return None."""
+        from ppb import SweepConfig, _detect_completed_models
+
+        model_a = tmp_path / "model-a.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+            ],
+        )
+
+        results = tmp_path / "results.jsonl"
+        results.write_text("")
+
+        completed, run_id = _detect_completed_models(
+            results, cfg, cfg.resolved_models, None
+        )
+        assert completed is None
+
+    def test_nonexistent_file(self, tmp_path: Path) -> None:
+        """A missing results file should return None."""
+        from ppb import SweepConfig, _detect_completed_models
+
+        model_a = tmp_path / "model-a.gguf"
+        model_a.write_bytes(b"\x00" * 64)
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename="*.gguf",
+            models_dir=str(tmp_path),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[
+                (model_a, "test-org/test-repo/model-a.gguf"),
+            ],
+        )
+
+        completed, run_id = _detect_completed_models(
+            tmp_path / "nope.jsonl", cfg, cfg.resolved_models, None
+        )
+        assert completed is None
+        assert run_id is None
+
+
+# ==========================================================================
+# _find_resumable_results
+# ==========================================================================
+
+
+class TestFindResumableResults:
+    """Verify scanning for prior results files."""
+
+    def test_finds_most_recent(self, tmp_path: Path) -> None:
+        """Should return the most recently modified matching file."""
+        import time
+
+        from ppb import _find_resumable_results
+
+        results_dir = tmp_path / "results"
+        results_dir.mkdir()
+
+        old = results_dir / "MySuite_20260101_0000.jsonl"
+        old.write_text('{"model":"a"}\n')
+        time.sleep(0.05)
+
+        new = results_dir / "MySuite_20260314_1200.jsonl"
+        new.write_text('{"model":"b"}\n')
+
+        config = tmp_path / "MySuite.toml"
+        config.write_text("[sweep]\n")
+
+        with patch("ppb.Path") as MockPath:
+            # _find_resumable_results uses Path("results") internally;
+            # we need it to point to our tmp results dir.
+            # Easier: just test the function directly by monkeypatching.
+            pass
+
+        # Direct test: call with the real function but from the right cwd
+        import os
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            result = _find_resumable_results(config)
+            assert result is not None
+            assert result.name == "MySuite_20260314_1200.jsonl"
+        finally:
+            os.chdir(old_cwd)
+
+    def test_no_match_returns_none(self, tmp_path: Path) -> None:
+        """No matching files should return None."""
+        import os
+
+        from ppb import _find_resumable_results
+
+        results_dir = tmp_path / "results"
+        results_dir.mkdir()
+
+        # File for a different suite
+        other = results_dir / "OtherSuite_20260314_1200.jsonl"
+        other.write_text('{"model":"a"}\n')
+
+        config = tmp_path / "MySuite.toml"
+        config.write_text("[sweep]\n")
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            result = _find_resumable_results(config)
+            assert result is None
+        finally:
+            os.chdir(old_cwd)
+
+
+# ==========================================================================
+# suite_run_id in flattener
+# ==========================================================================
+
+
+class TestSuiteRunIdFlattener:
+    """Verify suite_run_id flows through the flattener pipeline."""
+
+    def test_suite_run_id_in_flat_row(self) -> None:
+        """suite_run_id from raw JSONL must appear in flattened output."""
+        from utils.flattener import COLUMN_ORDER, flatten_benchmark_row
+
+        raw = {
+            "timestamp": "2026-03-14T12:00:00+00:00",
+            "runner_type": "llama-server",
+            "model": "org/repo/model-Q4_0.gguf",
+            "n_ctx": 8192,
+            "n_batch": 512,
+            "concurrent_users": 1,
+            "suite_run_id": "abc123",
+            "hardware": {},
+            "results": {"throughput_tok_s": 42.0},
+        }
+        flat_rows = flatten_benchmark_row(raw)
+        assert len(flat_rows) >= 1
+        assert flat_rows[0]["suite_run_id"] == "abc123"
+        assert "suite_run_id" in COLUMN_ORDER
+
+    def test_suite_run_id_none_when_absent(self) -> None:
+        """When raw record has no suite_run_id, flat row should have None."""
+        from utils.flattener import flatten_benchmark_row
+
+        raw = {
+            "timestamp": "2026-03-14T12:00:00+00:00",
+            "runner_type": "llama-server",
+            "model": "org/repo/model-Q4_0.gguf",
+            "n_ctx": 8192,
+            "n_batch": 512,
+            "concurrent_users": 1,
+            "hardware": {},
+            "results": {"throughput_tok_s": 42.0},
+        }
+        flat_rows = flatten_benchmark_row(raw)
+        assert flat_rows[0]["suite_run_id"] is None
+
+
+# ==========================================================================
+# _count_lines and _read_lines_from helpers
+# ==========================================================================
+
+
+class TestLineHelpers:
+    """Verify the line-counting and line-reading helper functions."""
+
+    def test_count_lines(self, tmp_path: Path) -> None:
+        from ppb import _count_lines
+
+        f = tmp_path / "test.jsonl"
+        f.write_text("line1\nline2\nline3\n")
+        assert _count_lines(f) == 3
+
+    def test_count_lines_missing_file(self, tmp_path: Path) -> None:
+        from ppb import _count_lines
+
+        assert _count_lines(tmp_path / "nope.jsonl") == 0
+
+    def test_read_lines_from(self, tmp_path: Path) -> None:
+        from ppb import _read_lines_from
+
+        f = tmp_path / "test.jsonl"
+        f.write_text("line0\nline1\nline2\nline3\n")
+        lines = _read_lines_from(f, 2)
+        assert len(lines) == 2
+        assert lines[0].strip() == "line2"
+        assert lines[1].strip() == "line3"

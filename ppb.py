@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -1322,11 +1322,33 @@ def execute_vram_cliff(
     return safe
 
 
+def _count_lines(path: Path) -> int:
+    """Return the number of lines in *path*, or 0 if it doesn't exist."""
+    if not path.exists():
+        return 0
+    with path.open(encoding="utf-8") as fh:
+        return sum(1 for _ in fh)
+
+
+def _read_lines_from(path: Path, start: int) -> list[str]:
+    """Return lines from *path* starting at 0-based line *start*."""
+    lines: list[str] = []
+    with path.open(encoding="utf-8") as fh:
+        for i, line in enumerate(fh):
+            if i >= start:
+                lines.append(line)
+    return lines
+
+
 def execute_sweep(
     results_file: Path,
     config_path: Path | None = None,
     sweep_config: SweepConfig | None = None,
     max_ctx_caps: dict[Path, int] | None = None,
+    *,
+    suite_run_id: str | None = None,
+    completed_models: set[str] | None = None,
+    on_model_done: "Callable[[str, Path, int], None] | None" = None,
 ) -> None:
     """Run a parameter sweep.
 
@@ -1343,6 +1365,19 @@ def execute_sweep(
     max_ctx_caps:
         Per-model context caps (from ``vram-cliff``).  Combos whose
         ``n_ctx`` exceeds the cap for their model are skipped.
+    suite_run_id:
+        Optional identifier for the suite run.  When set, every JSONL
+        record includes a ``suite_run_id`` field that ties all results
+        from the same ``ppb all`` invocation together.
+    completed_models:
+        Set of HF model identifiers (``repo_id/filename``) that have
+        already been benchmarked.  All combos for these models are
+        skipped, enabling resume of interrupted runs.
+    on_model_done:
+        Optional callback invoked after all combos for a single model
+        complete.  Signature: ``(model_hf_id, results_file, line_offset)``
+        where *line_offset* is the JSONL line index where this model's
+        results start (for incremental reads).
     """
     if config_path is not None and sweep_config is not None:
         raise ValueError("Provide config_path or sweep_config, not both.")
@@ -1410,7 +1445,30 @@ def execute_sweep(
                 f"  [warning]Skipping {skipped} combo(s) exceeding per-model ctx cap[/warning]"
             )
 
-    total = len(combos)
+    # --- Group combos by model (models are already the outermost axis) ----
+    model_groups: list[tuple[str, list[BenchCombo]]] = []
+    for model_hf_id, group in itertools.groupby(combos, key=lambda c: c.model):
+        model_groups.append((model_hf_id, list(group)))
+
+    # --- Apply completed_models filter ------------------------------------
+    if completed_models:
+        active_groups: list[tuple[str, list[BenchCombo]]] = []
+        skipped_models = 0
+        for hf_id, grp in model_groups:
+            if hf_id in completed_models:
+                skipped_models += 1
+                console.print(
+                    f"  [info]⏭  Skipping[/info] [hw]{hf_id}[/hw] — already completed"
+                )
+            else:
+                active_groups.append((hf_id, grp))
+        if skipped_models:
+            console.print(
+                f"  [info]Resuming — {skipped_models} model(s) already done[/info]"
+            )
+        model_groups = active_groups
+
+    total = sum(len(grp) for _, grp in model_groups)
 
     model_names = ", ".join(f"[hw]{hf_id}[/hw]" for _, hf_id in cfg.resolved_models)
     sweep_info = (
@@ -1429,6 +1487,7 @@ def execute_sweep(
     runner.setup(cfg.runner_params)
 
     passed = failed = 0
+    i = 0  # global combo counter
 
     try:
         with Progress(
@@ -1441,67 +1500,77 @@ def execute_sweep(
         ) as progress:
             task = progress.add_task("Sweep", total=total, combo="starting…")
 
-            for i, combo in enumerate(combos, start=1):
-                label = (
-                    f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
-                )
-                if combo.concurrent_users > 1:
-                    label += f" users={combo.concurrent_users}"
-                progress.update(task, combo=label)
+            for model_hf_id, model_combos in model_groups:
+                line_offset = _count_lines(results_file)
 
-                run_config: dict[str, Any] = {
-                    "model_path": str(combo.model_path),
-                    "n_ctx": combo.n_ctx,
-                    "n_batch": combo.n_batch,
-                    "concurrent_users": combo.concurrent_users,
-                }
-                t0 = time.monotonic()
-                _power_sampler = PowerSampler()
-                _power_sampler.start()
-                raw_result = runner.run(run_config)
-                avg_power_w, max_power_w = _power_sampler.stop()
-                elapsed = time.monotonic() - t0
+                for combo in model_combos:
+                    i += 1
+                    label = (
+                        f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
+                    )
+                    if combo.concurrent_users > 1:
+                        label += f" users={combo.concurrent_users}"
+                    progress.update(task, combo=label)
 
-                record: dict[str, Any] | None
-                if raw_result is None:
-                    record = None
-                else:
-                    record = {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "runner_type": cfg.runner_type,
-                        "model": combo.model,
+                    run_config: dict[str, Any] = {
+                        "model_path": str(combo.model_path),
                         "n_ctx": combo.n_ctx,
                         "n_batch": combo.n_batch,
                         "concurrent_users": combo.concurrent_users,
-                        "hardware": _hw_sniffer.snapshot(),
-                        "results": raw_result["results"],
                     }
-                    if avg_power_w is not None:
-                        record["avg_power_w"] = avg_power_w
-                        record["max_power_w"] = max_power_w
-                    _write_result(record, results_file)
+                    t0 = time.monotonic()
+                    _power_sampler = PowerSampler()
+                    _power_sampler.start()
+                    raw_result = runner.run(run_config)
+                    avg_power_w, max_power_w = _power_sampler.stop()
+                    elapsed = time.monotonic() - t0
 
-                dur = f"  ({elapsed:.1f}s)"
-                if record is None:
-                    console.print(
-                        f"  [error]✗[/error] [{i}/{total}] {label} — FAILED{dur}"
-                    )
-                    failed += 1
-                else:
-                    # Pull out the tok/s figure if llama-bench emits it
-                    tps: str = ""
-                    try:
-                        tps_val = record["results"][0]["avg_ts"]
-                        tps = f"  {tps_val:.1f} tok/s"
-                    except (KeyError, IndexError, TypeError):
-                        pass
-                    pwr = f"  {avg_power_w:.0f}W avg" if avg_power_w is not None else ""
-                    console.print(
-                        f"  [success]✓[/success] [{i}/{total}] {label}{tps}{pwr}{dur}"
-                    )
-                    passed += 1
+                    record: dict[str, Any] | None
+                    if raw_result is None:
+                        record = None
+                    else:
+                        record = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "runner_type": cfg.runner_type,
+                            "model": combo.model,
+                            "n_ctx": combo.n_ctx,
+                            "n_batch": combo.n_batch,
+                            "concurrent_users": combo.concurrent_users,
+                            "hardware": _hw_sniffer.snapshot(),
+                            "results": raw_result["results"],
+                        }
+                        if suite_run_id is not None:
+                            record["suite_run_id"] = suite_run_id
+                        if avg_power_w is not None:
+                            record["avg_power_w"] = avg_power_w
+                            record["max_power_w"] = max_power_w
+                        _write_result(record, results_file)
 
-                progress.advance(task)
+                    dur = f"  ({elapsed:.1f}s)"
+                    if record is None:
+                        console.print(
+                            f"  [error]✗[/error] [{i}/{total}] {label} — FAILED{dur}"
+                        )
+                        failed += 1
+                    else:
+                        # Pull out the tok/s figure if llama-bench emits it
+                        tps: str = ""
+                        try:
+                            tps_val = record["results"][0]["avg_ts"]
+                            tps = f"  {tps_val:.1f} tok/s"
+                        except (KeyError, IndexError, TypeError):
+                            pass
+                        pwr = f"  {avg_power_w:.0f}W avg" if avg_power_w is not None else ""
+                        console.print(
+                            f"  [success]✓[/success] [{i}/{total}] {label}{tps}{pwr}{dur}"
+                        )
+                        passed += 1
+
+                    progress.advance(task)
+
+                # -- model done: fire callback --------------------------------
+                if on_model_done is not None:
+                    on_model_done(model_hf_id, results_file, line_offset)
 
     finally:
         runner.teardown()
@@ -1928,6 +1997,84 @@ def vram_cliff(
         raise typer.Exit(code=1)
 
 
+# ---------------------------------------------------------------------------
+# Resume helpers
+# ---------------------------------------------------------------------------
+
+
+def _find_resumable_results(config_path: Path) -> Path | None:
+    """Scan ``results/`` for the most recent JSONL from a prior run of *config_path*.
+
+    Filenames follow the pattern ``<stem>_YYYYMMDD_HHMM.jsonl`` (produced by
+    :func:`_resolve_results_file`).  We match against the TOML stem to avoid
+    picking up files from a different suite.
+
+    Returns the most recent matching path, or *None* if none exists.
+    """
+    results_dir = Path("results")
+    if not results_dir.is_dir():
+        return None
+    stem = config_path.stem  # e.g. "Qwen3.5-0.8B"
+    candidates = sorted(
+        results_dir.glob(f"{stem}_*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _detect_completed_models(
+    results_path: Path,
+    sweep_cfg: "SweepConfig",
+    resolved_models: list[tuple[Path, str]],
+    max_ctx_caps: dict[Path, int] | None,
+) -> tuple[set[str] | None, str | None]:
+    """Read an existing results file and determine which models are done.
+
+    A model is "completed" when the number of records with its HF id
+    equals the expected combo count (n_ctx × n_batch × concurrent_users,
+    after applying *max_ctx_caps* filtering).
+
+    Returns ``(completed_model_ids, suite_run_id)`` extracted from the
+    file.  *suite_run_id* is read from the first record that has one;
+    *None* if the file pre-dates this feature.
+    """
+    if not results_path.exists():
+        return None, None
+
+    # Count records per model HF id in the file.
+    model_counts: dict[str, int] = {}
+    existing_run_id: str | None = None
+    with results_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            hf_id = row.get("model", "")
+            model_counts[hf_id] = model_counts.get(hf_id, 0) + 1
+            if existing_run_id is None:
+                existing_run_id = row.get("suite_run_id")
+
+    if not model_counts:
+        return None, existing_run_id
+
+    # Compute expected combos per model.
+    completed: set[str] = set()
+    for model_path, hf_id in resolved_models:
+        expected = len(sweep_cfg.n_ctx) * len(sweep_cfg.n_batch) * len(sweep_cfg.concurrent_users)
+        # Apply vram-cliff caps — subtract combos that would be filtered.
+        if max_ctx_caps and model_path in max_ctx_caps:
+            cap = max_ctx_caps[model_path]
+            valid_ctx = [c for c in sweep_cfg.n_ctx if c <= cap]
+            expected = len(valid_ctx) * len(sweep_cfg.n_batch) * len(sweep_cfg.concurrent_users)
+        actual = model_counts.get(hf_id, 0)
+        if actual >= expected > 0:
+            completed.add(hf_id)
+
+    return (completed or None), existing_run_id
+
+
 @app.command(name="all")
 def run_all(
     config: Path = typer.Argument(
@@ -1943,16 +2090,22 @@ def run_all(
         help="JSONL results file (default: auto-generated from config name + timestamp)",
     ),
 ) -> None:
-    """Run the full benchmark suite: vram-cliff → sweep.
+    """Run the full benchmark suite: vram-cliff → sweep → publish.
 
     1. **Download** — fetch models from Hugging Face (if not already cached).
     2. **vram-cliff** — discover the maximum safe context window for each model.
     3. **sweep** — run the parameter sweep, skipping any combo whose
        ``n_ctx`` exceeds the per-model limit found in step 2.
+    4. **publish** — after *each* model completes, its results are
+       published incrementally (CSV + optional HF upload).
 
     Both steps read their configuration from the same TOML file.
     If the TOML has no ``[vram-cliff]`` section, the vram-cliff step
     is skipped and the sweep runs unmodified.
+
+    **Auto-resume:** if a previous run for the same suite was interrupted,
+    PPB detects the existing results file and automatically skips models
+    that have already been fully benchmarked.
     """
     raw, default_results = load_suite_config(config)
     resolved_results = results_file if results_file is not None else default_results
@@ -2011,6 +2164,30 @@ def run_all(
                 "of a long benchmark run.[/warning]\n"
                 "  Continuing anyway — results will still be saved locally."
             )
+
+    # -- Auto-resume detection ---------------------------------------------
+    suite_run_id: str = uuid.uuid4().hex
+    completed_models: set[str] | None = None
+
+    # Build the expected combo count per model *before* running sweep.
+    # We'll need this after we know the sweep config.
+    # (Deferred until sweep_cfg is available below.)
+
+    # If the user gave an explicit --results and the file already exists,
+    # OR if we auto-generated a results path that already exists, attempt
+    # resume.  For auto-generated results we also scan for any matching
+    # file from a prior run of the same TOML.
+    resume_path: Path | None = None
+    if results_file is not None and results_file.exists():
+        # User explicitly pointed at an existing file → resume into it.
+        resume_path = results_file
+    elif results_file is None:
+        # Auto-generated path — scan results/ for the most recent file
+        # produced by this same suite TOML.
+        resume_path = _find_resumable_results(config)
+
+    if resume_path is not None:
+        resolved_results = resume_path
 
     # -- Phase 1: vram-cliff (optional) -----------------------------------
     max_ctx_caps: dict[Path, int] | None = None
@@ -2090,53 +2267,114 @@ def run_all(
         raise typer.Exit(code=1) from exc
     sweep_cfg.resolved_models = resolved_models
 
+    # -- Resume: compute expected combos per model and detect completed -----
+    if resume_path is not None:
+        completed_models, existing_run_id = _detect_completed_models(
+            resume_path,
+            sweep_cfg,
+            resolved_models,
+            max_ctx_caps,
+        )
+        if existing_run_id:
+            suite_run_id = existing_run_id
+        if completed_models:
+            remaining = len(resolved_models) - len(completed_models)
+            console.print(
+                f"\n[bold cyan]🔄 RESUMING[/bold cyan] previous run from "
+                f"[bold]{resume_path.name}[/bold]\n"
+                f"  Suite run  : [bold]{suite_run_id[:12]}…[/bold]\n"
+                f"  Completed  : [bold]{len(completed_models)}[/bold] model(s)\n"
+                f"  Remaining  : [bold]{remaining}[/bold] model(s)\n"
+            )
+        else:
+            console.print(
+                f"[info]Found existing results file [bold]{resume_path.name}[/bold] "
+                f"but no models are fully completed — starting fresh.[/info]\n"
+            )
+
+    # -- Incremental publish callback --------------------------------------
+    pub_cfg = raw.get("publish", {})
+    submitter = pub_cfg.get("submitter", "")
+    pub_token = pub_cfg.get("token") or None
+    do_upload = pub_cfg.get("upload", True) if "publish" in raw else False
+
+    def _on_model_done(model_hf_id: str, rfile: Path, line_offset: int) -> None:
+        """Publish results incrementally after each model completes."""
+        if "publish" not in raw:
+            return
+
+        new_lines = _read_lines_from(rfile, line_offset)
+        if not new_lines:
+            return
+
+        # Flatten only the new rows for this model
+        new_flat: list[dict[str, Any]] = []
+        for raw_line in new_lines:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            row = json.loads(raw_line)
+            for flat in flatten_benchmark_row(row):
+                flat.pop("raw_payload", None)
+                if submitter:
+                    flat["submitter"] = submitter
+                flat["submission_id"] = suite_run_id
+                flat["submitted_at"] = datetime.now(timezone.utc).isoformat()
+                flat["source_file_sha256"] = compute_file_sha256(rfile)
+                new_flat.append(flat)
+
+        if not new_flat:
+            return
+
+        # Always rewrite the full CSV from the entire results file
+        all_flat = _flatten_results_file(rfile, submitter=submitter)
+        if all_flat:
+            csv_path = rfile.with_suffix(".csv")
+            _write_csv(all_flat, csv_path)
+
+        model_name = Path(model_hf_id.split("/")[-1]).stem if "/" in model_hf_id else model_hf_id
+        console.print(
+            f"\n  [info]📦 Publishing[/info] [hw]{model_name}[/hw] — "
+            f"[bold]{len(new_flat)}[/bold] row(s)"
+        )
+
+        if do_upload:
+            try:
+                publish_to_hf(new_flat, token=pub_token)
+                console.print(
+                    f"  [success]✅ Uploaded to Hugging Face[/success]"
+                )
+            except Exception as exc:
+                console.print(
+                    f"  [error]Upload failed for {model_name}:[/error] {exc}\n"
+                    f"  [warning]Results saved locally — you can retry with "
+                    f"[bold]ppb publish {rfile} --upload[/bold][/warning]"
+                )
+
     execute_sweep(
         sweep_config=sweep_cfg,
         results_file=resolved_results,
         max_ctx_caps=max_ctx_caps,
+        suite_run_id=suite_run_id,
+        completed_models=completed_models,
+        on_model_done=_on_model_done,
     )
 
-    # -- Phase 3: publish (optional) ---------------------------------------
-    if "publish" in raw:
-        console.print("\n[info]Phase 3 / 3:[/info] publish to Hugging Face")
-        pub_cfg = raw["publish"]
-        submitter = pub_cfg.get("submitter", "")
-        token = pub_cfg.get("token") or None  # normalise "" → None → env fallback
-        do_upload = pub_cfg.get("upload", True)  # default True for ppb-all compat
-
-        if not resolved_results.exists():
-            console.print(
-                "[warning]No results file found — all runs may have failed. "
-                "Skipping publish.[/warning]"
-            )
-            return
-
-        flat_rows = _flatten_results_file(resolved_results, submitter=submitter)
-        if flat_rows:
-            # Always write a local CSV alongside the results file
+    # -- Final summary (no monolithic publish — done incrementally) --------
+    if "publish" in raw and resolved_results.exists():
+        # Write final CSV from full results file (in case callback missed any)
+        all_flat = _flatten_results_file(resolved_results, submitter=submitter)
+        if all_flat:
             csv_path = resolved_results.with_suffix(".csv")
-            _write_csv(flat_rows, csv_path)
+            _write_csv(all_flat, csv_path)
             console.print(
-                f"  Wrote [bold]{len(flat_rows)}[/bold] row(s) → "
+                f"\n  [info]Final CSV:[/info] [bold]{len(all_flat)}[/bold] total row(s) → "
                 f"[bold]{csv_path.resolve()}[/bold]"
             )
-
-            if do_upload:
-                try:
-                    url = publish_to_hf(flat_rows, token=token)
-                    console.print(
-                        f"\n[success]✅ Published {len(flat_rows)} row(s) to Hugging Face.[/success]\n"
-                        f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
-                    )
-                except Exception as exc:
-                    console.print(f"\n[error]Publish failed:[/error] {exc}")
-            else:
-                console.print(
-                    "\n[info]Upload disabled ([bold]upload = false[/bold] in [publish]). "
-                    "CSV written — run [bold]ppb publish --upload[/bold] to push to HF.[/info]"
-                )
-        else:
-            console.print("[warning]No rows to publish.[/warning]")
+        console.print(
+            f"\n[success]✅ All done![/success]  Suite run: [bold]{suite_run_id[:12]}…[/bold]\n"
+            f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
+        )
 
 
 # ---------------------------------------------------------------------------

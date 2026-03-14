@@ -65,6 +65,7 @@ COLUMN_ORDER: list[str] = [
     # Provenance / dedup
     "schema_version",
     "benchmark_version",
+    "suite_run_id",
     "submission_id",
     "row_id",
     "machine_fingerprint",
@@ -319,6 +320,7 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         # or macOS powermetrics (SoC). None when unavailable.
         "avg_power_w": row.get("avg_power_w"),
         "max_power_w": row.get("max_power_w"),
+        "suite_run_id": row.get("suite_run_id"),
     }
 
 
