@@ -1038,17 +1038,24 @@ class TestDetectCompletedModels:
         # Write 2 records each for model-a and model-b (expected: 2 ctx × 1 batch = 2)
         results = tmp_path / "results.jsonl"
         records = []
-        for model_id in ["test-org/test-repo/model-a.gguf", "test-org/test-repo/model-b.gguf"]:
+        for model_id in [
+            "test-org/test-repo/model-a.gguf",
+            "test-org/test-repo/model-b.gguf",
+        ]:
             for ctx in [512, 1024]:
-                records.append(json.dumps({
-                    "model": model_id,
-                    "n_ctx": ctx,
-                    "n_batch": 256,
-                    "runner_type": "fake",
-                    "suite_run_id": "run-xyz",
-                    "concurrent_users": 1,
-                    "results": {},
-                }))
+                records.append(
+                    json.dumps(
+                        {
+                            "model": model_id,
+                            "n_ctx": ctx,
+                            "n_batch": 256,
+                            "runner_type": "fake",
+                            "suite_run_id": "run-xyz",
+                            "concurrent_users": 1,
+                            "results": {},
+                        }
+                    )
+                )
         results.write_text("\n".join(records) + "\n")
 
         completed, run_id = _detect_completed_models(
@@ -1081,14 +1088,19 @@ class TestDetectCompletedModels:
 
         # Write only 1 record (expected: 2)
         results = tmp_path / "results.jsonl"
-        results.write_text(json.dumps({
-            "model": "test-org/test-repo/model-a.gguf",
-            "n_ctx": 512,
-            "n_batch": 256,
-            "runner_type": "fake",
-            "concurrent_users": 1,
-            "results": {},
-        }) + "\n")
+        results.write_text(
+            json.dumps(
+                {
+                    "model": "test-org/test-repo/model-a.gguf",
+                    "n_ctx": 512,
+                    "n_batch": 256,
+                    "runner_type": "fake",
+                    "concurrent_users": 1,
+                    "results": {},
+                }
+            )
+            + "\n"
+        )
 
         completed, run_id = _detect_completed_models(
             results, cfg, cfg.resolved_models, None
@@ -1176,14 +1188,9 @@ class TestFindResumableResults:
         config = tmp_path / "MySuite.toml"
         config.write_text("[sweep]\n")
 
-        with patch("ppb.Path") as MockPath:
-            # _find_resumable_results uses Path("results") internally;
-            # we need it to point to our tmp results dir.
-            # Easier: just test the function directly by monkeypatching.
-            pass
-
         # Direct test: call with the real function but from the right cwd
         import os
+
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
@@ -1293,3 +1300,189 @@ class TestLineHelpers:
         assert len(lines) == 2
         assert lines[0].strip() == "line2"
         assert lines[1].strip() == "line3"
+
+
+# ==========================================================================
+# ThermalSampler
+# ==========================================================================
+
+
+class TestThermalSampler:
+    """Verify ThermalSampler start/stop lifecycle and stats aggregation."""
+
+    def test_stop_without_start_returns_empty(self) -> None:
+        """Calling stop() without start() must not crash and returns {}."""
+        from ppb import ThermalSampler
+
+        sampler = ThermalSampler()
+        stats = sampler.stop()
+        assert stats == {}
+
+    def test_stats_aggregation(self) -> None:
+        """Pre-populated internal lists produce correct avg/max stats."""
+        from ppb import ThermalSampler
+
+        sampler = ThermalSampler()
+        sampler._gpu_temps = [60.0, 70.0, 80.0]
+        sampler._cpu_temps = [50.0, 55.0, 65.0]
+        sampler._fan_speeds = [1000.0, 1200.0, 1500.0]
+
+        stats = sampler.stop()
+        assert stats["avg_gpu_temp_c"] == 70.0
+        assert stats["max_gpu_temp_c"] == 80.0
+        assert stats["avg_cpu_temp_c"] == pytest.approx(56.7, abs=0.1)
+        assert stats["max_cpu_temp_c"] == 65.0
+        assert stats["avg_fan_speed_rpm"] == pytest.approx(1233, abs=1)
+        assert stats["max_fan_speed_rpm"] == 1500
+
+    def test_partial_stats(self) -> None:
+        """When only some sensors have data, only those keys appear."""
+        from ppb import ThermalSampler
+
+        sampler = ThermalSampler()
+        sampler._cpu_temps = [42.0, 44.0]
+        # gpu_temps and fan_speeds are empty
+
+        stats = sampler.stop()
+        assert "avg_cpu_temp_c" in stats
+        assert "max_cpu_temp_c" in stats
+        assert "avg_gpu_temp_c" not in stats
+        assert "avg_fan_speed_rpm" not in stats
+
+    def test_thermal_stats_in_sweep_records(
+        self, tmp_path: Path, tmp_model: Path
+    ) -> None:
+        """Thermal stats written by execute_sweep appear in JSONL records."""
+        from unittest.mock import MagicMock
+
+        from ppb import SweepConfig, execute_sweep
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
+            models_dir=str(tmp_model.parent),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[(tmp_model, f"test-org/test-repo/{tmp_model.name}")],
+        )
+        results = tmp_path / "results.jsonl"
+
+        # Patch ThermalSampler to return known stats
+        with patch("ppb.ThermalSampler") as MockThermal:
+            mock_instance = MagicMock()
+            mock_instance.stop.return_value = {
+                "avg_gpu_temp_c": 72.3,
+                "max_gpu_temp_c": 78.0,
+                "avg_cpu_temp_c": 65.1,
+                "max_cpu_temp_c": 71.0,
+                "avg_fan_speed_rpm": 1200,
+                "max_fan_speed_rpm": 1500,
+            }
+            MockThermal.return_value = mock_instance
+
+            execute_sweep(results_file=results, sweep_config=cfg)
+
+        record = json.loads(results.read_text().strip())
+        assert record["avg_gpu_temp_c"] == 72.3
+        assert record["max_gpu_temp_c"] == 78.0
+        assert record["avg_cpu_temp_c"] == 65.1
+        assert record["max_cpu_temp_c"] == 71.0
+        assert record["avg_fan_speed_rpm"] == 1200
+        assert record["max_fan_speed_rpm"] == 1500
+
+    def test_empty_thermal_not_in_record(self, tmp_path: Path, tmp_model: Path) -> None:
+        """When ThermalSampler returns {}, no thermal keys in the record."""
+        from unittest.mock import MagicMock
+
+        from ppb import SweepConfig, execute_sweep
+
+        cfg = SweepConfig(
+            repo_id="test-org/test-repo",
+            filename=tmp_model.name,
+            models_dir=str(tmp_model.parent),
+            n_ctx=[512],
+            n_batch=[256],
+            runner_type="fake",
+            resolved_models=[(tmp_model, f"test-org/test-repo/{tmp_model.name}")],
+        )
+        results = tmp_path / "results.jsonl"
+
+        with patch("ppb.ThermalSampler") as MockThermal:
+            mock_instance = MagicMock()
+            mock_instance.stop.return_value = {}
+            MockThermal.return_value = mock_instance
+
+            execute_sweep(results_file=results, sweep_config=cfg)
+
+        record = json.loads(results.read_text().strip())
+        assert "avg_gpu_temp_c" not in record
+        assert "avg_cpu_temp_c" not in record
+        assert "avg_fan_speed_rpm" not in record
+
+
+# ==========================================================================
+# Thermal columns in flattener
+# ==========================================================================
+
+
+class TestThermalFlattener:
+    """Verify thermal fields flow through the flattener pipeline."""
+
+    def test_thermal_fields_in_flat_row(self) -> None:
+        from utils.flattener import COLUMN_ORDER, flatten_benchmark_row
+
+        raw = {
+            "timestamp": "2026-03-14T12:00:00+00:00",
+            "runner_type": "llama-server",
+            "model": "org/repo/model-Q4_0.gguf",
+            "n_ctx": 8192,
+            "n_batch": 512,
+            "concurrent_users": 1,
+            "avg_gpu_temp_c": 72.3,
+            "max_gpu_temp_c": 78.0,
+            "avg_cpu_temp_c": 65.1,
+            "max_cpu_temp_c": 71.0,
+            "avg_fan_speed_rpm": 1200,
+            "max_fan_speed_rpm": 1500,
+            "hardware": {},
+            "results": {"throughput_tok_s": 42.0},
+        }
+        flat_rows = flatten_benchmark_row(raw)
+        assert len(flat_rows) >= 1
+        row = flat_rows[0]
+        assert row["avg_gpu_temp_c"] == 72.3
+        assert row["max_gpu_temp_c"] == 78.0
+        assert row["avg_cpu_temp_c"] == 65.1
+        assert row["max_cpu_temp_c"] == 71.0
+        assert row["avg_fan_speed_rpm"] == 1200
+        assert row["max_fan_speed_rpm"] == 1500
+
+        for col in (
+            "avg_gpu_temp_c",
+            "max_gpu_temp_c",
+            "avg_cpu_temp_c",
+            "max_cpu_temp_c",
+            "avg_fan_speed_rpm",
+            "max_fan_speed_rpm",
+        ):
+            assert col in COLUMN_ORDER
+
+    def test_thermal_fields_none_when_absent(self) -> None:
+        from utils.flattener import flatten_benchmark_row
+
+        raw = {
+            "timestamp": "2026-03-14T12:00:00+00:00",
+            "runner_type": "llama-server",
+            "model": "org/repo/model-Q4_0.gguf",
+            "n_ctx": 8192,
+            "n_batch": 512,
+            "concurrent_users": 1,
+            "hardware": {},
+            "results": {"throughput_tok_s": 42.0},
+        }
+        flat_rows = flatten_benchmark_row(raw)
+        row = flat_rows[0]
+        assert row["avg_gpu_temp_c"] is None
+        assert row["avg_cpu_temp_c"] is None
+        assert row["avg_fan_speed_rpm"] is None

@@ -869,6 +869,701 @@ class PowerSampler:
 
 
 # ---------------------------------------------------------------------------
+# Thermal sampler (GPU temp, CPU temp, fan speed)
+# ---------------------------------------------------------------------------
+
+
+class ThermalSampler:
+    """Sample GPU temperature, CPU temperature, and fan speed during a run.
+
+    Source priority per metric (first one that succeeds wins):
+
+    **GPU temperature / GPU fan speed**
+
+    1. NVIDIA NVML — Linux / Windows.
+    2. Not available on macOS Apple Silicon (SoC has no discrete GPU sensor).
+
+    **CPU temperature**
+
+    1. Linux ``/sys/class/hwmon`` or ``/sys/class/thermal``.
+    2. macOS Apple Silicon SMC via IOKit (``TC0P`` / ``Tp09`` keys).
+    3. Windows WMI ``MSAcpi_ThermalZoneTemperature`` (best-effort).
+
+    **Fan speed**
+
+    1. NVML GPU fan (Linux / Windows).
+    2. Linux ``/sys/class/hwmon/*/fan*_input``.
+    3. macOS SMC via IOKit (``F0Ac`` key).
+
+    Usage::
+
+        sampler = ThermalSampler()
+        sampler.start()
+        runner.run(config)
+        stats = sampler.stop()
+        # stats = {
+        #     "avg_gpu_temp_c": 72.3, "max_gpu_temp_c": 78.0,
+        #     "avg_cpu_temp_c": 65.1, "max_cpu_temp_c": 71.0,
+        #     "avg_fan_speed_rpm": 1200, "max_fan_speed_rpm": 1500,
+        # }
+
+    Returns ``{}`` when no thermal source is available.
+    Polls every 0.5 s matching :class:`PowerSampler`.
+    """
+
+    _POLL_INTERVAL_S = 0.5
+
+    def __init__(self) -> None:
+        self._gpu_temps: list[float] = []
+        self._cpu_temps: list[float] = []
+        self._fan_speeds: list[float] = []
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Begin sampling in a daemon thread."""
+        self._gpu_temps = []
+        self._cpu_temps = []
+        self._fan_speeds = []
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> dict[str, float]:
+        """Stop sampling and return aggregated stats.
+
+        Keys present only when at least one valid sample was collected.
+        """
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+
+        stats: dict[str, float] = {}
+        if self._gpu_temps:
+            stats["avg_gpu_temp_c"] = round(
+                sum(self._gpu_temps) / len(self._gpu_temps), 1
+            )
+            stats["max_gpu_temp_c"] = round(max(self._gpu_temps), 1)
+        if self._cpu_temps:
+            stats["avg_cpu_temp_c"] = round(
+                sum(self._cpu_temps) / len(self._cpu_temps), 1
+            )
+            stats["max_cpu_temp_c"] = round(max(self._cpu_temps), 1)
+        if self._fan_speeds:
+            stats["avg_fan_speed_rpm"] = round(
+                sum(self._fan_speeds) / len(self._fan_speeds)
+            )
+            stats["max_fan_speed_rpm"] = round(max(self._fan_speeds))
+        return stats
+
+    # -- orchestration ------------------------------------------------------
+
+    def _poll(self) -> None:
+        """Detect available sources, then loop until stop."""
+        system = platform.system()
+        gpu_reader = self._make_gpu_temp_reader(system)
+        cpu_reader = self._make_cpu_temp_reader(system)
+        fan_reader = self._make_fan_reader(system)
+
+        if not any([gpu_reader, cpu_reader, fan_reader]):
+            return  # nothing available on this box
+
+        while not self._stop_event.is_set():
+            if gpu_reader:
+                val = gpu_reader()
+                if val is not None:
+                    self._gpu_temps.append(val)
+            if cpu_reader:
+                val = cpu_reader()
+                if val is not None:
+                    self._cpu_temps.append(val)
+            if fan_reader:
+                val = fan_reader()
+                if val is not None:
+                    self._fan_speeds.append(val)
+            self._stop_event.wait(self._POLL_INTERVAL_S)
+
+    # -- GPU temperature readers -------------------------------------------
+
+    def _make_gpu_temp_reader(self, system: str) -> Callable[[], float | None] | None:
+        """Return a callable that reads GPU temp in °C, or None."""
+        if system in ("Linux", "Windows"):
+            return self._try_nvml_gpu_temp_reader()
+        return None
+
+    @staticmethod
+    def _try_nvml_gpu_temp_reader() -> Callable[[], float | None] | None:
+        """Build an NVML-based GPU temperature reader (GPU index 0)."""
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            pynvml.nvmlInit()
+            count = pynvml.nvmlDeviceGetCount()
+            if count == 0:
+                pynvml.nvmlShutdown()
+                return None
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            # Verify the query works before committing.
+            pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+
+            def _read() -> float | None:
+                try:
+                    return float(
+                        pynvml.nvmlDeviceGetTemperature(
+                            handle, pynvml.NVML_TEMPERATURE_GPU
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    return None
+
+            return _read
+        except Exception:  # noqa: BLE001
+            return None
+
+    # -- CPU temperature readers -------------------------------------------
+
+    def _make_cpu_temp_reader(self, system: str) -> Callable[[], float | None] | None:
+        """Return a callable that reads CPU temp in °C, or None."""
+        if system == "Linux":
+            return self._try_linux_cpu_temp_reader()
+        if system == "Darwin":
+            return self._try_macos_smc_cpu_temp_reader()
+        if system == "Windows":
+            return self._try_windows_cpu_temp_reader()
+        return None
+
+    @staticmethod
+    def _try_linux_cpu_temp_reader() -> Callable[[], float | None] | None:
+        """Read CPU temp from sysfs hwmon or thermal_zone."""
+        # Strategy: find the first readable temperature source.
+        # hwmon is preferred (labeled, more reliable).
+        hwmon_base = Path("/sys/class/hwmon")
+        if hwmon_base.exists():
+            for hwmon in sorted(hwmon_base.iterdir()):
+                # Check if this hwmon is a CPU/SoC sensor.
+                name_file = hwmon / "name"
+                if name_file.exists():
+                    name = name_file.read_text().strip().lower()
+                    # Common CPU sensor names across vendors
+                    if any(
+                        k in name
+                        for k in (
+                            "coretemp",
+                            "k10temp",
+                            "zenpower",
+                            "cpu_thermal",
+                            "soc_thermal",
+                        )
+                    ):
+                        # Find the first temp*_input file
+                        for temp_file in sorted(hwmon.glob("temp*_input")):
+                            try:
+                                val = int(temp_file.read_text().strip())
+                                if 0 < val < 150_000:  # millidegrees sanity
+                                    path = temp_file
+
+                                    def _read(p: Path = path) -> float | None:
+                                        try:
+                                            return int(p.read_text().strip()) / 1000.0
+                                        except (OSError, ValueError):
+                                            return None
+
+                                    return _read
+                            except (OSError, ValueError):
+                                continue
+
+        # Fallback: thermal_zone
+        tz_base = Path("/sys/class/thermal")
+        if tz_base.exists():
+            for tz in sorted(tz_base.glob("thermal_zone*")):
+                tz_type = tz / "type"
+                if tz_type.exists():
+                    t = tz_type.read_text().strip().lower()
+                    if any(k in t for k in ("cpu", "soc", "x86_pkg", "acpitz")):
+                        temp_file = tz / "temp"
+                        if temp_file.exists():
+                            try:
+                                val = int(temp_file.read_text().strip())
+                                if 0 < val < 150_000:
+                                    path = temp_file
+
+                                    def _read(p: Path = path) -> float | None:
+                                        try:
+                                            return int(p.read_text().strip()) / 1000.0
+                                        except (OSError, ValueError):
+                                            return None
+
+                                    return _read
+                            except (OSError, ValueError):
+                                continue
+        return None
+
+    @staticmethod
+    def _try_macos_smc_cpu_temp_reader() -> Callable[[], float | None] | None:
+        """Read CPU temperature from Apple SMC via IOKit.
+
+        Uses the ``AppleSMC`` IOService to read SMC keys.  The CPU
+        die/proximity temperature is exposed under keys like ``TC0P``
+        (Intel), ``Tp09`` (Apple Silicon M1), or ``Tp05`` (M2/M3/M4).
+        No root required on macOS.
+        """
+        try:
+            import ctypes
+            import struct
+
+            iokit = ctypes.cdll.LoadLibrary(
+                "/System/Library/Frameworks/IOKit.framework/IOKit"
+            )
+            cf = ctypes.cdll.LoadLibrary(
+                "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+            )
+
+            kIOMasterPortDefault = ctypes.c_uint(0)
+
+            cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+            cf.CFStringCreateWithCString.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.c_uint32,
+            ]
+            cf.CFRelease.restype = None
+            cf.CFRelease.argtypes = [ctypes.c_void_p]
+
+            iokit.IOServiceMatching.restype = ctypes.c_void_p
+            iokit.IOServiceMatching.argtypes = [ctypes.c_char_p]
+            iokit.IOServiceGetMatchingService.restype = ctypes.c_uint
+            iokit.IOServiceGetMatchingService.argtypes = [
+                ctypes.c_uint,
+                ctypes.c_void_p,
+            ]
+            iokit.IOServiceOpen.restype = ctypes.c_int
+            iokit.IOServiceOpen.argtypes = [
+                ctypes.c_uint,
+                ctypes.c_uint,
+                ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            iokit.IOServiceClose.restype = ctypes.c_int
+            iokit.IOServiceClose.argtypes = [ctypes.c_uint]
+
+            # SMC structs
+            class SMCKeyData_vers_t(ctypes.Structure):
+                _fields_ = [
+                    ("major", ctypes.c_uint8),
+                    ("minor", ctypes.c_uint8),
+                    ("build", ctypes.c_uint8),
+                    ("reserved", ctypes.c_uint8),
+                    ("release", ctypes.c_uint16),
+                ]
+
+            class SMCKeyData_pLimitData_t(ctypes.Structure):
+                _fields_ = [
+                    ("version", ctypes.c_uint16),
+                    ("length", ctypes.c_uint16),
+                    ("cpuPLimit", ctypes.c_uint32),
+                    ("gpuPLimit", ctypes.c_uint32),
+                    ("memPLimit", ctypes.c_uint32),
+                ]
+
+            class SMCKeyData_keyInfo_t(ctypes.Structure):
+                _fields_ = [
+                    ("dataSize", ctypes.c_uint32),
+                    ("dataType", ctypes.c_uint32),
+                    ("dataAttributes", ctypes.c_uint8),
+                ]
+
+            class SMCKeyData_t(ctypes.Structure):
+                _fields_ = [
+                    ("key", ctypes.c_uint32),
+                    ("vers", SMCKeyData_vers_t),
+                    ("pLimitData", SMCKeyData_pLimitData_t),
+                    ("keyInfo", SMCKeyData_keyInfo_t),
+                    ("result", ctypes.c_uint8),
+                    ("status", ctypes.c_uint8),
+                    ("data8", ctypes.c_uint8),
+                    ("data32", ctypes.c_uint32),
+                    ("bytes", ctypes.c_uint8 * 32),
+                ]
+
+            KERNEL_INDEX_SMC = 2
+            SMC_CMD_READ_KEYINFO = 9
+            SMC_CMD_READ_BYTES = 5
+
+            # Open SMC connection
+            service = iokit.IOServiceGetMatchingService(
+                kIOMasterPortDefault,
+                iokit.IOServiceMatching(b"AppleSMC"),
+            )
+            if not service:
+                return None
+
+            conn = ctypes.c_uint()
+            # mach_task_self() — ctypes gives us the current task port
+            import ctypes.util
+
+            libc_path = ctypes.util.find_library("c")
+            if libc_path is None:
+                return None
+            libc = ctypes.cdll.LoadLibrary(libc_path)
+            libc.mach_task_self.restype = ctypes.c_uint
+            task = libc.mach_task_self()
+
+            result = iokit.IOServiceOpen(service, task, 0, ctypes.byref(conn))
+            if result != 0:
+                return None
+
+            def _smc_key_to_uint32(key: str) -> int:
+                return struct.unpack(">I", key.encode("ascii"))[0]
+
+            def _read_smc_key(key: str) -> float | None:
+                """Read a single SMC key and interpret as sp78 temperature."""
+                input_struct = SMCKeyData_t()
+                output_struct = SMCKeyData_t()
+
+                key_int = _smc_key_to_uint32(key)
+
+                # Step 1: get key info (data size + type)
+                input_struct.key = key_int
+                input_struct.data8 = SMC_CMD_READ_KEYINFO
+                ret = iokit.IOConnectCallStructMethod(
+                    conn,
+                    KERNEL_INDEX_SMC,
+                    ctypes.byref(input_struct),
+                    ctypes.sizeof(SMCKeyData_t),
+                    ctypes.byref(output_struct),
+                    ctypes.byref(ctypes.c_size_t(ctypes.sizeof(SMCKeyData_t))),
+                )
+                if ret != 0:
+                    return None
+
+                # Step 2: read the value bytes
+                input_struct.keyInfo.dataSize = output_struct.keyInfo.dataSize
+                input_struct.data8 = SMC_CMD_READ_BYTES
+                ret = iokit.IOConnectCallStructMethod(
+                    conn,
+                    KERNEL_INDEX_SMC,
+                    ctypes.byref(input_struct),
+                    ctypes.sizeof(SMCKeyData_t),
+                    ctypes.byref(output_struct),
+                    ctypes.byref(ctypes.c_size_t(ctypes.sizeof(SMCKeyData_t))),
+                )
+                if ret != 0:
+                    return None
+
+                # Interpret as sp78 (signed 7.8 fixed-point)
+                data_size = output_struct.keyInfo.dataSize
+                if data_size >= 2:
+                    raw = (output_struct.bytes[0] << 8) | output_struct.bytes[1]
+                    # sp78: high byte is integer part, low byte is fractional
+                    temp = raw / 256.0
+                    if 0 < temp < 150:  # sanity check
+                        return temp
+                return None
+
+            # Probe: try known CPU temperature keys
+            cpu_temp_keys = ["TC0P", "Tp09", "Tp05", "Tp01", "Tp0D"]
+            working_key: str | None = None
+            for k in cpu_temp_keys:
+                val = _read_smc_key(k)
+                if val is not None:
+                    working_key = k
+                    break
+
+            if working_key is None:
+                iokit.IOServiceClose(conn)
+                return None
+
+            def _read(key: str = working_key) -> float | None:
+                return _read_smc_key(key)
+
+            return _read
+
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _try_windows_cpu_temp_reader() -> Callable[[], float | None] | None:
+        """Read CPU temp from Windows WMI (best-effort)."""
+        try:
+            import subprocess
+
+            # WMI thermal zone — works on some but not all Windows machines.
+            probe = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance MSAcpi_ThermalZoneTemperature -Namespace root/wmi "
+                    "| Select-Object -First 1 -ExpandProperty CurrentTemperature",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if probe.returncode != 0 or not probe.stdout.strip():
+                return None
+            # Value is in tenths of Kelvin
+            raw = int(probe.stdout.strip())
+            temp_c = (raw / 10.0) - 273.15
+            if not (0 < temp_c < 150):
+                return None
+
+            def _read() -> float | None:
+                try:
+                    result = subprocess.run(
+                        [
+                            "powershell",
+                            "-NoProfile",
+                            "-Command",
+                            "Get-CimInstance MSAcpi_ThermalZoneTemperature "
+                            "-Namespace root/wmi "
+                            "| Select-Object -First 1 -ExpandProperty CurrentTemperature",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if result.returncode != 0 or not result.stdout.strip():
+                        return None
+                    raw = int(result.stdout.strip())
+                    temp = (raw / 10.0) - 273.15
+                    return round(temp, 1) if 0 < temp < 150 else None
+                except Exception:  # noqa: BLE001
+                    return None
+
+            return _read
+        except Exception:  # noqa: BLE001
+            return None
+
+    # -- Fan speed readers -------------------------------------------------
+
+    def _make_fan_reader(self, system: str) -> Callable[[], float | None] | None:
+        """Return a callable that reads fan speed in RPM, or None."""
+        if system in ("Linux", "Windows"):
+            # Try NVML GPU fan first (reports % → we convert using max RPM est)
+            reader = self._try_nvml_fan_reader()
+            if reader:
+                return reader
+            if system == "Linux":
+                return self._try_linux_fan_reader()
+            return None
+        if system == "Darwin":
+            return self._try_macos_smc_fan_reader()
+        return None
+
+    @staticmethod
+    def _try_nvml_fan_reader() -> Callable[[], float | None] | None:
+        """Read GPU fan speed via NVML (percentage → approximate RPM)."""
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            pynvml.nvmlInit()
+            count = pynvml.nvmlDeviceGetCount()
+            if count == 0:
+                pynvml.nvmlShutdown()
+                return None
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            # Probe: verify fan query works (blower-less cards raise an error).
+            pct = pynvml.nvmlDeviceGetFanSpeed(handle)
+            if pct is None:
+                return None
+
+            def _read() -> float | None:
+                try:
+                    pct = pynvml.nvmlDeviceGetFanSpeed(handle)
+                    # NVML returns percentage (0..100).
+                    # Return as-is in % since true RPM isn't available.
+                    return float(pct) if pct is not None else None
+                except Exception:  # noqa: BLE001
+                    return None
+
+            return _read
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _try_linux_fan_reader() -> Callable[[], float | None] | None:
+        """Read fan RPM from sysfs hwmon."""
+        hwmon_base = Path("/sys/class/hwmon")
+        if not hwmon_base.exists():
+            return None
+        for hwmon in sorted(hwmon_base.iterdir()):
+            for fan_file in sorted(hwmon.glob("fan*_input")):
+                try:
+                    val = int(fan_file.read_text().strip())
+                    if val > 0:  # spinning fan found
+                        path = fan_file
+
+                        def _read(p: Path = path) -> float | None:
+                            try:
+                                v = int(p.read_text().strip())
+                                return float(v) if v >= 0 else None
+                            except (OSError, ValueError):
+                                return None
+
+                        return _read
+                except (OSError, ValueError):
+                    continue
+        return None
+
+    @staticmethod
+    def _try_macos_smc_fan_reader() -> Callable[[], float | None] | None:
+        """Read fan speed from Apple SMC via IOKit (``F0Ac`` key).
+
+        Returns actual RPM on Macs with fans.  Fanless MacBooks will
+        have the SMC key missing or returning 0 — we return None for those.
+        """
+        try:
+            import ctypes
+            import struct
+
+            iokit = ctypes.cdll.LoadLibrary(
+                "/System/Library/Frameworks/IOKit.framework/IOKit"
+            )
+
+            kIOMasterPortDefault = ctypes.c_uint(0)
+
+            iokit.IOServiceMatching.restype = ctypes.c_void_p
+            iokit.IOServiceMatching.argtypes = [ctypes.c_char_p]
+            iokit.IOServiceGetMatchingService.restype = ctypes.c_uint
+            iokit.IOServiceGetMatchingService.argtypes = [
+                ctypes.c_uint,
+                ctypes.c_void_p,
+            ]
+            iokit.IOServiceOpen.restype = ctypes.c_int
+            iokit.IOServiceOpen.argtypes = [
+                ctypes.c_uint,
+                ctypes.c_uint,
+                ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            iokit.IOServiceClose.restype = ctypes.c_int
+            iokit.IOServiceClose.argtypes = [ctypes.c_uint]
+
+            class SMCKeyData_vers_t(ctypes.Structure):
+                _fields_ = [
+                    ("major", ctypes.c_uint8),
+                    ("minor", ctypes.c_uint8),
+                    ("build", ctypes.c_uint8),
+                    ("reserved", ctypes.c_uint8),
+                    ("release", ctypes.c_uint16),
+                ]
+
+            class SMCKeyData_pLimitData_t(ctypes.Structure):
+                _fields_ = [
+                    ("version", ctypes.c_uint16),
+                    ("length", ctypes.c_uint16),
+                    ("cpuPLimit", ctypes.c_uint32),
+                    ("gpuPLimit", ctypes.c_uint32),
+                    ("memPLimit", ctypes.c_uint32),
+                ]
+
+            class SMCKeyData_keyInfo_t(ctypes.Structure):
+                _fields_ = [
+                    ("dataSize", ctypes.c_uint32),
+                    ("dataType", ctypes.c_uint32),
+                    ("dataAttributes", ctypes.c_uint8),
+                ]
+
+            class SMCKeyData_t(ctypes.Structure):
+                _fields_ = [
+                    ("key", ctypes.c_uint32),
+                    ("vers", SMCKeyData_vers_t),
+                    ("pLimitData", SMCKeyData_pLimitData_t),
+                    ("keyInfo", SMCKeyData_keyInfo_t),
+                    ("result", ctypes.c_uint8),
+                    ("status", ctypes.c_uint8),
+                    ("data8", ctypes.c_uint8),
+                    ("data32", ctypes.c_uint32),
+                    ("bytes", ctypes.c_uint8 * 32),
+                ]
+
+            KERNEL_INDEX_SMC = 2
+            SMC_CMD_READ_KEYINFO = 9
+            SMC_CMD_READ_BYTES = 5
+
+            service = iokit.IOServiceGetMatchingService(
+                kIOMasterPortDefault,
+                iokit.IOServiceMatching(b"AppleSMC"),
+            )
+            if not service:
+                return None
+
+            conn = ctypes.c_uint()
+            import ctypes.util
+
+            libc_path = ctypes.util.find_library("c")
+            if libc_path is None:
+                return None
+            libc = ctypes.cdll.LoadLibrary(libc_path)
+            libc.mach_task_self.restype = ctypes.c_uint
+            task = libc.mach_task_self()
+
+            result = iokit.IOServiceOpen(service, task, 0, ctypes.byref(conn))
+            if result != 0:
+                return None
+
+            def _smc_key_to_uint32(key: str) -> int:
+                return struct.unpack(">I", key.encode("ascii"))[0]
+
+            def _read_smc_fpe2(key: str) -> float | None:
+                """Read an SMC key interpreted as fpe2 (fan speed in RPM)."""
+                input_struct = SMCKeyData_t()
+                output_struct = SMCKeyData_t()
+
+                key_int = _smc_key_to_uint32(key)
+
+                input_struct.key = key_int
+                input_struct.data8 = SMC_CMD_READ_KEYINFO
+                ret = iokit.IOConnectCallStructMethod(
+                    conn,
+                    KERNEL_INDEX_SMC,
+                    ctypes.byref(input_struct),
+                    ctypes.sizeof(SMCKeyData_t),
+                    ctypes.byref(output_struct),
+                    ctypes.byref(ctypes.c_size_t(ctypes.sizeof(SMCKeyData_t))),
+                )
+                if ret != 0:
+                    return None
+
+                input_struct.keyInfo.dataSize = output_struct.keyInfo.dataSize
+                input_struct.data8 = SMC_CMD_READ_BYTES
+                ret = iokit.IOConnectCallStructMethod(
+                    conn,
+                    KERNEL_INDEX_SMC,
+                    ctypes.byref(input_struct),
+                    ctypes.sizeof(SMCKeyData_t),
+                    ctypes.byref(output_struct),
+                    ctypes.byref(ctypes.c_size_t(ctypes.sizeof(SMCKeyData_t))),
+                )
+                if ret != 0:
+                    return None
+
+                data_size = output_struct.keyInfo.dataSize
+                if data_size >= 2:
+                    # fpe2: unsigned 14.2 fixed-point
+                    raw = (output_struct.bytes[0] << 8) | output_struct.bytes[1]
+                    rpm = raw / 4.0
+                    return rpm if rpm > 0 else None
+                return None
+
+            # Probe: try F0Ac (fan 0 actual speed)
+            probe_val = _read_smc_fpe2("F0Ac")
+            if probe_val is None:
+                iokit.IOServiceClose(conn)
+                return None
+
+            def _read() -> float | None:
+                return _read_smc_fpe2("F0Ac")
+
+            return _read
+
+        except Exception:  # noqa: BLE001
+            return None
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
@@ -1505,9 +2200,7 @@ def execute_sweep(
 
                 for combo in model_combos:
                     i += 1
-                    label = (
-                        f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
-                    )
+                    label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
                     if combo.concurrent_users > 1:
                         label += f" users={combo.concurrent_users}"
                     progress.update(task, combo=label)
@@ -1520,9 +2213,12 @@ def execute_sweep(
                     }
                     t0 = time.monotonic()
                     _power_sampler = PowerSampler()
+                    _thermal_sampler = ThermalSampler()
                     _power_sampler.start()
+                    _thermal_sampler.start()
                     raw_result = runner.run(run_config)
                     avg_power_w, max_power_w = _power_sampler.stop()
+                    thermal_stats = _thermal_sampler.stop()
                     elapsed = time.monotonic() - t0
 
                     record: dict[str, Any] | None
@@ -1544,6 +2240,8 @@ def execute_sweep(
                         if avg_power_w is not None:
                             record["avg_power_w"] = avg_power_w
                             record["max_power_w"] = max_power_w
+                        if thermal_stats:
+                            record.update(thermal_stats)
                         _write_result(record, results_file)
 
                     dur = f"  ({elapsed:.1f}s)"
@@ -1560,9 +2258,18 @@ def execute_sweep(
                             tps = f"  {tps_val:.1f} tok/s"
                         except (KeyError, IndexError, TypeError):
                             pass
-                        pwr = f"  {avg_power_w:.0f}W avg" if avg_power_w is not None else ""
+                        pwr = (
+                            f"  {avg_power_w:.0f}W avg"
+                            if avg_power_w is not None
+                            else ""
+                        )
+                        therm = ""
+                        if thermal_stats.get("avg_gpu_temp_c") is not None:
+                            therm += f"  GPU {thermal_stats['avg_gpu_temp_c']:.0f}°C"
+                        elif thermal_stats.get("avg_cpu_temp_c") is not None:
+                            therm += f"  CPU {thermal_stats['avg_cpu_temp_c']:.0f}°C"
                         console.print(
-                            f"  [success]✓[/success] [{i}/{total}] {label}{tps}{pwr}{dur}"
+                            f"  [success]✓[/success] [{i}/{total}] {label}{tps}{pwr}{therm}{dur}"
                         )
                         passed += 1
 
@@ -2062,12 +2769,20 @@ def _detect_completed_models(
     # Compute expected combos per model.
     completed: set[str] = set()
     for model_path, hf_id in resolved_models:
-        expected = len(sweep_cfg.n_ctx) * len(sweep_cfg.n_batch) * len(sweep_cfg.concurrent_users)
+        expected = (
+            len(sweep_cfg.n_ctx)
+            * len(sweep_cfg.n_batch)
+            * len(sweep_cfg.concurrent_users)
+        )
         # Apply vram-cliff caps — subtract combos that would be filtered.
         if max_ctx_caps and model_path in max_ctx_caps:
             cap = max_ctx_caps[model_path]
             valid_ctx = [c for c in sweep_cfg.n_ctx if c <= cap]
-            expected = len(valid_ctx) * len(sweep_cfg.n_batch) * len(sweep_cfg.concurrent_users)
+            expected = (
+                len(valid_ctx)
+                * len(sweep_cfg.n_batch)
+                * len(sweep_cfg.concurrent_users)
+            )
         actual = model_counts.get(hf_id, 0)
         if actual >= expected > 0:
             completed.add(hf_id)
@@ -2173,21 +2888,14 @@ def run_all(
     # We'll need this after we know the sweep config.
     # (Deferred until sweep_cfg is available below.)
 
-    # If the user gave an explicit --results and the file already exists,
-    # OR if we auto-generated a results path that already exists, attempt
-    # resume.  For auto-generated results we also scan for any matching
-    # file from a prior run of the same TOML.
+    # Resume only activates when the *exact* results file already exists:
+    #   • User passed --results pointing at an existing file, OR
+    #   • The auto-generated path for *this* run already exists (same minute restart).
+    # We intentionally do NOT scan for old files from prior runs — those are
+    # separate benchmark sessions, not interrupted work.
     resume_path: Path | None = None
-    if results_file is not None and results_file.exists():
-        # User explicitly pointed at an existing file → resume into it.
-        resume_path = results_file
-    elif results_file is None:
-        # Auto-generated path — scan results/ for the most recent file
-        # produced by this same suite TOML.
-        resume_path = _find_resumable_results(config)
-
-    if resume_path is not None:
-        resolved_results = resume_path
+    if resolved_results.exists():
+        resume_path = resolved_results
 
     # -- Phase 1: vram-cliff (optional) -----------------------------------
     max_ctx_caps: dict[Path, int] | None = None
@@ -2332,7 +3040,9 @@ def run_all(
             csv_path = rfile.with_suffix(".csv")
             _write_csv(all_flat, csv_path)
 
-        model_name = Path(model_hf_id.split("/")[-1]).stem if "/" in model_hf_id else model_hf_id
+        model_name = (
+            Path(model_hf_id.split("/")[-1]).stem if "/" in model_hf_id else model_hf_id
+        )
         console.print(
             f"\n  [info]📦 Publishing[/info] [hw]{model_name}[/hw] — "
             f"[bold]{len(new_flat)}[/bold] row(s)"
@@ -2341,9 +3051,7 @@ def run_all(
         if do_upload:
             try:
                 publish_to_hf(new_flat, token=pub_token)
-                console.print(
-                    f"  [success]✅ Uploaded to Hugging Face[/success]"
-                )
+                console.print("  [success]✅ Uploaded to Hugging Face[/success]")
             except Exception as exc:
                 console.print(
                     f"  [error]Upload failed for {model_name}:[/error] {exc}\n"
@@ -2547,7 +3255,7 @@ def publish_cmd(
 
     console.print("  Uploading to Hugging Face…")
     try:
-        url = publish_to_hf(all_flat_rows, token=token)
+        publish_to_hf(all_flat_rows, token=token)
     except Exception as exc:
         console.print(f"\n[error]Publish failed:[/error] {exc}")
         raise typer.Exit(code=1) from exc

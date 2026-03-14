@@ -45,6 +45,13 @@ COLUMN_ORDER: list[str] = [
     # Performance — power efficiency
     "avg_power_w",
     "max_power_w",
+    # Performance — thermal
+    "avg_gpu_temp_c",
+    "max_gpu_temp_c",
+    "avg_cpu_temp_c",
+    "max_cpu_temp_c",
+    "avg_fan_speed_rpm",
+    "max_fan_speed_rpm",
     # Performance — user experience
     "avg_ttft_ms",
     "p50_ttft_ms",
@@ -320,6 +327,13 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         # or macOS powermetrics (SoC). None when unavailable.
         "avg_power_w": row.get("avg_power_w"),
         "max_power_w": row.get("max_power_w"),
+        # Thermal readings sampled during the run.
+        "avg_gpu_temp_c": row.get("avg_gpu_temp_c"),
+        "max_gpu_temp_c": row.get("max_gpu_temp_c"),
+        "avg_cpu_temp_c": row.get("avg_cpu_temp_c"),
+        "max_cpu_temp_c": row.get("max_cpu_temp_c"),
+        "avg_fan_speed_rpm": row.get("avg_fan_speed_rpm"),
+        "max_fan_speed_rpm": row.get("max_fan_speed_rpm"),
         "suite_run_id": row.get("suite_run_id"),
     }
 
