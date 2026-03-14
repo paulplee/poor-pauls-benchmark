@@ -276,8 +276,11 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         base_url = f"http://127.0.0.1:{self._port}"
         t_start = time.monotonic()
 
+        # Scale timeout with concurrency: each user's TTFT grows
+        # linearly with queue depth (prefill is sequential).
+        request_timeout = max(300.0, concurrent_users * 60.0)
         async with httpx.AsyncClient(
-            base_url=base_url, timeout=300.0,
+            base_url=base_url, timeout=request_timeout,
         ) as client:
             tasks = [
                 self._async_user_session(client, prompts, user_id)
