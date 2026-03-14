@@ -445,7 +445,9 @@ class PowerSampler:
     2. **Linux RAPL** — Intel / AMD CPU *package* power via the kernel
        ``powercap`` interface (``/sys/class/powercap/intel-rapl:*/``).  No
        root required on most distributions (Ubuntu, Fedora, …).
-    3. **macOS powermetrics** — total SoC power (CPU + GPU + ANE) on Apple
+    3. **macOS IOReport** — total SoC power (CPU + GPU + DRAM + fabric) on
+       Apple Silicon via ``libIOReport.dylib``.  No root required.
+    4. **macOS powermetrics** — total SoC power (CPU + GPU + ANE) on Apple
        Silicon.  Attempted without ``sudo``; only succeeds when the process
        already has the required privilege (e.g. running as root or with an
        appropriate entitlement).  Silently skipped otherwise.
@@ -496,6 +498,8 @@ class PowerSampler:
         if platform.system() == "Linux" and self._try_rapl():
             return
         if platform.system() == "Darwin":
+            if self._try_ioreport():
+                return
             self._try_powermetrics()
 
     # -- source: NVIDIA NVML -----------------------------------------------
@@ -570,6 +574,185 @@ class PowerSampler:
                 prev_uj = curr_uj
                 prev_t = curr_t
                 self._stop_event.wait(self._POLL_INTERVAL_S)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    # -- source: macOS IOReport (Apple Silicon SoC, no root) ----------------
+
+    # Channels whose names match these patterns are sub-components already
+    # accounted for by a higher-level aggregate (e.g. per-core CPU entries
+    # are summed in "CPU Energy").  We also skip "* Energy" channels whose
+    # values use nJ instead of mJ, duplicating a top-level channel.
+    _IOREPORT_SKIP_RE = re.compile(
+        r"^EACC_CPU\d"       # per efficiency-core
+        r"|^PACC\d+_CPU\d"   # per performance-core
+        r"|^EACC_CPU$"       # E-cluster aggregate (in "CPU Energy")
+        r"|^PACC\d+_CPU$"    # P-cluster aggregate (in "CPU Energy")
+        r"|DTL"              # per-domain technology level detail
+        r"| Energy$"         # nJ-scale aggregate duplicates ("GPU Energy")
+    )
+
+    def _try_ioreport(self) -> bool:
+        """Sample SoC power via the macOS IOReport framework (no root needed).
+
+        Reads the "Energy Model" channel group through ``libIOReport.dylib``,
+        which exposes per-block energy counters (CPU, GPU, DRAM, AMCC, …)
+        without requiring ``sudo``.  Works on Apple Silicon M1–M4.
+        """
+        try:
+            import ctypes
+            import ctypes.util
+            import plistlib
+            import struct
+
+            cf_path = ctypes.util.find_library("CoreFoundation")
+            if cf_path is None:
+                return False
+            cf = ctypes.cdll.LoadLibrary(cf_path)
+            iorep = ctypes.cdll.LoadLibrary("/usr/lib/libIOReport.dylib")
+        except (OSError, TypeError):
+            return False
+
+        CFTypeRef = ctypes.c_void_p
+        CFStringRef = ctypes.c_void_p
+        CFDictionaryRef = ctypes.c_void_p
+        CFAllocatorRef = ctypes.c_void_p
+        CFDataRef = ctypes.c_void_p
+        CFIndex = ctypes.c_long
+
+        kCFStringEncodingUTF8 = 0x08000100
+        kCFPropertyListXMLFormat_v1_0 = 100
+
+        # CoreFoundation signatures
+        cf.CFStringCreateWithCString.restype = CFStringRef
+        cf.CFStringCreateWithCString.argtypes = [
+            CFAllocatorRef, ctypes.c_char_p, ctypes.c_uint32,
+        ]
+        cf.CFRelease.restype = None
+        cf.CFRelease.argtypes = [CFTypeRef]
+        cf.CFPropertyListCreateData.restype = CFDataRef
+        cf.CFPropertyListCreateData.argtypes = [
+            CFAllocatorRef, CFTypeRef, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p,
+        ]
+        cf.CFDataGetLength.restype = CFIndex
+        cf.CFDataGetLength.argtypes = [CFDataRef]
+        cf.CFDataGetBytePtr.restype = ctypes.POINTER(ctypes.c_uint8)
+        cf.CFDataGetBytePtr.argtypes = [CFDataRef]
+
+        # IOReport signatures
+        iorep.IOReportCopyChannelsInGroup.restype = CFDictionaryRef
+        iorep.IOReportCopyChannelsInGroup.argtypes = [
+            CFStringRef, CFStringRef,
+            ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64,
+        ]
+        iorep.IOReportCreateSubscription.restype = CFTypeRef
+        iorep.IOReportCreateSubscription.argtypes = [
+            CFTypeRef, CFDictionaryRef, ctypes.POINTER(CFDictionaryRef),
+            ctypes.c_uint64, CFTypeRef,
+        ]
+        iorep.IOReportCreateSamples.restype = CFDictionaryRef
+        iorep.IOReportCreateSamples.argtypes = [CFTypeRef, CFDictionaryRef, CFTypeRef]
+        iorep.IOReportCreateSamplesDelta.restype = CFDictionaryRef
+        iorep.IOReportCreateSamplesDelta.argtypes = [
+            CFDictionaryRef, CFDictionaryRef, CFTypeRef,
+        ]
+
+        def _cfstr(s: bytes):  # -> CFStringRef
+            return cf.CFStringCreateWithCString(None, s, kCFStringEncodingUTF8)
+
+        def _cfdict_to_plist(ref: int) -> dict | list | None:
+            """Convert a CFPropertyList to a Python object via XML plist."""
+            if not ref:
+                return None
+            xml = cf.CFPropertyListCreateData(
+                None, ref, kCFPropertyListXMLFormat_v1_0, 0, None,
+            )
+            if not xml:
+                return None
+            length = cf.CFDataGetLength(xml)
+            buf = cf.CFDataGetBytePtr(xml)
+            raw = bytes(
+                ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8 * length)).contents
+            )
+            cf.CFRelease(xml)
+            return plistlib.loads(raw)
+
+        def _watts_from_delta(delta_ref: int, elapsed_s: float) -> float | None:
+            """Parse a delta sample and return total SoC watts."""
+            data = _cfdict_to_plist(delta_ref)
+            if not isinstance(data, dict):
+                return None
+            channels = data.get("IOReportChannels")
+            if not channels:
+                return None
+            total_mj = 0.0
+            for ch in channels:
+                legend = ch.get("LegendChannel", [])
+                name = legend[2] if len(legend) > 2 else ""
+                if not isinstance(name, str) or self._IOREPORT_SKIP_RE.search(name):
+                    continue
+                raw = ch.get("RawElements")
+                if not isinstance(raw, bytes) or len(raw) < 40:
+                    continue
+                # Energy delta (mJ) sits at int64 index 4 (byte offset 32).
+                mj = struct.unpack_from("<q", raw, 32)[0]
+                if 0 < mj < 1_000_000:  # sanity: < 1 MJ per interval
+                    total_mj += mj
+            if total_mj <= 0 or elapsed_s <= 0:
+                return None
+            return round(total_mj / 1000.0 / elapsed_s, 1)
+
+        # --- Set up subscription -----------------------------------------
+        try:
+            group = _cfstr(b"Energy Model")
+            channels = iorep.IOReportCopyChannelsInGroup(group, None, 0, 0, 0)
+            if not channels:
+                return False
+
+            sub_dict = CFDictionaryRef()
+            sub = iorep.IOReportCreateSubscription(
+                None, channels, ctypes.byref(sub_dict), 0, None,
+            )
+            if not sub:
+                return False
+
+            # Probe: take one delta to verify the API returns valid data.
+            s1 = iorep.IOReportCreateSamples(sub, sub_dict, None)
+            if not s1:
+                return False
+            self._stop_event.wait(self._POLL_INTERVAL_S)
+            s2 = iorep.IOReportCreateSamples(sub, sub_dict, None)
+            if not s2:
+                cf.CFRelease(s1)
+                return False
+            delta = iorep.IOReportCreateSamplesDelta(s1, s2, None)
+            watts = _watts_from_delta(delta, self._POLL_INTERVAL_S) if delta else None
+            if delta:
+                cf.CFRelease(delta)
+            cf.CFRelease(s1)
+
+            if watts is None:
+                cf.CFRelease(s2)
+                return False
+            self._samples.append(watts)
+
+            # Confirmed working — keep sampling until stop requested.
+            prev = s2
+            while not self._stop_event.is_set():
+                self._stop_event.wait(self._POLL_INTERVAL_S)
+                cur = iorep.IOReportCreateSamples(sub, sub_dict, None)
+                if not cur:
+                    continue
+                delta = iorep.IOReportCreateSamplesDelta(prev, cur, None)
+                if delta:
+                    w = _watts_from_delta(delta, self._POLL_INTERVAL_S)
+                    if w is not None:
+                        self._samples.append(w)
+                    cf.CFRelease(delta)
+                cf.CFRelease(prev)
+                prev = cur
+            cf.CFRelease(prev)
             return True
         except Exception:  # noqa: BLE001
             return False
