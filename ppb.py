@@ -1823,6 +1823,9 @@ def download_model(
     # --- download each match with a Rich progress bar ------------------------
     downloaded_paths: list[Path] = []
 
+    _DL_MAX_RETRIES = 3
+    _DL_RETRY_DELAY = 5  # seconds
+
     with Progress(
         TextColumn("[bold blue]{task.description}"),
         BarColumn(),
@@ -1836,13 +1839,27 @@ def download_model(
         overall = progress.add_task("[bold]Total", total=len(matches))
 
         for filename in matches:
-            downloaded: str = hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=str(dest),
-                token=token,
-                tqdm_class=RichTqdm,  # ← live byte progress
-            )
+            for attempt in range(1, _DL_MAX_RETRIES + 1):
+                try:
+                    downloaded: str = hf_hub_download(
+                        repo_id=repo_id,
+                        filename=filename,
+                        local_dir=str(dest),
+                        token=token,
+                        tqdm_class=RichTqdm,  # ← live byte progress
+                    )
+                    break  # success
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except Exception as exc:
+                    if attempt < _DL_MAX_RETRIES:
+                        console.print(
+                            f"  [warning]⚠ {filename} attempt {attempt}/{_DL_MAX_RETRIES}"
+                            f" failed ({exc}), retrying in {_DL_RETRY_DELAY}s…[/warning]"
+                        )
+                        time.sleep(_DL_RETRY_DELAY)
+                    else:
+                        raise
 
             progress.advance(overall)
             model_path = Path(downloaded).resolve()
