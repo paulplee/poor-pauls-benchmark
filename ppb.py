@@ -1783,8 +1783,8 @@ def download_model(
     api = HfApi(token=token)
 
     try:
-        repo_files: list[str] = [
-            f.rfilename
+        all_repo_files: list[RepoFile] = [
+            f
             for f in api.list_repo_tree(repo_id, repo_type="model")
             if isinstance(f, RepoFile)
         ]
@@ -1801,7 +1801,10 @@ def download_model(
         )
         raise
 
-    matches = fnmatch.filter(repo_files, filename_pattern)
+    repo_files_by_name: dict[str, RepoFile] = {
+        f.rfilename: f for f in all_repo_files
+    }
+    matches = fnmatch.filter(repo_files_by_name.keys(), filename_pattern)
 
     # Silently exclude mmproj sidecar files — they are multimodal-projector
     # weights that cannot be benchmarked as standalone models.  Users
@@ -1811,7 +1814,7 @@ def download_model(
     if not matches:
         raise FileNotFoundError(
             f"No file in '{repo_id}' matches pattern '{filename_pattern}'.\n"
-            f"Available files: {repo_files}"
+            f"Available files: {list(repo_files_by_name.keys())}"
         )
 
     console.print(
@@ -1820,12 +1823,33 @@ def download_model(
     for m in matches:
         console.print(f"  • {m}")
 
-    # --- download each match with a Rich progress bar ------------------------
+    # --- pre-flight: skip files that already exist with matching size ---------
+    need_download: list[str] = []
     downloaded_paths: list[Path] = []
 
-    _DL_MAX_RETRIES = 3
-    _DL_RETRY_DELAY = 5  # seconds
+    for filename in matches:
+        local_path = (dest / filename).resolve()
+        expected_size = repo_files_by_name[filename].size
+        if local_path.is_file() and expected_size is not None:
+            actual_size = local_path.stat().st_size
+            if actual_size == expected_size:
+                downloaded_paths.append(local_path)
+                console.print(f"  [success]✓[/success] {filename} [dim](cached)[/dim]")
+                continue
+        need_download.append(filename)
 
+    if not need_download:
+        console.print(
+            f"\n[success]All {len(matches)} file(s) already present in[/success] "
+            f"[bold]{dest.resolve()}[/bold]"
+        )
+        return downloaded_paths
+
+    console.print(
+        f"[info]Downloading {len(need_download)} of {len(matches)} file(s)…[/info]"
+    )
+
+    # --- download only the missing/incomplete files --------------------------
     with Progress(
         TextColumn("[bold blue]{task.description}"),
         BarColumn(),
@@ -1836,30 +1860,16 @@ def download_model(
         transient=False,
     ) as progress:
         RichTqdm = _make_rich_tqdm(progress)
-        overall = progress.add_task("[bold]Total", total=len(matches))
+        overall = progress.add_task("[bold]Total", total=len(need_download))
 
-        for filename in matches:
-            for attempt in range(1, _DL_MAX_RETRIES + 1):
-                try:
-                    downloaded: str = hf_hub_download(
-                        repo_id=repo_id,
-                        filename=filename,
-                        local_dir=str(dest),
-                        token=token,
-                        tqdm_class=RichTqdm,  # ← live byte progress
-                    )
-                    break  # success
-                except (KeyboardInterrupt, SystemExit):
-                    raise
-                except Exception as exc:
-                    if attempt < _DL_MAX_RETRIES:
-                        console.print(
-                            f"  [warning]⚠ {filename} attempt {attempt}/{_DL_MAX_RETRIES}"
-                            f" failed ({exc}), retrying in {_DL_RETRY_DELAY}s…[/warning]"
-                        )
-                        time.sleep(_DL_RETRY_DELAY)
-                    else:
-                        raise
+        for filename in need_download:
+            downloaded: str = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=str(dest),
+                token=token,
+                tqdm_class=RichTqdm,  # ← live byte progress
+            )
 
             progress.advance(overall)
             model_path = Path(downloaded).resolve()
@@ -1867,7 +1877,7 @@ def download_model(
             console.print(f"  [success]✓[/success] {filename}")
 
     console.print(
-        f"\n[success]Done![/success] {len(downloaded_paths)} file(s) saved to "
+        f"\n[success]Done![/success] {len(downloaded_paths)} file(s) in "
         f"[bold]{dest.resolve()}[/bold]"
     )
     return downloaded_paths
