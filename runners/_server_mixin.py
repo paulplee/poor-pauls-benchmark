@@ -28,6 +28,7 @@ log = logging.getLogger("ppb")
 _HEALTH_POLL_INTERVAL_S = 0.5  # seconds between /health polls
 _HEALTH_TIMEOUT_S = 120  # max seconds to wait for server readiness
 _SERVER_STOP_TIMEOUT_S = 2  # seconds to wait after SIGINT/SIGTERM before SIGKILL
+_POST_KILL_DELAY_S = 3  # seconds to wait after SIGKILL for GPU resource reclamation
 _DEFAULT_N_PREDICT = 256  # max tokens to generate per prompt
 
 
@@ -129,12 +130,26 @@ class ServerMixin:
 
             time.sleep(_HEALTH_POLL_INTERVAL_S)
 
-        # Timed out — kill and raise.
+        # Timed out — capture stderr for diagnostics, then kill.
+        stderr = ""
+        if proc.stderr:
+            # Non-blocking read: grab whatever the server has written so far.
+            import selectors
+            sel = selectors.DefaultSelector()
+            sel.register(proc.stderr, selectors.EVENT_READ)
+            ready = sel.select(timeout=0)
+            if ready:
+                stderr = proc.stderr.read(4096)
+            sel.close()
+
         self.stop_server(proc)
-        raise TimeoutError(
+        msg = (
             f"llama-server did not become healthy within "
             f"{self._health_timeout}s on port {self._port}"
         )
+        if stderr:
+            msg += f"\nServer stderr (last 500 chars): {stderr[-500:]}"
+        raise TimeoutError(msg)
 
     def stop_server(self, proc: subprocess.Popen[str]) -> None:
         """Gracefully stop the server: SIGINT → SIGTERM → SIGKILL."""
@@ -158,11 +173,22 @@ class ServerMixin:
                     "SIGTERM timed out — sending SIGKILL to pid %d", proc.pid
                 )
                 proc.kill()
-                proc.wait(timeout=5)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    log.warning(
+                        "Process %d did not exit after SIGKILL — "
+                        "may be in uninterruptible sleep", proc.pid
+                    )
             except OSError:
                 pass  # process already gone
         except OSError:
             pass  # process already gone
+
+        # Give the OS / GPU driver time to reclaim resources (VRAM, file
+        # handles) before the next server is launched.  Without this pause
+        # the successor process can hang on GPU memory allocation.
+        time.sleep(_POST_KILL_DELAY_S)
 
         if proc is self._process:
             self._process = None

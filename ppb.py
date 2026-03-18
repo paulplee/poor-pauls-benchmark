@@ -2209,7 +2209,13 @@ def execute_sweep(
     runner.setup(cfg.runner_params)
 
     passed = failed = 0
+    skipped = 0
     i = 0  # global combo counter
+
+    # After this many *consecutive* failures for the same model, skip the
+    # rest of its combos.  Prevents burning hours waiting for a model that
+    # can't start (e.g. GPU resource exhaustion after SIGKILL).
+    _MAX_CONSECUTIVE_FAILURES = 5
 
     try:
         with Progress(
@@ -2224,9 +2230,27 @@ def execute_sweep(
 
             for model_hf_id, model_combos in model_groups:
                 line_offset = _count_lines(results_file)
+                consecutive_failures = 0
 
                 for combo in model_combos:
                     i += 1
+
+                    # Skip remaining combos for this model if too many
+                    # consecutive failures (likely a persistent issue like
+                    # GPU resource exhaustion or corrupt model file).
+                    if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                        remaining = len(model_combos) - (
+                            model_combos.index(combo)
+                        )
+                        console.print(
+                            f"  [warning]⏭  Skipping {remaining} remaining combo(s) for "
+                            f"{combo.model_path.name} after "
+                            f"{_MAX_CONSECUTIVE_FAILURES} consecutive failures[/warning]"
+                        )
+                        skipped += remaining
+                        progress.advance(task, remaining)
+                        break
+
                     label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
                     if combo.concurrent_users > 1:
                         label += f" users={combo.concurrent_users}"
@@ -2273,11 +2297,13 @@ def execute_sweep(
 
                     dur = f"  ({elapsed:.1f}s)"
                     if record is None:
+                        consecutive_failures += 1
                         console.print(
                             f"  [error]✗[/error] [{i}/{total}] {label} — FAILED{dur}"
                         )
                         failed += 1
                     else:
+                        consecutive_failures = 0
                         # Pull out the tok/s figure if llama-bench emits it
                         tps: str = ""
                         try:
@@ -2309,10 +2335,11 @@ def execute_sweep(
     finally:
         runner.teardown()
 
-    status = "success" if failed == 0 else "warning"
+    status = "success" if failed == 0 and skipped == 0 else "warning"
+    skip_msg = f", {skipped} skipped" if skipped else ""
     console.print(
         f"\n[{status}]Sweep complete.[/{status}] "
-        f"{passed} passed, {failed} failed — "
+        f"{passed} passed, {failed} failed{skip_msg} — "
         f"results in [bold]{results_file.resolve()}[/bold]"
     )
 
