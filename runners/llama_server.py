@@ -539,13 +539,22 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         """Return *True* if llama-server can start with *n_ctx*.
 
         Attempts to launch the server, waits for ``/health`` to return
-        a success response, then shuts the server down.  A health-check
-        timeout or launch failure returns *False*.
+        a success response, then shuts the server down.
+
+        Raises
+        ------
+        TimeoutError
+            If the server was still running but did not become healthy
+            within the configured timeout.  This is distinct from an
+            OOM crash (returns *False*) and lets callers decide whether
+            to retry with a longer timeout.
         """
         try:
             proc = self.start_server(model_path, n_ctx)
-        except (TimeoutError, OSError):
-            return False
+        except TimeoutError:
+            raise  # server alive but not healthy — let caller decide
+        except OSError:
+            return False  # genuine crash (OOM or bad model)
         else:
             self.stop_server(proc)
             return True

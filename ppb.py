@@ -47,6 +47,7 @@ from rich.theme import Theme
 from datasets import download_dataset
 from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
+from runners._server_mixin import ServerMixin
 from utils.flattener import compute_file_sha256, flatten_benchmark_row
 from utils.publisher import check_hf_token, publish_to_hf
 
@@ -1964,6 +1965,49 @@ def _write_result(record: dict, results_file: Path) -> None:
         fh.write(json.dumps(record) + "\n")
 
 
+def _estimate_model_load_time(model_path: Path, init_overhead_s: float = 30.0) -> float:
+    """Estimate how long it takes to load *model_path* into GPU memory.
+
+    Reads a sample chunk from the file to measure storage throughput,
+    then extrapolates to the full file size and adds a fixed overhead
+    for model initialization (tensor allocation, KV cache setup, etc.).
+
+    Returns the estimated load time in seconds.
+    """
+    file_size = model_path.stat().st_size
+    sample_size = min(64 * 1024 * 1024, file_size)  # read up to 64 MB
+
+    # Drop OS page cache for this file so the read reflects true I/O
+    # speed (NAS, SSD, spinning disk) rather than a hot-cache hit.
+    try:
+        fd = os.open(str(model_path), os.O_RDONLY)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        os.close(fd)
+    except (OSError, AttributeError):
+        pass  # posix_fadvise not available (macOS) or permission issue
+
+    t0 = time.monotonic()
+    with model_path.open("rb") as f:
+        f.read(sample_size)
+    elapsed = time.monotonic() - t0
+
+    if elapsed < 0.001:
+        # File is tiny or fully cached — assume fast local storage.
+        return init_overhead_s
+
+    bytes_per_sec = sample_size / elapsed
+    read_time = file_size / bytes_per_sec
+    estimated = read_time + init_overhead_s
+
+    log.debug(
+        "Speed test: %.1f MB in %.2fs → %.0f MB/s, "
+        "file=%.0f MB, est_load=%.1fs (read=%.1fs + init=%.1fs)",
+        sample_size / 1e6, elapsed, bytes_per_sec / 1e6,
+        file_size / 1e6, estimated, read_time, init_overhead_s,
+    )
+    return estimated
+
+
 def execute_vram_cliff(
     model_path: Path,
     min_ctx: int,
@@ -1992,6 +2036,26 @@ def execute_vram_cliff(
     """
     runner = get_runner(runner_type)
     runner.setup(runner_params or {})
+
+    # Estimate a reasonable health-check timeout based on actual storage
+    # throughput.  Models on NAS / spinning disk can take minutes to read
+    # while the default 120 s timeout is calibrated for local SSD.
+    # Use isinstance to narrow the type so Pylance knows _health_timeout exists.
+    srv = runner if isinstance(runner, ServerMixin) else None
+    original_timeout = srv._health_timeout if srv is not None else 120.0
+    est_load = _estimate_model_load_time(model_path)
+    # Use whichever is larger: the configured timeout or 1.5× the estimate.
+    baseline_timeout = max(original_timeout, est_load * 1.5)
+    if srv is not None:
+        srv._health_timeout = baseline_timeout
+
+    file_mb = model_path.stat().st_size / 1e6
+    if baseline_timeout > original_timeout:
+        console.print(
+            f"  [info]Speed test:[/info] {file_mb:,.0f} MB model, "
+            f"est. load ≈ {est_load:.0f}s → "
+            f"health timeout {baseline_timeout:.0f}s"
+        )
 
     lo, hi = min_ctx, max_ctx
     last_good: int = 0
@@ -2023,7 +2087,31 @@ def execute_vram_cliff(
                 detail=f"try n_ctx={mid:,}  (lo={lo:,}  hi={hi:,})",
             )
             t0 = time.monotonic()
-            ok = runner.probe_ctx(model_path, mid)
+            try:
+                ok = runner.probe_ctx(model_path, mid)
+            except TimeoutError:
+                # Server was alive but never became healthy within the
+                # configured timeout.  This usually means model loading
+                # took longer than expected — not OOM.  Retry once with
+                # 3× the estimated load time.
+                elapsed_first = time.monotonic() - t0
+                retry_timeout = est_load * 3
+                console.print(
+                    f"  iter {iteration:>2}: n_ctx={mid:>7,}  "
+                    f"[warning]⏳ timeout[/warning]  "
+                    f"({elapsed_first:.1f}s) — retrying with {retry_timeout:.0f}s timeout"
+                )
+                if srv is not None:
+                    srv._health_timeout = retry_timeout
+                t0 = time.monotonic()
+                try:
+                    ok = runner.probe_ctx(model_path, mid)
+                except TimeoutError:
+                    ok = False
+                finally:
+                    if srv is not None:
+                        srv._health_timeout = baseline_timeout
+
             elapsed = time.monotonic() - t0
             if ok:
                 last_good = mid
@@ -2042,6 +2130,9 @@ def execute_vram_cliff(
 
     safe = last_good
 
+    # Restore original timeout before teardown / reuse.
+    if srv is not None:
+        srv._health_timeout = original_timeout
     runner.teardown()
     return safe
 
@@ -2056,6 +2147,8 @@ def _count_lines(path: Path) -> int:
 
 def _read_lines_from(path: Path, start: int) -> list[str]:
     """Return lines from *path* starting at 0-based line *start*."""
+    if not path.exists():
+        return []
     lines: list[str] = []
     with path.open(encoding="utf-8") as fh:
         for i, line in enumerate(fh):
@@ -2231,6 +2324,7 @@ def execute_sweep(
 
     runner = get_runner(cfg.runner_type)
     runner.setup(cfg.runner_params)
+    srv = runner if isinstance(runner, ServerMixin) else None
 
     passed = failed = 0
     skipped = 0
@@ -2255,6 +2349,22 @@ def execute_sweep(
             for model_hf_id, model_combos in model_groups:
                 line_offset = _count_lines(results_file)
                 consecutive_failures = 0
+
+                # Estimate storage throughput and set a per-model health
+                # timeout so the first load from NAS doesn't false-fail.
+                if srv is not None:
+                    model_path = model_combos[0].model_path
+                    _est_load = _estimate_model_load_time(model_path)
+                    _orig_timeout = getattr(srv, "_health_timeout", 120.0)
+                    _model_timeout = max(_orig_timeout, _est_load * 1.5)
+                    srv._health_timeout = _model_timeout
+                    if _model_timeout > _orig_timeout:
+                        _file_mb = model_path.stat().st_size / 1e6
+                        console.print(
+                            f"  [info]Speed test:[/info] {_file_mb:,.0f} MB model, "
+                            f"est. load \u2248 {_est_load:.0f}s \u2192 "
+                            f"health timeout {_model_timeout:.0f}s"
+                        )
 
                 for combo in model_combos:
                     i += 1

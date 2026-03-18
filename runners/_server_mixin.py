@@ -158,6 +158,7 @@ class ServerMixin:
 
         timeout = getattr(self, "_stop_timeout", _SERVER_STOP_TIMEOUT_S)
         log.debug("Stopping llama-server (pid %d), timeout=%ds", proc.pid, timeout)
+        needed_sigkill = False
         try:
             # SIGINT triggers llama-server's graceful shutdown handler;
             # SIGTERM is often ignored when the server is under heavy load.
@@ -172,6 +173,7 @@ class ServerMixin:
                 log.warning(
                     "SIGTERM timed out — sending SIGKILL to pid %d", proc.pid
                 )
+                needed_sigkill = True
                 proc.kill()
                 try:
                     proc.wait(timeout=5)
@@ -185,10 +187,11 @@ class ServerMixin:
         except OSError:
             pass  # process already gone
 
-        # Give the OS / GPU driver time to reclaim resources (VRAM, file
-        # handles) before the next server is launched.  Without this pause
-        # the successor process can hang on GPU memory allocation.
-        time.sleep(_POST_KILL_DELAY_S)
+        # After a forced kill the GPU driver may need a moment to reclaim
+        # VRAM.  Only pause when SIGKILL was required — clean shutdowns
+        # release resources before the process exits.
+        if needed_sigkill:
+            time.sleep(_POST_KILL_DELAY_S)
 
         if proc is self._process:
             self._process = None

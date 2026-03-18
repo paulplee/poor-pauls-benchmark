@@ -410,6 +410,84 @@ class TestExecuteVramCliff:
 
         assert called_with == ["fake"]
 
+    def test_speed_test_sets_timeout(self, tmp_model: Path) -> None:
+        """execute_vram_cliff should run a speed test and bump the health timeout."""
+        from ppb import execute_vram_cliff
+
+        timeouts_seen: list[float] = []
+        original_get = __import__("runners").get_runner
+
+        def spy_get(rt: str):
+            r = original_get(rt)
+            r._health_timeout = 10.0  # low default
+            original_probe = r.probe_ctx
+
+            def spying_probe(*a, **kw):
+                timeouts_seen.append(r._health_timeout)
+                return original_probe(*a, **kw)
+
+            r.probe_ctx = spying_probe
+            return r
+
+        with patch("ppb.get_runner", side_effect=spy_get):
+            execute_vram_cliff(
+                model_path=tmp_model,
+                min_ctx=1024,
+                max_ctx=2048,
+                tolerance=1024,
+                runner_type="fake",
+            )
+
+        # The timeout during probing should have been bumped above 10.0
+        # because _estimate_model_load_time adds init_overhead_s (30 s).
+        assert timeouts_seen, "probe_ctx was never called"
+        assert all(t >= 10.0 for t in timeouts_seen)
+
+    def test_timeout_restored_after_vram_cliff(self, tmp_model: Path) -> None:
+        """After vram-cliff finishes, the runner's timeout is reset."""
+        from ppb import execute_vram_cliff
+
+        captured_runner = []
+        original_get = __import__("runners").get_runner
+
+        def spy_get(rt: str):
+            r = original_get(rt)
+            r._health_timeout = 42.0
+            captured_runner.append(r)
+            return r
+
+        with patch("ppb.get_runner", side_effect=spy_get):
+            execute_vram_cliff(
+                model_path=tmp_model,
+                min_ctx=1024,
+                max_ctx=2048,
+                tolerance=1024,
+                runner_type="fake",
+            )
+
+        # The original timeout should be restored after vram-cliff.
+        assert captured_runner[0]._health_timeout == 42.0
+
+
+class TestEstimateModelLoadTime:
+    """Unit tests for the _estimate_model_load_time helper."""
+
+    def test_returns_positive_float(self, tmp_model: Path) -> None:
+        from ppb import _estimate_model_load_time
+
+        result = _estimate_model_load_time(tmp_model)
+        assert isinstance(result, float)
+        assert result > 0
+
+    def test_tiny_file_returns_init_overhead(self, tmp_path: Path) -> None:
+        """A trivially small file should still return at least the init overhead."""
+        from ppb import _estimate_model_load_time
+
+        tiny = tmp_path / "tiny.gguf"
+        tiny.write_bytes(b"\x00" * 256)
+        result = _estimate_model_load_time(tiny, init_overhead_s=15.0)
+        assert result >= 15.0
+
 
 # ==========================================================================
 # Backward compatibility

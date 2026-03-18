@@ -457,6 +457,16 @@ class TestLlamaServerProbeCtx:
 
         assert r.probe_ctx(Path("/fake.gguf"), 131072) is False
 
+    def test_probe_ctx_timeout_raises(self) -> None:
+        """Health-check timeout → TimeoutError (not False)."""
+        r = LlamaServerRunner()
+        r._cmd = "/fake/llama-server"
+        r._health_timeout = 5.0
+
+        with patch.object(r, "start_server", side_effect=TimeoutError("timed out")):
+            with pytest.raises(TimeoutError):
+                r.probe_ctx(Path("/fake.gguf"), 65536)
+
 
 # ==========================================================================
 # LlamaServerRunner — teardown
