@@ -1609,6 +1609,7 @@ class SweepConfig(BaseModel):
 
     repo_id: str
     filename: str
+    exclude_filename: list[str] = Field(default_factory=list)
     models_dir: str = "./models"
     n_ctx: list[int]
     n_batch: list[int]
@@ -2136,6 +2137,28 @@ def execute_sweep(
             )
     else:
         raise ValueError("One of config_path or sweep_config is required.")
+
+    # Apply exclude_filename filter (works regardless of how models were resolved)
+    if cfg.exclude_filename:
+        excluded = [
+            (p, hf_id)
+            for p, hf_id in cfg.resolved_models
+            if any(fnmatch.fnmatch(p.name, pat) for pat in cfg.exclude_filename)
+        ]
+        if excluded:
+            for _, hf_id in excluded:
+                console.print(
+                    f"  [info]Excluding[/info] [hw]{hf_id}[/hw] "
+                    f"(matched exclude_filename)"
+                )
+        cfg.resolved_models = [
+            (p, hf_id)
+            for p, hf_id in cfg.resolved_models
+            if not any(fnmatch.fnmatch(p.name, pat) for pat in cfg.exclude_filename)
+        ]
+        if not cfg.resolved_models:
+            console.print("[error]All models were excluded — nothing to benchmark.[/error]")
+            raise typer.Exit(code=1)
 
     combos = cfg.combos()
 
