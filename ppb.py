@@ -1933,6 +1933,7 @@ def load_suite_config(
 _SHARED_TOML_KEYS = {
     "repo_id",
     "filename",
+    "exclude_filename",
     "models_dir",
     "runner_type",
     "runner_params",
@@ -2939,6 +2940,34 @@ def run_all(
     except (FileNotFoundError, RepositoryNotFoundError, Exception) as exc:
         console.print(f"[error]Model download failed:[/error] {exc}")
         raise typer.Exit(code=1) from exc
+
+    # Apply exclude_filename filter from TOML (shared or sweep section).
+    raw_exclude = (
+        raw.get("exclude_filename")
+        or shared.get("exclude_filename")
+        or raw.get("sweep", {}).get("exclude_filename")
+        or []
+    )
+    if raw_exclude:
+        excluded = [
+            (p, hf_id)
+            for p, hf_id in resolved_models
+            if any(fnmatch.fnmatch(p.name, pat) for pat in raw_exclude)
+        ]
+        if excluded:
+            for _, hf_id in excluded:
+                console.print(
+                    f"  [info]Excluding[/info] [hw]{hf_id}[/hw] "
+                    f"(matched exclude_filename)"
+                )
+        resolved_models = [
+            (p, hf_id)
+            for p, hf_id in resolved_models
+            if not any(fnmatch.fnmatch(p.name, pat) for pat in raw_exclude)
+        ]
+        if not resolved_models:
+            console.print("[error]All models were excluded — nothing to benchmark.[/error]")
+            raise typer.Exit(code=1)
 
     # -- Pre-flight: HF write-token check (before the long benchmark) ------
     if raw.get("publish", {}).get("upload", False):
