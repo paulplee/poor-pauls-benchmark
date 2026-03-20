@@ -140,6 +140,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         # Managed server state for server-reuse optimisation.
         self._managed_model: str | None = None
         self._managed_n_ctx: int | None = None
+        self._managed_parallel: int = 0
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -206,7 +207,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
         # --- start server ---------------------------------------------------
         try:
-            proc = self._start_server(Path(model_path), n_ctx)
+            proc = self._start_server(Path(model_path), n_ctx, parallel=concurrent_users)
         except TimeoutError:
             # The server is alive but hasn't finished loading the model
             # (common on NAS / slow storage).  Retry once with 2× timeout
@@ -220,7 +221,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             saved_timeout = self._health_timeout
             self._health_timeout = retry_timeout
             try:
-                proc = self._start_server(Path(model_path), n_ctx)
+                proc = self._start_server(Path(model_path), n_ctx, parallel=concurrent_users)
             except TimeoutError as exc:
                 log.error("Server health-check timed out on retry: %s", exc)
                 return None
@@ -579,6 +580,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             self._process = None
         self._managed_model = None
         self._managed_n_ctx = None
+        self._managed_parallel = 0
 
     # ---- server reuse -------------------------------------------------------
 
@@ -586,12 +588,13 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
     def supports_server_reuse(self) -> bool:
         return True
 
-    def ensure_server(self, model_path: Path, n_ctx: int) -> None:
-        """Start or keep the managed server for (model_path, n_ctx).
+    def ensure_server(self, model_path: Path, n_ctx: int, parallel: int = 1) -> None:
+        """Start or keep the managed server for (model_path, n_ctx, parallel).
 
-        If a compatible server is already running (same model + n_ctx),
-        this is a no-op — the most common case in a sweep where we test
-        multiple batch sizes / concurrent user counts at the same context.
+        If a compatible server is already running (same model + n_ctx and
+        enough parallel slots), this is a no-op — the most common case
+        in a sweep where we test multiple batch sizes / concurrent user
+        counts at the same context.
         """
         model_key = str(model_path)
         if (
@@ -599,14 +602,16 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             and self._process.poll() is None
             and self._managed_model == model_key
             and self._managed_n_ctx == n_ctx
+            and self._managed_parallel >= parallel
         ):
-            return  # server already running with the right params
+            return  # server already running with compatible params
 
         # Different params or no server — (re)start.
         self.stop_managed_server()
-        proc = self.start_server(model_path, n_ctx)
+        proc = self.start_server(model_path, n_ctx, parallel=parallel)
         self._managed_model = model_key
         self._managed_n_ctx = n_ctx
+        self._managed_parallel = parallel
         # self._process and self._port are set by start_server
 
     def run_on_server(self, config: dict[str, Any]) -> dict | None:
@@ -628,6 +633,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._process = None
         self._managed_model = None
         self._managed_n_ctx = None
+        self._managed_parallel = 0
 
     # ---- optional: probe_ctx ------------------------------------------------
 
@@ -657,9 +663,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
     # ---- internal (delegate to mixin) ---------------------------------------
 
-    def _start_server(self, model_path: Path, n_ctx: int) -> subprocess.Popen[str]:
+    def _start_server(self, model_path: Path, n_ctx: int, parallel: int = 1) -> subprocess.Popen[str]:
         """Delegate to :meth:`ServerMixin.start_server`."""
-        return self.start_server(model_path, n_ctx)
+        return self.start_server(model_path, n_ctx, parallel=parallel)
 
     def _stop_server(self, proc: subprocess.Popen[str]) -> None:
         """Delegate to :meth:`ServerMixin.stop_server`."""

@@ -2583,7 +2583,7 @@ def execute_sweep(
                     # once per (model, n_ctx) rather than once per combo.
                     if _use_server_reuse:
                         try:
-                            runner.ensure_server(combo.model_path, combo.n_ctx)
+                            runner.ensure_server(combo.model_path, combo.n_ctx, combo.concurrent_users)
                             raw_result = runner.run_on_server(run_config)
                         except (TimeoutError, OSError) as exc:
                             log.error("Server start failed: %s", exc)

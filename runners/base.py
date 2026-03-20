@@ -85,7 +85,7 @@ class BaseRunner(ABC):
         """Return *True* if this runner supports managed server lifecycle."""
         return False
 
-    def ensure_server(self, model_path: Path, n_ctx: int) -> None:
+    def ensure_server(self, model_path: Path, n_ctx: int, parallel: int = 1) -> None:
         """Start (or keep running) a server for *model_path* at *n_ctx*.
 
         If a compatible server is already running, this is a no-op.

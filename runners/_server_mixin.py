@@ -84,7 +84,7 @@ class ServerMixin:
         )
 
     def start_server(
-        self, model_path: str | Path, n_ctx: int
+        self, model_path: str | Path, n_ctx: int, parallel: int = 1,
     ) -> subprocess.Popen[str]:
         """Launch ``llama-server`` and wait for ``/health`` to become OK."""
         self._port = find_free_port()
@@ -95,6 +95,8 @@ class ServerMixin:
             "--host", "127.0.0.1",
             "--port", str(self._port),
         ]
+        if parallel > 1:
+            cmd += ["--parallel", str(parallel)]
 
         log.debug("Starting llama-server: %s", " ".join(cmd))
 
