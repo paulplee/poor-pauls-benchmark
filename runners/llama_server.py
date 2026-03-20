@@ -22,9 +22,6 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
-import os
-import signal
-import socket
 import statistics
 import subprocess
 import time
@@ -41,7 +38,6 @@ from ._server_mixin import (
     ServerMixin,
     find_free_port,
     percentile,
-    _HEALTH_POLL_INTERVAL_S,
     _HEALTH_TIMEOUT_S,
     _SERVER_STOP_TIMEOUT_S,
     _DEFAULT_N_PREDICT,
@@ -141,6 +137,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._process: subprocess.Popen[str] | None = None
         self._port: int = 0
         self._prompt_distribution: str = "shared"
+        # Managed server state for server-reuse optimisation.
+        self._managed_model: str | None = None
+        self._managed_n_ctx: int | None = None
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -170,7 +169,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
         # Download + load prompts.
         dataset_path = download_dataset(
-            repo_id=repo_id, filename=filename, dataset_dir=dataset_dir,
+            repo_id=repo_id,
+            filename=filename,
+            dataset_dir=dataset_dir,
         )
         self._prompts = load_sharegpt_prompts(
             dataset_path,
@@ -206,9 +207,28 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         # --- start server ---------------------------------------------------
         try:
             proc = self._start_server(Path(model_path), n_ctx)
-        except TimeoutError as exc:
-            log.error("Server health-check timed out: %s", exc)
-            return None
+        except TimeoutError:
+            # The server is alive but hasn't finished loading the model
+            # (common on NAS / slow storage).  Retry once with 2× timeout
+            # — the first attempt will have warmed the OS page cache.
+            retry_timeout = self._health_timeout * 2
+            log.warning(
+                "Server health-check timed out (%.0fs) — retrying with %.0fs timeout",
+                self._health_timeout,
+                retry_timeout,
+            )
+            saved_timeout = self._health_timeout
+            self._health_timeout = retry_timeout
+            try:
+                proc = self._start_server(Path(model_path), n_ctx)
+            except TimeoutError as exc:
+                log.error("Server health-check timed out on retry: %s", exc)
+                return None
+            except OSError as exc:
+                log.error("Failed to start llama-server on retry: %s", exc)
+                return None
+            finally:
+                self._health_timeout = saved_timeout
         except OSError as exc:
             log.error("Failed to start llama-server: %s", exc)
             return None
@@ -244,18 +264,22 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
         total_duration = time.monotonic() - t_start
         return self._aggregate_metrics(
-            all_ttft, all_itl, total_tokens, successful_prompts,
-            total_duration, concurrent_users=1,
+            all_ttft,
+            all_itl,
+            total_tokens,
+            successful_prompts,
+            total_duration,
+            concurrent_users=1,
         )
 
     def _run_concurrent(
-        self, proc: subprocess.Popen[str], concurrent_users: int,
+        self,
+        proc: subprocess.Popen[str],
+        concurrent_users: int,
     ) -> dict | None:
         """Send prompts from *concurrent_users* simulated users in parallel."""
         user_prompts = self._distribute_prompts(concurrent_users)
-        return asyncio.run(
-            self._async_run(concurrent_users, user_prompts)
-        )
+        return asyncio.run(self._async_run(concurrent_users, user_prompts))
 
     def _distribute_prompts(self, concurrent_users: int) -> list[list[str]]:
         """Split ``self._prompts`` among users based on distribution mode."""
@@ -280,7 +304,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         # linearly with queue depth (prefill is sequential).
         request_timeout = max(300.0, concurrent_users * 60.0)
         async with httpx.AsyncClient(
-            base_url=base_url, timeout=request_timeout,
+            base_url=base_url,
+            timeout=request_timeout,
         ) as client:
             tasks = [
                 self._async_user_session(client, prompts, user_id)
@@ -315,21 +340,31 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             # Per-user breakdown
             sorted_u_ttft = sorted(u_ttft)
             sorted_u_itl = sorted(u_itl) if u_itl else [0.0]
-            per_user_stats.append({
-                "user_id": uid,
-                "prompts_attempted": u_attempted,
-                "prompts_succeeded": u_succeeded,
-                "tokens": u_tokens,
-                "avg_ttft_ms": round(statistics.mean(sorted_u_ttft) * 1000, 2) if sorted_u_ttft else 0.0,
-                "p50_ttft_ms": round(percentile(sorted_u_ttft, 50) * 1000, 2),
-                "avg_itl_ms": round(statistics.mean(sorted_u_itl) * 1000, 2) if sorted_u_itl else 0.0,
-                "p50_itl_ms": round(percentile(sorted_u_itl, 50) * 1000, 2),
-            })
+            per_user_stats.append(
+                {
+                    "user_id": uid,
+                    "prompts_attempted": u_attempted,
+                    "prompts_succeeded": u_succeeded,
+                    "tokens": u_tokens,
+                    "avg_ttft_ms": round(statistics.mean(sorted_u_ttft) * 1000, 2)
+                    if sorted_u_ttft
+                    else 0.0,
+                    "p50_ttft_ms": round(percentile(sorted_u_ttft, 50) * 1000, 2),
+                    "avg_itl_ms": round(statistics.mean(sorted_u_itl) * 1000, 2)
+                    if sorted_u_itl
+                    else 0.0,
+                    "p50_itl_ms": round(percentile(sorted_u_itl, 50) * 1000, 2),
+                }
+            )
 
         total_attempted = sum(r["attempted"] for r in user_results)
         return self._aggregate_metrics(
-            all_ttft, all_itl, total_tokens, successful_prompts,
-            total_duration, concurrent_users,
+            all_ttft,
+            all_itl,
+            total_tokens,
+            successful_prompts,
+            total_duration,
+            concurrent_users,
             queue_times=all_queue,
             per_user_stats=per_user_stats,
             total_attempted=total_attempted,
@@ -349,7 +384,13 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         succeeded = 0
 
         for i, prompt in enumerate(prompts):
-            log.debug("User %d prompt %d/%d (%d chars)", user_id, i + 1, len(prompts), len(prompt))
+            log.debug(
+                "User %d prompt %d/%d (%d chars)",
+                user_id,
+                i + 1,
+                len(prompts),
+                len(prompt),
+            )
             result = await self._astream_completion(client, prompt)
             if result is not None:
                 ttft, itl, n_tokens, queue_time = result
@@ -412,7 +453,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
                     if not line or line.startswith(":") or not line.startswith("data:"):
                         continue
 
-                    body_str = line[len("data:"):].strip()
+                    body_str = line[len("data:") :].strip()
                     if not body_str or body_str == "[DONE]":
                         continue
 
@@ -471,7 +512,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             log.error("All prompts failed — no metrics to report")
             return None
 
-        attempted = total_attempted if total_attempted is not None else len(self._prompts)
+        attempted = (
+            total_attempted if total_attempted is not None else len(self._prompts)
+        )
         sorted_ttft = sorted(all_ttft)
         sorted_itl = sorted(all_itl) if all_itl else [0.0]
 
@@ -529,9 +572,62 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
     def teardown(self) -> None:
         """Safety-net: kill any lingering server process."""
         if self._process is not None and self._process.poll() is None:
-            log.warning("teardown: killing lingering llama-server (pid %d)", self._process.pid)
+            log.warning(
+                "teardown: killing lingering llama-server (pid %d)", self._process.pid
+            )
             self.stop_server(self._process)
             self._process = None
+        self._managed_model = None
+        self._managed_n_ctx = None
+
+    # ---- server reuse -------------------------------------------------------
+
+    @property
+    def supports_server_reuse(self) -> bool:
+        return True
+
+    def ensure_server(self, model_path: Path, n_ctx: int) -> None:
+        """Start or keep the managed server for (model_path, n_ctx).
+
+        If a compatible server is already running (same model + n_ctx),
+        this is a no-op — the most common case in a sweep where we test
+        multiple batch sizes / concurrent user counts at the same context.
+        """
+        model_key = str(model_path)
+        if (
+            self._process is not None
+            and self._process.poll() is None
+            and self._managed_model == model_key
+            and self._managed_n_ctx == n_ctx
+        ):
+            return  # server already running with the right params
+
+        # Different params or no server — (re)start.
+        self.stop_managed_server()
+        proc = self.start_server(model_path, n_ctx)
+        self._managed_model = model_key
+        self._managed_n_ctx = n_ctx
+        # self._process and self._port are set by start_server
+
+    def run_on_server(self, config: dict[str, Any]) -> dict | None:
+        """Run a benchmark combo against the already-running managed server."""
+        if self._process is None or self._process.poll() is not None:
+            log.error("run_on_server called but no managed server is running")
+            return None
+
+        concurrent_users = int(config.get("concurrent_users", 1))
+        if concurrent_users <= 1:
+            return self._run_serial(self._process)
+        else:
+            return self._run_concurrent(self._process, concurrent_users)
+
+    def stop_managed_server(self) -> None:
+        """Stop the managed server if one is running."""
+        if self._process is not None and self._process.poll() is None:
+            self.stop_server(self._process)
+        self._process = None
+        self._managed_model = None
+        self._managed_n_ctx = None
 
     # ---- optional: probe_ctx ------------------------------------------------
 
@@ -608,7 +704,7 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
                     if not line or line.startswith(":") or not line.startswith("data:"):
                         continue
 
-                    body = line[len("data:"):].strip()
+                    body = line[len("data:") :].strip()
                     if not body or body == "[DONE]":
                         continue
 

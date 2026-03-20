@@ -74,3 +74,34 @@ class BaseRunner(ABC):
         raise NotImplementedError(
             f"Runner {self.runner_type!r} does not support context-size probing."
         )
+
+    # ---- server reuse (optional) --------------------------------------------
+    # Runners that launch a long-lived server process (e.g. llama-server)
+    # can override these to let the orchestrator keep the server alive
+    # across multiple combos that share the same (model, n_ctx).
+
+    @property
+    def supports_server_reuse(self) -> bool:
+        """Return *True* if this runner supports managed server lifecycle."""
+        return False
+
+    def ensure_server(self, model_path: Path, n_ctx: int) -> None:
+        """Start (or keep running) a server for *model_path* at *n_ctx*.
+
+        If a compatible server is already running, this is a no-op.
+        If the server is running with different parameters, it is
+        stopped and restarted.
+        """
+        raise NotImplementedError
+
+    def run_on_server(self, config: dict[str, Any]) -> dict | None:
+        """Run a benchmark combo against the already-running server.
+
+        The server must have been started via :meth:`ensure_server`.
+        Unlike :meth:`run`, this does NOT start/stop the server.
+        """
+        raise NotImplementedError
+
+    def stop_managed_server(self) -> None:
+        """Stop the managed server if one is running."""
+        raise NotImplementedError

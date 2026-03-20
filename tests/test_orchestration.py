@@ -73,6 +73,15 @@ def _mock_ensure_models(tmp_model: Path):
     return lambda *a, **kw: [(tmp_model, f"test-org/test-repo/{tmp_model.name}")]
 
 
+def _mock_resolve_models(tmp_model: Path):
+    """Return a mock side_effect for ``ppb._resolve_models``.
+
+    Returns 3-tuples ``(path, hf_id, needs_download)`` where the model
+    is already cached (``needs_download=False``).
+    """
+    return lambda *a, **kw: [(tmp_model, f"test-org/test-repo/{tmp_model.name}", False)]
+
+
 # ==========================================================================
 # execute_sweep
 # ==========================================================================
@@ -685,7 +694,7 @@ class TestRunAll:
 
         runner = CliRunner()
         results = tmp_path / "all_results.jsonl"
-        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with patch("ppb._resolve_models", side_effect=_mock_resolve_models(tmp_model)):
             result = runner.invoke(
                 app, ["all", str(suite_toml), "--results", str(results)]
             )
@@ -705,7 +714,7 @@ class TestRunAll:
 
         runner = CliRunner()
         results = tmp_path / "res.jsonl"
-        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+        with patch("ppb._resolve_models", side_effect=_mock_resolve_models(tmp_model)):
             result = runner.invoke(
                 app, ["all", str(suite_toml_no_vramcliff), "--results", str(results)]
             )
@@ -751,7 +760,7 @@ class TestRunAll:
         runner = CliRunner()
         with (
             patch("ppb.get_runner", side_effect=spy_get),
-            patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
+            patch("ppb._resolve_models", side_effect=_mock_resolve_models(tmp_model)),
         ):
             result = runner.invoke(
                 app, ["all", str(cfg), "--results", str(tmp_path / "r.jsonl")]

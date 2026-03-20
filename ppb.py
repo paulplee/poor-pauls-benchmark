@@ -27,6 +27,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+# Work around a crash in huggingface_hub ≥ 1.0's built-in xet transport.
+# The xet-core Rust backend fails with "File exists (os error 17)" on some
+# systems.  Disabling xet falls back to the standard HTTPS downloader which
+# is perfectly reliable (and already fast enough for GGUF files).
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 import typer
@@ -1592,6 +1598,149 @@ def _ensure_models(
     return [(p, f"{repo_id}/{p.name}") for p in paths]
 
 
+def _resolve_models(
+    repo_id: str,
+    filename_pattern: str,
+    models_dir: str | Path = "./models",
+    token: str | None = None,
+) -> list[tuple[Path, str, bool]]:
+    """Resolve model files without downloading.
+
+    Returns ``(local_path, hf_id, needs_download)`` for each matched file.
+    Files already present with correct size are marked as cached.
+    """
+    dest = Path(models_dir).expanduser()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    api = HfApi(token=token)
+    try:
+        all_repo_files: list[RepoFile] = [
+            f
+            for f in api.list_repo_tree(repo_id, repo_type="model")
+            if isinstance(f, RepoFile)
+        ]
+    except RepositoryNotFoundError:
+        console.print(
+            "\n[error]Repository not found or access denied.[/error]\n"
+            f"  Repo: [bold]{repo_id}[/bold]\n\n"
+            "  This usually means one of:\n"
+            "    1. The repo ID is misspelled.\n"
+            "    2. The repo is private/gated and you are not authenticated.\n\n"
+            "  To log in, run:\n"
+            "    [bold cyan]uv run huggingface-cli login[/bold cyan]\n"
+            "  or set the [bold]HF_TOKEN[/bold] environment variable.\n"
+        )
+        raise
+
+    repo_files_by_name: dict[str, RepoFile] = {f.rfilename: f for f in all_repo_files}
+    matches = fnmatch.filter(repo_files_by_name.keys(), filename_pattern)
+    matches = [m for m in matches if not Path(m).name.startswith("mmproj-")]
+
+    if not matches:
+        raise FileNotFoundError(
+            f"No file in '{repo_id}' matches pattern '{filename_pattern}'.\n"
+            f"Available files: {list(repo_files_by_name.keys())}"
+        )
+
+    result: list[tuple[Path, str, bool]] = []
+    for fname in matches:
+        local_path = (dest / fname).resolve()
+        hf_id = f"{repo_id}/{Path(fname).name}"
+        expected_size = repo_files_by_name[fname].size
+        cached = (
+            local_path.is_file()
+            and expected_size is not None
+            and local_path.stat().st_size == expected_size
+        )
+        result.append((local_path, hf_id, not cached))
+
+    return result
+
+
+def _download_single_model(
+    repo_id: str,
+    filename: str,
+    models_dir: Path,
+    token: str | None = None,
+) -> Path:
+    """Download a single model file from HF Hub, returning its local path."""
+    with Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        RichTqdm = _make_rich_tqdm(progress)
+        downloaded: str = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=str(models_dir),
+            token=token,
+            tqdm_class=RichTqdm,
+        )
+    return Path(downloaded).resolve()
+
+
+class _BackgroundDownloader:
+    """Pre-fetch the next model in a background thread.
+
+    Usage::
+
+        dl = _BackgroundDownloader()
+        dl.prefetch(repo_id, filename, models_dir)  # starts background download
+        # ... benchmark current model ...
+        path = dl.wait()  # blocks until the prefetch completes
+    """
+
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._result: Path | None = None
+        self._error: Exception | None = None
+
+    def prefetch(
+        self,
+        repo_id: str,
+        filename: str,
+        models_dir: Path,
+        token: str | None = None,
+    ) -> None:
+        """Start downloading *filename* in a background thread."""
+        self._result = None
+        self._error = None
+
+        def _worker() -> None:
+            try:
+                self._result = _download_single_model(
+                    repo_id, filename, models_dir, token
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._error = exc
+
+        self._thread = threading.Thread(target=_worker, daemon=True)
+        self._thread.start()
+
+    def wait(self) -> Path:
+        """Block until the background download completes and return the path.
+
+        Raises whatever exception the download thread encountered.
+        State is always cleared so a subsequent ``wait()`` without a new
+        ``prefetch()`` raises instead of returning stale results.
+        """
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
+        error, self._error = self._error, None
+        result, self._result = self._result, None
+        if error is not None:
+            raise error
+        if result is None:
+            raise RuntimeError("wait() called without a prior prefetch()")
+        return result
+
+
 class SweepConfig(BaseModel):
     """Validated representation of the ``[sweep]`` block in a sweep TOML file.
 
@@ -1803,9 +1952,7 @@ def download_model(
         )
         raise
 
-    repo_files_by_name: dict[str, RepoFile] = {
-        f.rfilename: f for f in all_repo_files
-    }
+    repo_files_by_name: dict[str, RepoFile] = {f.rfilename: f for f in all_repo_files}
     matches = fnmatch.filter(repo_files_by_name.keys(), filename_pattern)
 
     # Silently exclude mmproj sidecar files — they are multimodal-projector
@@ -1965,6 +2112,12 @@ def _write_result(record: dict, results_file: Path) -> None:
         fh.write(json.dumps(record) + "\n")
 
 
+# Cache for _estimate_model_load_time results.  Keyed by resolved
+# file path so repeated calls (vram-cliff → sweep) skip the costly
+# full-file read when the page cache is already warm.
+_load_time_cache: dict[Path, float] = {}
+
+
 def _estimate_model_load_time(model_path: Path, init_overhead_s: float = 30.0) -> float:
     """Estimate how long it takes to load *model_path* into GPU memory.
 
@@ -1972,27 +2125,43 @@ def _estimate_model_load_time(model_path: Path, init_overhead_s: float = 30.0) -
     then extrapolates to the full file size and adds a fixed overhead
     for model initialization (tensor allocation, KV cache setup, etc.).
 
+    After measuring, the rest of the file is read sequentially to
+    pre-warm the OS page cache.  This avoids a cold NAS read when
+    ``llama-server`` starts immediately afterward.
+
+    Results are cached so the second call (e.g. from sweep after
+    vram-cliff) returns instantly without re-reading the file.
+
     Returns the estimated load time in seconds.
     """
-    file_size = model_path.stat().st_size
-    sample_size = min(64 * 1024 * 1024, file_size)  # read up to 64 MB
+    resolved = model_path.resolve()
+    if resolved in _load_time_cache:
+        return _load_time_cache[resolved]
 
-    # Drop OS page cache for this file so the read reflects true I/O
-    # speed (NAS, SSD, spinning disk) rather than a hot-cache hit.
-    try:
-        fd = os.open(str(model_path), os.O_RDONLY)
-        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-        os.close(fd)
-    except (OSError, AttributeError):
-        pass  # posix_fadvise not available (macOS) or permission issue
+    file_size = model_path.stat().st_size
+    # Use a 256 MB sample — large enough to capture sustained NAS
+    # throughput rather than just the NAS's RAM-cache burst speed.
+    sample_size = min(256 * 1024 * 1024, file_size)
+
+    # NOTE: We intentionally do NOT drop the OS page cache here.
+    # Evicting the cache forces llama-server into a slow cold read
+    # from NAS on every launch, which is the exact scenario that causes
+    # timeouts.  If the file is already cached the timeout will be
+    # generous (fine — server will start quickly).  If the file is cold
+    # we sample real I/O speed and warm the cache for the upcoming load.
 
     t0 = time.monotonic()
     with model_path.open("rb") as f:
         f.read(sample_size)
+        # Pre-warm the remainder of the file into page cache so
+        # llama-server doesn't hit cold NAS reads.
+        while f.read(8 * 1024 * 1024):  # 8 MB chunks
+            pass
     elapsed = time.monotonic() - t0
 
     if elapsed < 0.001:
         # File is tiny or fully cached — assume fast local storage.
+        _load_time_cache[resolved] = init_overhead_s
         return init_overhead_s
 
     bytes_per_sec = sample_size / elapsed
@@ -2002,9 +2171,15 @@ def _estimate_model_load_time(model_path: Path, init_overhead_s: float = 30.0) -
     log.debug(
         "Speed test: %.1f MB in %.2fs → %.0f MB/s, "
         "file=%.0f MB, est_load=%.1fs (read=%.1fs + init=%.1fs)",
-        sample_size / 1e6, elapsed, bytes_per_sec / 1e6,
-        file_size / 1e6, estimated, read_time, init_overhead_s,
+        sample_size / 1e6,
+        elapsed,
+        bytes_per_sec / 1e6,
+        file_size / 1e6,
+        estimated,
+        read_time,
+        init_overhead_s,
     )
+    _load_time_cache[resolved] = estimated
     return estimated
 
 
@@ -2044,8 +2219,8 @@ def execute_vram_cliff(
     srv = runner if isinstance(runner, ServerMixin) else None
     original_timeout = srv._health_timeout if srv is not None else 120.0
     est_load = _estimate_model_load_time(model_path)
-    # Use whichever is larger: the configured timeout or 1.5× the estimate.
-    baseline_timeout = max(original_timeout, est_load * 1.5)
+    # Use whichever is larger: the configured timeout or 2× the estimate.
+    baseline_timeout = max(original_timeout, est_load * 2)
     if srv is not None:
         srv._health_timeout = baseline_timeout
 
@@ -2251,7 +2426,9 @@ def execute_sweep(
             if not any(fnmatch.fnmatch(p.name, pat) for pat in cfg.exclude_filename)
         ]
         if not cfg.resolved_models:
-            console.print("[error]All models were excluded — nothing to benchmark.[/error]")
+            console.print(
+                "[error]All models were excluded — nothing to benchmark.[/error]"
+            )
             raise typer.Exit(code=1)
 
     combos = cfg.combos()
@@ -2325,6 +2502,7 @@ def execute_sweep(
     runner = get_runner(cfg.runner_type)
     runner.setup(cfg.runner_params)
     srv = runner if isinstance(runner, ServerMixin) else None
+    _use_server_reuse = runner.supports_server_reuse
 
     passed = failed = 0
     skipped = 0
@@ -2356,7 +2534,7 @@ def execute_sweep(
                     model_path = model_combos[0].model_path
                     _est_load = _estimate_model_load_time(model_path)
                     _orig_timeout = getattr(srv, "_health_timeout", 120.0)
-                    _model_timeout = max(_orig_timeout, _est_load * 1.5)
+                    _model_timeout = max(_orig_timeout, _est_load * 2)
                     srv._health_timeout = _model_timeout
                     if _model_timeout > _orig_timeout:
                         _file_mb = model_path.stat().st_size / 1e6
@@ -2373,9 +2551,7 @@ def execute_sweep(
                     # consecutive failures (likely a persistent issue like
                     # GPU resource exhaustion or corrupt model file).
                     if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                        remaining = len(model_combos) - (
-                            model_combos.index(combo)
-                        )
+                        remaining = len(model_combos) - (model_combos.index(combo))
                         console.print(
                             f"  [warning]⏭  Skipping {remaining} remaining combo(s) for "
                             f"{combo.model_path.name} after "
@@ -2401,7 +2577,20 @@ def execute_sweep(
                     _thermal_sampler = ThermalSampler()
                     _power_sampler.start()
                     _thermal_sampler.start()
-                    raw_result = runner.run(run_config)
+
+                    # Use server reuse when available: the orchestrator
+                    # manages the server lifecycle so the model is loaded
+                    # once per (model, n_ctx) rather than once per combo.
+                    if _use_server_reuse:
+                        try:
+                            runner.ensure_server(combo.model_path, combo.n_ctx)
+                            raw_result = runner.run_on_server(run_config)
+                        except (TimeoutError, OSError) as exc:
+                            log.error("Server start failed: %s", exc)
+                            raw_result = None
+                    else:
+                        raw_result = runner.run(run_config)
+
                     avg_power_w, max_power_w = _power_sampler.stop()
                     thermal_stats = _thermal_sampler.stop()
                     elapsed = time.monotonic() - t0
@@ -2463,6 +2652,10 @@ def execute_sweep(
                     progress.advance(task)
 
                 # -- model done: fire callback --------------------------------
+                # Stop the managed server before moving to the next model
+                # (different model file = must restart).
+                if _use_server_reuse:
+                    runner.stop_managed_server()
                 if on_model_done is not None:
                     on_model_done(model_hf_id, results_file, line_offset)
 
@@ -3006,6 +3199,11 @@ def run_all(
     If the TOML has no ``[vram-cliff]`` section, the vram-cliff step
     is skipped and the sweep runs unmodified.
 
+    **Pipelined execution:** models are processed one at a time
+    (vram-cliff → sweep → publish per model).  The *next* model's
+    download starts in a background thread while the current model is
+    being benchmarked, overlapping network I/O with GPU work.
+
     **Auto-resume:** if a previous run for the same suite was interrupted,
     PPB detects the existing results file and automatically skips models
     that have already been fully benchmarked.
@@ -3044,11 +3242,11 @@ def run_all(
         )
         raise typer.Exit(code=1)
 
-    console.print("[info]Downloading / verifying models…[/info]")
+    console.print("[info]Resolving models…[/info]")
     try:
-        resolved_models = _ensure_models(r_id, r_fn, r_dir)
+        model_manifest = _resolve_models(r_id, r_fn, r_dir)
     except (FileNotFoundError, RepositoryNotFoundError, Exception) as exc:
-        console.print(f"[error]Model download failed:[/error] {exc}")
+        console.print(f"[error]Model resolution failed:[/error] {exc}")
         raise typer.Exit(code=1) from exc
 
     # Apply exclude_filename filter from TOML (shared or sweep section).
@@ -3060,24 +3258,37 @@ def run_all(
     )
     if raw_exclude:
         excluded = [
-            (p, hf_id)
-            for p, hf_id in resolved_models
+            (p, hf_id, nd)
+            for p, hf_id, nd in model_manifest
             if any(fnmatch.fnmatch(p.name, pat) for pat in raw_exclude)
         ]
         if excluded:
-            for _, hf_id in excluded:
+            for _, hf_id, _ in excluded:
                 console.print(
                     f"  [info]Excluding[/info] [hw]{hf_id}[/hw] "
                     f"(matched exclude_filename)"
                 )
-        resolved_models = [
-            (p, hf_id)
-            for p, hf_id in resolved_models
+        model_manifest = [
+            (p, hf_id, nd)
+            for p, hf_id, nd in model_manifest
             if not any(fnmatch.fnmatch(p.name, pat) for pat in raw_exclude)
         ]
-        if not resolved_models:
-            console.print("[error]All models were excluded — nothing to benchmark.[/error]")
+        if not model_manifest:
+            console.print(
+                "[error]All models were excluded — nothing to benchmark.[/error]"
+            )
             raise typer.Exit(code=1)
+
+    # Report cached vs needs-download
+    cached = [(p, hf_id) for p, hf_id, nd in model_manifest if not nd]
+    need_dl = [(p, hf_id) for p, hf_id, nd in model_manifest if nd]
+    for _, hf_id in cached:
+        console.print(f"  [success]✓[/success] {hf_id} [dim](cached)[/dim]")
+    if need_dl:
+        console.print(
+            f"[info]{len(need_dl)} model(s) need downloading — "
+            f"downloads will overlap with benchmarking[/info]"
+        )
 
     # -- Pre-flight: HF write-token check (before the long benchmark) ------
     if raw.get("publish", {}).get("upload", False):
@@ -3100,120 +3311,57 @@ def run_all(
     suite_run_id: str = uuid.uuid4().hex
     completed_models: set[str] | None = None
 
-    # Build the expected combo count per model *before* running sweep.
-    # We'll need this after we know the sweep config.
-    # (Deferred until sweep_cfg is available below.)
-
-    # Resume only activates when the *exact* results file already exists:
-    #   • User passed --results pointing at an existing file, OR
-    #   • The auto-generated path for *this* run already exists (same minute restart).
-    # We intentionally do NOT scan for old files from prior runs — those are
-    # separate benchmark sessions, not interrupted work.
     resume_path: Path | None = None
     if resolved_results.exists():
         resume_path = resolved_results
 
-    # -- Phase 1: vram-cliff (optional) -----------------------------------
-    max_ctx_caps: dict[Path, int] | None = None
+    # -- Parse configs early -----------------------------------------------
+    do_vram_cliff = "vram-cliff" in raw
+    do_sweep = "sweep" in raw
 
-    if "vram-cliff" in raw:
-        console.print("[info]Phase 1 / 2:[/info] vram-cliff")
+    al_cfg: VramCliffConfig | None = None
+    if do_vram_cliff:
         try:
             al_cfg = VramCliffConfig(**_merge_shared_params(raw, "vram-cliff"))
         except Exception as exc:
             console.print(f"[error]Invalid [vram-cliff] config:[/error] {exc}")
             raise typer.Exit(code=1) from exc
-        al_cfg.resolved_models = resolved_models
 
-        model_names = ", ".join(f"[hw]{hf_id}[/hw]" for _, hf_id in resolved_models)
-        console.print(
-            f"  Probing {len(resolved_models)} model(s): {model_names}\n"
-            f"  Range     : [bold]{al_cfg.min_ctx:,}[/bold] → "
-            f"[bold]{al_cfg.max_ctx:,}[/bold] tokens\n"
-            f"  Tolerance : [bold]{al_cfg.tolerance:,}[/bold] tokens"
-        )
+    sweep_cfg: SweepConfig | None = None
+    if do_sweep:
+        try:
+            sweep_cfg = SweepConfig(**_merge_shared_params(raw, "sweep"))
+        except Exception as exc:
+            console.print(f"[error]Invalid sweep config:[/error] {exc}")
+            raise typer.Exit(code=1) from exc
 
-        caps: dict[Path, int] = {}
-        any_failed = False
-
-        for mp, hf_id in resolved_models:
-            safe = execute_vram_cliff(
-                model_path=mp,
-                min_ctx=al_cfg.min_ctx,
-                max_ctx=al_cfg.max_ctx,
-                tolerance=al_cfg.tolerance,
-                runner_type=al_cfg.runner_type,
-                runner_params=al_cfg.runner_params,
-            )
-
-            if safe == 0:
-                console.print(
-                    f"\n[error]vram-cliff failed for[/error] [hw]{hf_id}[/hw] "
-                    f"— could not find a working context size."
-                )
-                caps[mp] = 0  # sentinel: exclude all combos for this model
-                any_failed = True
-            else:
-                caps[mp] = safe
-                console.print(
-                    f"\n[success]✓ Max safe context for[/success] "
-                    f"[hw]{hf_id}[/hw]: "
-                    f"[bold green]{safe:,} tokens[/bold green]"
-                )
-
-        if not any(v > 0 for v in caps.values()):
-            console.print(
-                "\n[error]vram-cliff failed for all models. Skipping sweep.[/error]"
-            )
-            raise typer.Exit(code=1)
-
-        if any_failed:
-            console.print(
-                "\n[warning]Some models failed vram-cliff and will be skipped "
-                "in the sweep.[/warning]"
-            )
-
-        max_ctx_caps = caps
-        console.print()  # blank line before phase 2
-    else:
-        console.print("[info]No [vram-cliff] section — skipping to sweep.[/info]\n")
-
-    # -- Phase 2: sweep ---------------------------------------------------
-    if "sweep" not in raw:
+    if not do_sweep:
         console.print("[warning]No [sweep] section — nothing more to do.[/warning]")
         return
 
-    console.print("[info]Phase 2 / 2:[/info] sweep")
-    try:
-        sweep_cfg = SweepConfig(**_merge_shared_params(raw, "sweep"))
-    except Exception as exc:
-        console.print(f"[error]Invalid sweep config:[/error] {exc}")
-        raise typer.Exit(code=1) from exc
-    sweep_cfg.resolved_models = resolved_models
+    # -- Resume detection (needs sweep_cfg) ---------------------------------
+    # Build a temporary resolved_models list for resume detection from
+    # already-cached models.  Full list will be built per-model below.
+    cached_models = [(p, hf_id) for p, hf_id, nd in model_manifest if not nd]
+    all_models_for_resume = [(p, hf_id) for p, hf_id, _nd in model_manifest]
 
-    # -- Resume: compute expected combos per model and detect completed -----
     if resume_path is not None:
         completed_models, existing_run_id = _detect_completed_models(
             resume_path,
             sweep_cfg,
-            resolved_models,
-            max_ctx_caps,
+            all_models_for_resume,
+            None,  # max_ctx_caps not known yet
         )
         if existing_run_id:
             suite_run_id = existing_run_id
         if completed_models:
-            remaining = len(resolved_models) - len(completed_models)
+            remaining = len(all_models_for_resume) - len(completed_models)
             console.print(
                 f"\n[bold cyan]🔄 RESUMING[/bold cyan] previous run from "
                 f"[bold]{resume_path.name}[/bold]\n"
                 f"  Suite run  : [bold]{suite_run_id[:12]}…[/bold]\n"
                 f"  Completed  : [bold]{len(completed_models)}[/bold] model(s)\n"
                 f"  Remaining  : [bold]{remaining}[/bold] model(s)\n"
-            )
-        else:
-            console.print(
-                f"[info]Found existing results file [bold]{resume_path.name}[/bold] "
-                f"but no models are fully completed — starting fresh.[/info]\n"
             )
 
     # -- Incremental publish callback --------------------------------------
@@ -3231,7 +3379,6 @@ def run_all(
         if not new_lines:
             return
 
-        # Flatten only the new rows for this model
         new_flat: list[dict[str, Any]] = []
         for raw_line in new_lines:
             raw_line = raw_line.strip()
@@ -3250,7 +3397,6 @@ def run_all(
         if not new_flat:
             return
 
-        # Always rewrite the full CSV from the entire results file
         all_flat = _flatten_results_file(rfile, submitter=submitter)
         if all_flat:
             csv_path = rfile.with_suffix(".csv")
@@ -3275,18 +3421,127 @@ def run_all(
                     f"[bold]ppb publish {rfile} --upload[/bold][/warning]"
                 )
 
-    execute_sweep(
-        sweep_config=sweep_cfg,
-        results_file=resolved_results,
-        max_ctx_caps=max_ctx_caps,
-        suite_run_id=suite_run_id,
-        completed_models=completed_models,
-        on_model_done=_on_model_done,
-    )
+    # -- Pipelined per-model execution: download → vram-cliff → sweep ------
+    # Process each model individually.  While benchmarking model N, the
+    # background downloader pre-fetches model N+1 (network I/O overlaps
+    # with GPU work).
+    bg_downloader = _BackgroundDownloader()
+    models_dir = Path(r_dir).expanduser()
+    max_ctx_caps: dict[Path, int] = {}
+    any_vram_cliff_failed = False
+    all_resolved: list[tuple[Path, str]] = []
 
-    # -- Final summary (no monolithic publish — done incrementally) --------
+    # Kick off pre-fetch of the first model that needs downloading.
+    first_dl_idx: int | None = None
+    for idx, (_, _, needs_dl) in enumerate(model_manifest):
+        if needs_dl:
+            first_dl_idx = idx
+            p, hf_id, _ = model_manifest[idx]
+            fname = Path(hf_id).name
+            console.print(f"  [info]⬇ Downloading[/info] [hw]{hf_id}[/hw] …")
+            bg_downloader.prefetch(r_id, fname, models_dir)
+            break
+
+    for model_idx, (mp, hf_id, needs_dl) in enumerate(model_manifest):
+        # -- Skip already-completed models (resume) -----------------------
+        if completed_models and hf_id in completed_models:
+            all_resolved.append((mp, hf_id))
+            console.print(
+                f"  [info]⏭  Skipping[/info] [hw]{hf_id}[/hw] — already completed"
+            )
+            continue
+
+        # -- Ensure this model is downloaded ------------------------------
+        if needs_dl:
+            console.print(
+                f"  [info]Waiting for download of[/info] [hw]{hf_id}[/hw] …"
+            )
+            try:
+                mp = bg_downloader.wait()
+            except Exception:
+                # Prefetch failed or was never started — try a direct download.
+                try:
+                    mp = _download_single_model(
+                        r_id, Path(hf_id).name, models_dir
+                    )
+                except Exception as exc:
+                    console.print(
+                        f"[error]Download failed for {hf_id}:[/error] {exc}"
+                    )
+                    # Still prefetch the next model before skipping.
+                    for next_idx in range(model_idx + 1, len(model_manifest)):
+                        _np, _nhf, _nnd = model_manifest[next_idx]
+                        if _nnd and not (completed_models and _nhf in completed_models):
+                            bg_downloader.prefetch(r_id, Path(_nhf).name, models_dir)
+                            break
+                    continue
+            console.print(f"  [success]✓[/success] {hf_id} downloaded")
+
+        all_resolved.append((mp, hf_id))
+
+        # -- Pre-fetch the NEXT model that needs downloading --------------
+        for next_idx in range(model_idx + 1, len(model_manifest)):
+            _np, _nhf, _nnd = model_manifest[next_idx]
+            if _nnd and not (completed_models and _nhf in completed_models):
+                fname = Path(_nhf).name
+                console.print(
+                    f"  [info]⬇ Pre-fetching[/info] [hw]{_nhf}[/hw] in background …"
+                )
+                bg_downloader.prefetch(r_id, fname, models_dir)
+                break
+
+        # -- vram-cliff for this model ------------------------------------
+        if do_vram_cliff and al_cfg is not None:
+            console.print(f"\n[info]vram-cliff[/info] [hw]{hf_id}[/hw]")
+            safe = execute_vram_cliff(
+                model_path=mp,
+                min_ctx=al_cfg.min_ctx,
+                max_ctx=al_cfg.max_ctx,
+                tolerance=al_cfg.tolerance,
+                runner_type=al_cfg.runner_type,
+                runner_params=al_cfg.runner_params,
+            )
+            if safe == 0:
+                console.print(
+                    f"\n[error]vram-cliff failed for[/error] [hw]{hf_id}[/hw] "
+                    f"— could not find a working context size."
+                )
+                max_ctx_caps[mp] = 0
+                any_vram_cliff_failed = True
+                continue  # skip sweep for this model
+            else:
+                max_ctx_caps[mp] = safe
+                console.print(
+                    f"  [success]✓ Max safe context:[/success] "
+                    f"[bold green]{safe:,} tokens[/bold green]"
+                )
+
+        # -- sweep for this model -----------------------------------------
+        console.print(f"\n[info]sweep[/info] [hw]{hf_id}[/hw]")
+        single_sweep = SweepConfig(**_merge_shared_params(raw, "sweep"))
+        single_sweep.resolved_models = [(mp, hf_id)]
+
+        execute_sweep(
+            sweep_config=single_sweep,
+            results_file=resolved_results,
+            max_ctx_caps=max_ctx_caps if max_ctx_caps else None,
+            suite_run_id=suite_run_id,
+            on_model_done=_on_model_done,
+        )
+
+    # -- Final summary -----------------------------------------------------
+    if any_vram_cliff_failed and not any(v > 0 for v in max_ctx_caps.values()):
+        console.print(
+            "\n[error]vram-cliff failed for all models. Nothing was benchmarked.[/error]"
+        )
+        raise typer.Exit(code=1)
+
+    if any_vram_cliff_failed:
+        console.print(
+            "\n[warning]Some models failed vram-cliff and were skipped.[/warning]"
+        )
+
     if "publish" in raw and resolved_results.exists():
-        # Write final CSV from full results file (in case callback missed any)
         all_flat = _flatten_results_file(resolved_results, submitter=submitter)
         if all_flat:
             csv_path = resolved_results.with_suffix(".csv")
