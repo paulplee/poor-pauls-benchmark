@@ -43,7 +43,6 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
-import math
 import statistics
 import time
 from pathlib import Path
@@ -57,7 +56,6 @@ from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from .base import BaseRunner
 from ._server_mixin import (
     ServerMixin,
-    find_free_port,
     percentile,
     _HEALTH_TIMEOUT_S,
     _SERVER_STOP_TIMEOUT_S,
@@ -160,7 +158,9 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         seed = int(seed_val) if seed_val is not None else None
 
         dataset_path = download_dataset(
-            repo_id=repo_id, filename=filename, dataset_dir=dataset_dir,
+            repo_id=repo_id,
+            filename=filename,
+            dataset_dir=dataset_dir,
         )
         self._prompts = load_sharegpt_prompts(
             dataset_path,
@@ -198,9 +198,7 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         try:
             for level in steps:
                 log.info("Load-test: testing %d concurrent user(s)", level)
-                level_result = asyncio.run(
-                    self._test_concurrency_level(level)
-                )
+                level_result = asyncio.run(self._test_concurrency_level(level))
 
                 if level_result is None:
                     log.warning("Level %d: all prompts failed", level)
@@ -219,7 +217,9 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
                 if error_rate > self._error_threshold:
                     log.info(
                         "Level %d: error rate %.1f%% exceeds threshold %.1f%% — stopping",
-                        level, error_rate * 100, self._error_threshold * 100,
+                        level,
+                        error_rate * 100,
+                        self._error_threshold * 100,
                     )
                     break
 
@@ -240,8 +240,7 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         }
 
         log.info(
-            "Load-test complete: max sustainable users = %d "
-            "(tested levels: %s)",
+            "Load-test complete: max sustainable users = %d (tested levels: %s)",
             max_sustainable,
             [c["concurrent_users"] for c in curve],
         )
@@ -251,7 +250,9 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
     def teardown(self) -> None:
         """Safety-net: kill any lingering server process."""
         if self._process is not None and self._process.poll() is None:
-            log.warning("teardown: killing lingering llama-server (pid %d)", self._process.pid)
+            log.warning(
+                "teardown: killing lingering llama-server (pid %d)", self._process.pid
+            )
             self.stop_server(self._process)
             self._process = None
 
@@ -268,7 +269,8 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
     # ---- internal -----------------------------------------------------------
 
     async def _test_concurrency_level(
-        self, concurrent_users: int,
+        self,
+        concurrent_users: int,
     ) -> dict[str, Any] | None:
         """Test one concurrency level and return aggregated metrics."""
         self._ctx_exceeded_count = 0
@@ -278,7 +280,8 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         t_start = time.monotonic()
 
         async with httpx.AsyncClient(
-            base_url=base_url, timeout=300.0,
+            base_url=base_url,
+            timeout=300.0,
         ) as client:
             tasks = [
                 self._async_user_session(client, prompts, uid)
@@ -318,16 +321,20 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
             "n_predict": self._n_predict,
             "total_tokens": total_tokens,
             "total_duration_s": round(total_duration, 3),
-            "aggregate_throughput_tok_s": round(
-                total_tokens / total_duration, 2
-            ) if total_duration > 0 else 0.0,
+            "aggregate_throughput_tok_s": round(total_tokens / total_duration, 2)
+            if total_duration > 0
+            else 0.0,
             "per_user_throughput_tok_s": round(
                 total_tokens / total_duration / concurrent_users, 2
-            ) if total_duration > 0 else 0.0,
+            )
+            if total_duration > 0
+            else 0.0,
             "avg_ttft_ms": round(statistics.mean(sorted_ttft) * 1000, 2),
             "p50_ttft_ms": round(percentile(sorted_ttft, 50) * 1000, 2),
             "p99_ttft_ms": round(percentile(sorted_ttft, 99) * 1000, 2),
-            "avg_itl_ms": round(statistics.mean(sorted_itl) * 1000, 2) if sorted_itl else 0.0,
+            "avg_itl_ms": round(statistics.mean(sorted_itl) * 1000, 2)
+            if sorted_itl
+            else 0.0,
             "p50_itl_ms": round(percentile(sorted_itl, 50) * 1000, 2),
             "p99_itl_ms": round(percentile(sorted_itl, 99) * 1000, 2),
             "avg_queue_ms": round(statistics.mean(sorted_q) * 1000, 2),
@@ -376,7 +383,10 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         for i, prompt in enumerate(prompts):
             log.debug(
                 "User %d prompt %d/%d (%d chars)",
-                user_id, i + 1, len(prompts), len(prompt),
+                user_id,
+                i + 1,
+                len(prompts),
+                len(prompt),
             )
             result = await self._astream_completion(client, prompt)
             if result is not None:
@@ -442,7 +452,7 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
                     if not line or line.startswith(":") or not line.startswith("data:"):
                         continue
 
-                    body_str = line[len("data:"):].strip()
+                    body_str = line[len("data:") :].strip()
                     if not body_str or body_str == "[DONE]":
                         continue
 

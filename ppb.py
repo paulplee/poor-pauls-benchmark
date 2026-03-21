@@ -2591,7 +2591,9 @@ def execute_sweep(
                     # once per (model, n_ctx) rather than once per combo.
                     if _use_server_reuse:
                         try:
-                            runner.ensure_server(combo.model_path, combo.n_ctx, combo.concurrent_users)
+                            runner.ensure_server(
+                                combo.model_path, combo.n_ctx, combo.concurrent_users
+                            )
                             raw_result = runner.run_on_server(run_config)
                         except (TimeoutError, OSError) as exc:
                             log.error("Server start failed: %s", exc)
@@ -3461,21 +3463,15 @@ def run_all(
 
         # -- Ensure this model is downloaded ------------------------------
         if needs_dl:
-            console.print(
-                f"  [info]Waiting for download of[/info] [hw]{hf_id}[/hw] …"
-            )
+            console.print(f"  [info]Waiting for download of[/info] [hw]{hf_id}[/hw] …")
             try:
                 mp = bg_downloader.wait()
             except Exception:
                 # Prefetch failed or was never started — try a direct download.
                 try:
-                    mp = _download_single_model(
-                        r_id, Path(hf_id).name, models_dir
-                    )
+                    mp = _download_single_model(r_id, Path(hf_id).name, models_dir)
                 except Exception as exc:
-                    console.print(
-                        f"[error]Download failed for {hf_id}:[/error] {exc}"
-                    )
+                    console.print(f"[error]Download failed for {hf_id}:[/error] {exc}")
                     # Still prefetch the next model before skipping.
                     for next_idx in range(model_idx + 1, len(model_manifest)):
                         _np, _nhf, _nnd = model_manifest[next_idx]

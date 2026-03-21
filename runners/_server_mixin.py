@@ -84,16 +84,23 @@ class ServerMixin:
         )
 
     def start_server(
-        self, model_path: str | Path, n_ctx: int, parallel: int = 1,
+        self,
+        model_path: str | Path,
+        n_ctx: int,
+        parallel: int = 1,
     ) -> subprocess.Popen[str]:
         """Launch ``llama-server`` and wait for ``/health`` to become OK."""
         self._port = find_free_port()
         cmd: list[str] = [
             self._cmd,
-            "-m", str(model_path),
-            "-c", str(n_ctx),
-            "--host", "127.0.0.1",
-            "--port", str(self._port),
+            "-m",
+            str(model_path),
+            "-c",
+            str(n_ctx),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(self._port),
         ]
         if parallel > 1:
             cmd += ["--parallel", str(parallel)]
@@ -137,6 +144,7 @@ class ServerMixin:
         if proc.stderr:
             # Non-blocking read: grab whatever the server has written so far.
             import selectors
+
             sel = selectors.DefaultSelector()
             sel.register(proc.stderr, selectors.EVENT_READ)
             ready = sel.select(timeout=0)
@@ -172,9 +180,7 @@ class ServerMixin:
                 proc.send_signal(signal.SIGTERM)
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                log.warning(
-                    "SIGTERM timed out — sending SIGKILL to pid %d", proc.pid
-                )
+                log.warning("SIGTERM timed out — sending SIGKILL to pid %d", proc.pid)
                 needed_sigkill = True
                 proc.kill()
                 try:
@@ -182,7 +188,8 @@ class ServerMixin:
                 except subprocess.TimeoutExpired:
                     log.warning(
                         "Process %d did not exit after SIGKILL — "
-                        "may be in uninterruptible sleep", proc.pid
+                        "may be in uninterruptible sleep",
+                        proc.pid,
                     )
             except OSError:
                 pass  # process already gone

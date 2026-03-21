@@ -29,7 +29,7 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 
 ## Project Structure
 
-```
+```text
 ppb.py                 # CLI entry point (Typer app)
 runners/
   __init__.py          # Runner registry (register_runner / get_runner)
@@ -81,7 +81,7 @@ uv sync
 
 You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`).
 
-> **Conversational dataset:** The `llama-server` runner uses real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) (~700 MB) by default. It is downloaded automatically on the first `llama-server` run, or you can pre-fetch it with `python ppb.py download-dataset`. You can also point to any HF-hosted dataset with `--repo` and `--filename` — see [§3](#3-run-a-parameter-sweep) for details.
+> **Conversational dataset:** The `llama-server` runner uses real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) (~700 MB) by default. It is downloaded automatically on the first `llama-server` run, or you can pre-fetch it with `python ppb.py download-dataset`. You can also point to any HF-hosted dataset with `--repo` and `--filename` — see [§2](#2-run-a-parameter-sweep) for details.
 
 ### Running Tests
 
@@ -140,7 +140,7 @@ When driven by a TOML file, CLI flags override TOML values.
 
 Sample output (each iteration shows per-probe duration):
 
-```
+```text
   iter  1: n_ctx= 66,560  ✓ pass  → window [66,561, 131,071]  (2.3s)
   iter  2: n_ctx= 98,815  ✗ OOM   → window [66,561, 98,814]   (0.8s)
   iter  3: n_ctx= 82,687  ✓ pass  → window [82,688, 98,814]   (3.1s)
@@ -153,16 +153,16 @@ Sample output (each iteration shows per-probe duration):
 
 #### vram-cliff options
 
-| Flag           | Default        | Description                                                  |
-| -------------- | -------------- | ------------------------------------------------------------ |
-| `CONFIG`       | _(optional)_   | Path to a TOML suite file containing a `[vram-cliff]` section. |
-| `--repo-id`    | _(from TOML)_  | HF repository ID, e.g. `unsloth/Qwen3.5-0.8B-GGUF`.        |
-| `--filename`   | _(from TOML)_  | GGUF filename or glob pattern, e.g. `"*Q4*.gguf"`.          |
-| `--models-dir` | `./models`     | Local directory to cache downloaded models.                   |
-| `--min_ctx`    | `2048`         | Lower bound for the binary search.                           |
-| `--max_ctx`    | `131072`       | Upper bound for the binary search.                           |
-| `--tolerance`  | `1024`         | Stop searching when the remaining window is this narrow.     |
-| `--runner`     | `llama-bench`  | Runner backend to use for probing.                           |
+| Flag           | Default       | Description                                                    |
+| -------------- | ------------- | -------------------------------------------------------------- |
+| `CONFIG`       | _(optional)_  | Path to a TOML suite file containing a `[vram-cliff]` section. |
+| `--repo-id`    | _(from TOML)_ | HF repository ID, e.g. `unsloth/Qwen3.5-0.8B-GGUF`.            |
+| `--filename`   | _(from TOML)_ | GGUF filename or glob pattern, e.g. `"*Q4*.gguf"`.             |
+| `--models-dir` | `./models`    | Local directory to cache downloaded models.                    |
+| `--min_ctx`    | `2048`        | Lower bound for the binary search.                             |
+| `--max_ctx`    | `131072`      | Upper bound for the binary search.                             |
+| `--tolerance`  | `1024`        | Stop searching when the remaining window is this narrow.       |
+| `--runner`     | `llama-bench` | Runner backend to use for probing.                             |
 
 #### vram-cliff TOML section
 
@@ -219,7 +219,7 @@ python ppb.py sweep suites/my_gpu.toml --n-ctx 4096,8192  # only test these two 
 
 Sample sweep output (per-combo duration shown):
 
-```
+```text
   ✓ [1/6] model.gguf ctx=8192 batch=512   42.0 tok/s  (12.4s)
   ✓ [2/6] model.gguf ctx=8192 batch=1024  38.7 tok/s  (11.9s)
   ✓ [3/6] model.gguf ctx=16384 batch=512  31.2 tok/s  (14.1s)
@@ -230,16 +230,16 @@ Sample sweep output (per-combo duration shown):
 
 Shared fields (`repo_id`, `filename`, `models_dir`, `runner_type`, `runner_params`) can live at the **top level** and are inherited by both `[vram-cliff]` and `[sweep]`. Section-level values override the root. Sweep-specific fields:
 
-| Key             | Type             | Required | Default         | Description |
-| --------------- | ---------------- | -------- | --------------- | ----------- |
-| `repo_id`       | string           | ✅       |                 | Hugging Face repository ID, e.g. `unsloth/Qwen3.5-0.8B-GGUF`. |
-| `filename`      | string           | ✅       |                 | GGUF filename or glob pattern (e.g. `"*Q4*.gguf"`). Models are downloaded automatically. |
-| `models_dir`    | string (path)    |          | `"./models"`    | Local directory to cache downloaded models. |
-| `n_ctx`         | list of integers | ✅       |                 | Context sizes to test. Controls KV cache depth — larger values stress longer-context workloads, e.g. `[8192, 16384, 32768]`. |
-| `n_batch`       | list of integers | ✅       |                 | Batch sizes for prompt processing, e.g. `[512, 1024]`. Used by `llama-bench`; accepted but unused by `llama-server` (it manages its own batching). |
+| Key                | Type             | Required | Default         | Description                                                                                                                                                                                                                     |
+| ------------------ | ---------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repo_id`          | string           | ✅       |                 | Hugging Face repository ID, e.g. `unsloth/Qwen3.5-0.8B-GGUF`.                                                                                                                                                                   |
+| `filename`         | string           | ✅       |                 | GGUF filename or glob pattern (e.g. `"*Q4*.gguf"`). Models are downloaded automatically.                                                                                                                                        |
+| `models_dir`       | string (path)    |          | `"./models"`    | Local directory to cache downloaded models.                                                                                                                                                                                     |
+| `n_ctx`            | list of integers | ✅       |                 | Context sizes to test. Controls KV cache depth — larger values stress longer-context workloads, e.g. `[8192, 16384, 32768]`.                                                                                                    |
+| `n_batch`          | list of integers | ✅       |                 | Batch sizes for prompt processing, e.g. `[512, 1024]`. Used by `llama-bench`; accepted but unused by `llama-server` (it manages its own batching).                                                                              |
 | `concurrent_users` | list of integers |          | `[1]`           | Number of simulated users sending requests in parallel. Only meaningful for `llama-server` and `llama-server-loadtest` runners. Any positive integers are accepted — e.g. `[1, 2, 4, 8, 16, 32]`. There is no hard upper limit. |
-| `runner_type`   | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below. |
-| `runner_params` | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below. |
+| `runner_type`      | string           |          | `"llama-bench"` | Which benchmark backend to use. See [Runner Plugins](#runner-plugins) below.                                                                                                                                                    |
+| `runner_params`    | table            |          | `{}`            | Runner-specific overrides; see `[sweep.runner_params]` below.                                                                                                                                                                   |
 
 PPB computes the full Cartesian product of `models × n_ctx × n_batch × concurrent_users`, so 2 models × 3 contexts × 2 batches × 3 user counts = 36 combinations. When `concurrent_users` is omitted (defaults to `[1]`), the product stays the same as before.
 
@@ -273,11 +273,11 @@ llama_bench_cmd = "/opt/llama.cpp/build/bin/llama-bench"
 
 PPB ships with three runners — pick the one that matches your evaluation goal:
 
-| Runner | Measures | Best for |
-| --- | --- | --- |
-| `llama-bench` *(default)* | Raw throughput (tok/s) | Finding peak hardware performance, comparing quants |
-| `llama-server` | **TTFT** and **ITL** latency | UX-relevant benchmarks for interactive / chat applications |
-| `llama-server-loadtest` | Max concurrent users, concurrency curve | Capacity planning — how many users your hardware can serve |
+| Runner                    | Measures                                | Best for                                                   |
+| ------------------------- | --------------------------------------- | ---------------------------------------------------------- |
+| `llama-bench` _(default)_ | Raw throughput (tok/s)                  | Finding peak hardware performance, comparing quants        |
+| `llama-server`            | **TTFT** and **ITL** latency            | UX-relevant benchmarks for interactive / chat applications |
+| `llama-server-loadtest`   | Max concurrent users, concurrency curve | Capacity planning — how many users your hardware can serve |
 
 All three runners use the same `ppb sweep` command — just set `runner_type` in your TOML.
 
@@ -330,44 +330,44 @@ python ppb.py sweep suites/my_server.toml
 
 The JSONL output includes per-run TTFT and ITL statistics:
 
-```
+```text
 avg_ttft_ms: 142.5    p50_ttft_ms: 138.2    p99_ttft_ms: 210.7
 avg_itl_ms:   12.3    p50_itl_ms:   11.8    p99_itl_ms:   18.4
 ```
 
 ##### `llama-server` runner_params reference
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `llama_server_cmd` | string | `llama-server` | Path or name of the binary. Falls back to `PPB_LLAMA_SERVER` env → `$PATH`. |
-| `num_prompts` | int | `10` | Number of prompts to send per run. |
-| `n_predict` | int | `256` | Maximum tokens to generate per prompt. |
-| `health_timeout` | int/float | `120` | Seconds to wait for `/health` to return 200. |
-| `dataset_dir` | string | `datasets/data/` | Directory for cached dataset files. |
-| `dataset_repo` | string | `anon8231489123/ShareGPT_Vicuna_unfiltered` | HF Hub repository ID for the prompt dataset. |
-| `dataset_filename` | string | `ShareGPT_V3_unfiltered_cleaned_split.json` | File to download from the repository. |
-| `shuffle` | bool | `false` | Randomise prompt order so repeated runs use different workloads. |
-| `seed` | int | _(none)_ | RNG seed for reproducible shuffling. |
-| `prompt_distribution` | string | `"shared"` | How prompts are assigned when `concurrent_users > 1`. `"shared"` = all users get the same prompts; `"split"` = prompts are divided among users (each gets `num_prompts / N`). |
+| Key                   | Type      | Default                                     | Description                                                                                                                                                                   |
+| --------------------- | --------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llama_server_cmd`    | string    | `llama-server`                              | Path or name of the binary. Falls back to `PPB_LLAMA_SERVER` env → `$PATH`.                                                                                                   |
+| `num_prompts`         | int       | `10`                                        | Number of prompts to send per run.                                                                                                                                            |
+| `n_predict`           | int       | `256`                                       | Maximum tokens to generate per prompt.                                                                                                                                        |
+| `health_timeout`      | int/float | `120`                                       | Seconds to wait for `/health` to return 200.                                                                                                                                  |
+| `dataset_dir`         | string    | `datasets/data/`                            | Directory for cached dataset files.                                                                                                                                           |
+| `dataset_repo`        | string    | `anon8231489123/ShareGPT_Vicuna_unfiltered` | HF Hub repository ID for the prompt dataset.                                                                                                                                  |
+| `dataset_filename`    | string    | `ShareGPT_V3_unfiltered_cleaned_split.json` | File to download from the repository.                                                                                                                                         |
+| `shuffle`             | bool      | `false`                                     | Randomise prompt order so repeated runs use different workloads.                                                                                                              |
+| `seed`                | int       | _(none)_                                    | RNG seed for reproducible shuffling.                                                                                                                                          |
+| `prompt_distribution` | string    | `"shared"`                                  | How prompts are assigned when `concurrent_users > 1`. `"shared"` = all users get the same prompts; `"split"` = prompts are divided among users (each gets `num_prompts / N`). |
 
 ##### `llama-server-loadtest` runner_params reference
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `max_users` | int | `64` | Stop escalating when this concurrency level is reached. |
-| `user_steps` | list of ints | powers of 2 up to `max_users` | Explicit concurrency levels to test, e.g. `[1, 2, 4, 8, 16]`. |
-| `error_threshold` | float | `0.1` | Fraction of failed requests that marks a level as unsustainable. |
-| `ramp_delay_s` | float | `2.0` | Seconds to pause between concurrency levels. |
-| `num_prompts` | int | `10` | Number of prompts each user sends per level. |
-| `n_predict` | int | `256` | Max tokens to generate per prompt. |
-| `prompt_distribution` | string | `"shared"` | Same as `llama-server` — `"shared"` or `"split"`. |
-| `llama_server_cmd` | string | `llama-server` | Path or name of the binary. |
-| `health_timeout` | int/float | `120` | Seconds to wait for `/health` to return 200. |
-| `dataset_dir` | string | `datasets/data/` | Directory for cached dataset files. |
-| `dataset_repo` | string | `anon8231489123/ShareGPT_Vicuna_unfiltered` | HF Hub repository ID for the prompt dataset. |
-| `dataset_filename` | string | `ShareGPT_V3_unfiltered_cleaned_split.json` | File to download from the repository. |
-| `shuffle` | bool | `false` | Randomise prompt order. |
-| `seed` | int | _(none)_ | RNG seed for reproducible shuffling. |
+| Key                   | Type         | Default                                     | Description                                                      |
+| --------------------- | ------------ | ------------------------------------------- | ---------------------------------------------------------------- |
+| `max_users`           | int          | `64`                                        | Stop escalating when this concurrency level is reached.          |
+| `user_steps`          | list of ints | powers of 2 up to `max_users`               | Explicit concurrency levels to test, e.g. `[1, 2, 4, 8, 16]`.    |
+| `error_threshold`     | float        | `0.1`                                       | Fraction of failed requests that marks a level as unsustainable. |
+| `ramp_delay_s`        | float        | `2.0`                                       | Seconds to pause between concurrency levels.                     |
+| `num_prompts`         | int          | `10`                                        | Number of prompts each user sends per level.                     |
+| `n_predict`           | int          | `256`                                       | Max tokens to generate per prompt.                               |
+| `prompt_distribution` | string       | `"shared"`                                  | Same as `llama-server` — `"shared"` or `"split"`.                |
+| `llama_server_cmd`    | string       | `llama-server`                              | Path or name of the binary.                                      |
+| `health_timeout`      | int/float    | `120`                                       | Seconds to wait for `/health` to return 200.                     |
+| `dataset_dir`         | string       | `datasets/data/`                            | Directory for cached dataset files.                              |
+| `dataset_repo`        | string       | `anon8231489123/ShareGPT_Vicuna_unfiltered` | HF Hub repository ID for the prompt dataset.                     |
+| `dataset_filename`    | string       | `ShareGPT_V3_unfiltered_cleaned_split.json` | File to download from the repository.                            |
+| `shuffle`             | bool         | `false`                                     | Randomise prompt order.                                          |
+| `seed`                | int          | _(none)_                                    | RNG seed for reproducible shuffling.                             |
 
 ##### Sample `llama-server` results
 
@@ -434,7 +434,7 @@ The `runner_type` field ensures results from different backends can coexist in t
 
 When no `--results` flag is passed and the TOML file has no `results` key, PPB auto-generates a filename from the config name and current UTC time:
 
-```
+```text
 suite_20250714_1830.jsonl
 ```
 
@@ -453,11 +453,11 @@ The `--results` CLI flag always takes priority over the TOML value.
 
 ##### Environment overrides
 
-| Variable            | Default           | Description                                       |
-| ------------------- | ----------------- | ------------------------------------------------- |
-| `PPB_LLAMA_BENCH`   | `llama-bench`     | Path or name of the `llama-bench` binary.         |
-| `PPB_LLAMA_SERVER`  | `llama-server`    | Path or name of the `llama-server` binary.        |
-| `PPB_MODELS_DIR`    | `./models`        | Default directory for caching downloaded models.   |
+| Variable           | Default        | Description                                      |
+| ------------------ | -------------- | ------------------------------------------------ |
+| `PPB_LLAMA_BENCH`  | `llama-bench`  | Path or name of the `llama-bench` binary.        |
+| `PPB_LLAMA_SERVER` | `llama-server` | Path or name of the `llama-server` binary.       |
+| `PPB_MODELS_DIR`   | `./models`     | Default directory for caching downloaded models. |
 
 ### 3. Run the Full Suite (`all`)
 
@@ -465,14 +465,14 @@ The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish
 
 1. **Phase 1 — vram-cliff:** Discovers the max safe context window for each model.
 2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1.
-3. **Phase 3 — publish** *(optional)*: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
+3. **Phase 3 — publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
 
 ```bash
 python ppb.py all suites/my_gpu.toml
 python ppb.py all suites/my_gpu.toml --results results/my_run.jsonl
 ```
 
-If the TOML has no `[vram-cliff]` section, Phase 1 is skipped and the sweep runs unmodified.  If there is no `[publish]` section, Phase 3 is skipped.
+If the TOML has no `[vram-cliff]` section, Phase 1 is skipped and the sweep runs unmodified. If there is no `[publish]` section, Phase 3 is skipped.
 
 #### Example suite TOML
 
@@ -511,7 +511,7 @@ uv run ppb.py hw-info
 
 Sample output:
 
-```
+```text
   Hardware Profile
     OS          : Linux 6.8.0  (x86_64)
     CPU         : AMD Ryzen 9 7950X  (32 cores)
@@ -523,17 +523,17 @@ Sample output:
 
 **Fields collected per GPU (where available):**
 
-| Field | Source | Why it matters |
-|---|---|---|
-| `name` | pynvml / nvidia-smi / system_profiler | Model identification |
-| `driver` | pynvml / nvidia-smi | Affects performance and supported features |
-| `cuda_version` | pynvml | Max CUDA version; determines available kernels (Flash Attn 2, etc.) |
-| `compute_capability` | pynvml / nvidia-smi | SM version (e.g. `8.9` = RTX 4090, `12.0` = RTX 5090) |
-| `power_limit_w` | pynvml | TDP cap; enables tokens-per-watt comparisons |
-| `pcie_gen` / `pcie_width` | pynvml | PCIe bandwidth ceiling for large model loading |
-| `vram_total_gb` | pynvml / nvidia-smi | VRAM capacity |
-| `metal_version` *(macOS)* | system_profiler | Metal API generation |
-| `gpu_cores` *(macOS)* | system_profiler | Apple Silicon GPU core count |
+| Field                     | Source                                | Why it matters                                                      |
+| ------------------------- | ------------------------------------- | ------------------------------------------------------------------- |
+| `name`                    | pynvml / nvidia-smi / system_profiler | Model identification                                                |
+| `driver`                  | pynvml / nvidia-smi                   | Affects performance and supported features                          |
+| `cuda_version`            | pynvml                                | Max CUDA version; determines available kernels (Flash Attn 2, etc.) |
+| `compute_capability`      | pynvml / nvidia-smi                   | SM version (e.g. `8.9` = RTX 4090, `12.0` = RTX 5090)               |
+| `power_limit_w`           | pynvml                                | TDP cap; enables tokens-per-watt comparisons                        |
+| `pcie_gen` / `pcie_width` | pynvml                                | PCIe bandwidth ceiling for large model loading                      |
+| `vram_total_gb`           | pynvml / nvidia-smi                   | VRAM capacity                                                       |
+| `metal_version` _(macOS)_ | system_profiler                       | Metal API generation                                                |
+| `gpu_cores` _(macOS)_     | system_profiler                       | Apple Silicon GPU core count                                        |
 
 This same profile is automatically included in every benchmark record written to `results.jsonl`.
 
@@ -549,7 +549,7 @@ python ppb.py export --input results/my_run.jsonl --output results/my_run.csv
 python ppb.py export -i results/my_run.jsonl -o results/my_run_flat.jsonl
 ```
 
-Nested fields (hardware, per-GPU info, runner-specific metrics) are flattened into top-level columns.  `llama-bench` rows with multiple result items are exploded — each item becomes its own row.  The original raw record is preserved in a `raw_payload` column.
+Nested fields (hardware, per-GPU info, runner-specific metrics) are flattened into top-level columns. `llama-bench` rows with multiple result items are exploded — each item becomes its own row. The original raw record is preserved in a `raw_payload` column.
 
 Output format is inferred from the file extension: `.csv` → CSV, anything else → JSONL.
 
@@ -575,7 +575,7 @@ Authentication for `--upload` uses (in order):
 
 Results land in `data/results_<timestamp>_<uuid>.jsonl` inside the [`poor-paul/ppb-results`](https://huggingface.co/datasets/paulplee/ppb-results) repository.
 
-For a fully automated "shoot and forget" workflow, add a `[publish]` section to your suite TOML and use `ppb all` — see [§4](#4-run-the-full-suite-all).
+For a fully automated "shoot and forget" workflow, add a `[publish]` section to your suite TOML and use `ppb all` — see [§3](#3-run-the-full-suite-all).
 
 ---
 
@@ -614,13 +614,13 @@ uv run ppb.py sweep \
 
 Each JSONL record at `concurrent_users > 1` includes extra fields:
 
-| Field | Description |
-|---|---|
-| `concurrent_users` | Number of simulated parallel users |
-| `ttft_per_user_ms` | List of TTFT values — one per user |
-| `itl_per_user_ms` | List of median ITL values — one per user |
+| Field                    | Description                                                |
+| ------------------------ | ---------------------------------------------------------- |
+| `concurrent_users`       | Number of simulated parallel users                         |
+| `ttft_per_user_ms`       | List of TTFT values — one per user                         |
+| `itl_per_user_ms`        | List of median ITL values — one per user                   |
 | `queue_time_per_user_ms` | Time each user waited before receiving the first SSE event |
-| `aggregate_tok_s` | Combined token throughput across all users |
+| `aggregate_tok_s`        | Combined token throughput across all users                 |
 
 ### Option B: `llama-server-loadtest` runner (auto-discovery)
 
@@ -663,11 +663,11 @@ PPB uses a **pluggable runner architecture** so new benchmark backends can be ad
 
 ### Built-in runners
 
-| `runner_type`   | Module                   | Description |
-| --------------- | ------------------------ | ----------- |
-| `llama-bench`   | `runners/llama_bench.py`  | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Measures raw throughput (tok/s). Supports OOM probing for `vram-cliff`. |
-| `llama-server`  | `runners/llama_server.py` | Starts `llama-server` as a subprocess, streams real ShareGPT conversational prompts via SSE, and records **TTFT** and **ITL** latency metrics. Supports `vram-cliff` and **concurrent user simulation**. |
-| `llama-server-loadtest` | `runners/llama_server_loadtest.py` | Escalates concurrent users (1 → 2 → 4 → …) againt a single server instance. Reports the max sustainable user count and a full **concurrency curve** with TTFT/ITL/queue metrics at each level. |
+| `runner_type`           | Module                             | Description                                                                                                                                                                                              |
+| ----------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llama-bench`           | `runners/llama_bench.py`           | Default. Wraps llama.cpp's `llama-bench` CLI via subprocess. Measures raw throughput (tok/s). Supports OOM probing for `vram-cliff`.                                                                     |
+| `llama-server`          | `runners/llama_server.py`          | Starts `llama-server` as a subprocess, streams real ShareGPT conversational prompts via SSE, and records **TTFT** and **ITL** latency metrics. Supports `vram-cliff` and **concurrent user simulation**. |
+| `llama-server-loadtest` | `runners/llama_server_loadtest.py` | Escalates concurrent users (1 → 2 → 4 → …) againt a single server instance. Reports the max sustainable user count and a full **concurrency curve** with TTFT/ITL/queue metrics at each level.           |
 
 ### Creating a custom runner
 
@@ -681,7 +681,7 @@ from .my_runner import MyRunner
 register_runner("my-runner", MyRunner)
 ```
 
-5. Use it in your sweep config:
+1. Use it in your sweep config:
 
 ```toml
 [sweep]
@@ -697,12 +697,12 @@ custom_option = "value"
 
 ### Runner contract
 
-| Method | Required | Description |
-| --- | --- | --- |
-| `setup(runner_params)` | ✅ | Called once before the sweep. Receives `[sweep.runner_params]` from TOML. |
-| `run(config) → dict \| None` | ✅ | Execute one benchmark. `config` always has `"model_path"`. Return `{"results": ...}` or `None` on failure. Must NOT write files — the orchestrator handles JSONL output. |
-| `teardown()` | ✅ | Called once after the sweep (guaranteed via `try/finally`). |
-| `probe_ctx(model_path, n_ctx) → bool` | Optional | Override to support `vram-cliff`. Default raises `NotImplementedError`. |
+| Method                                | Required | Description                                                                                                                                                              |
+| ------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `setup(runner_params)`                | ✅       | Called once before the sweep. Receives `[sweep.runner_params]` from TOML.                                                                                                |
+| `run(config) → dict \| None`          | ✅       | Execute one benchmark. `config` always has `"model_path"`. Return `{"results": ...}` or `None` on failure. Must NOT write files — the orchestrator handles JSONL output. |
+| `teardown()`                          | ✅       | Called once after the sweep (guaranteed via `try/finally`).                                                                                                              |
+| `probe_ctx(model_path, n_ctx) → bool` | Optional | Override to support `vram-cliff`. Default raises `NotImplementedError`.                                                                                                  |
 
 ## Contributing to the Leaderboard
 

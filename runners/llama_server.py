@@ -210,7 +210,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
         # --- start server ---------------------------------------------------
         try:
-            proc = self._start_server(Path(model_path), n_ctx, parallel=concurrent_users)
+            proc = self._start_server(
+                Path(model_path), n_ctx, parallel=concurrent_users
+            )
         except TimeoutError:
             # The server is alive but hasn't finished loading the model
             # (common on NAS / slow storage).  Retry once with 2× timeout
@@ -224,7 +226,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             saved_timeout = self._health_timeout
             self._health_timeout = retry_timeout
             try:
-                proc = self._start_server(Path(model_path), n_ctx, parallel=concurrent_users)
+                proc = self._start_server(
+                    Path(model_path), n_ctx, parallel=concurrent_users
+                )
             except TimeoutError as exc:
                 log.error("Server health-check timed out on retry: %s", exc)
                 return None
@@ -692,7 +696,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
     # ---- internal (delegate to mixin) ---------------------------------------
 
-    def _start_server(self, model_path: Path, n_ctx: int, parallel: int = 1) -> subprocess.Popen[str]:
+    def _start_server(
+        self, model_path: Path, n_ctx: int, parallel: int = 1
+    ) -> subprocess.Popen[str]:
         """Delegate to :meth:`ServerMixin.start_server`."""
         return self.start_server(model_path, n_ctx, parallel=parallel)
 
