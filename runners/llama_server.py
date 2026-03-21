@@ -141,6 +141,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._managed_model: str | None = None
         self._managed_n_ctx: int | None = None
         self._managed_parallel: int = 0
+        # Per-run error counters (reset before each run).
+        self._ctx_exceeded_count: int = 0
+        self._disconnect_count: int = 0
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -245,6 +248,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
     def _run_serial(self, proc: subprocess.Popen[str]) -> dict | None:
         """Original serial prompt execution — one prompt at a time."""
+        self._ctx_exceeded_count = 0
+        self._disconnect_count = 0
         base_url = f"http://127.0.0.1:{self._port}"
         all_ttft: list[float] = []
         all_itl: list[float] = []
@@ -279,6 +284,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         concurrent_users: int,
     ) -> dict | None:
         """Send prompts from *concurrent_users* simulated users in parallel."""
+        self._ctx_exceeded_count = 0
+        self._disconnect_count = 0
         user_prompts = self._distribute_prompts(concurrent_users)
         return asyncio.run(self._async_run(concurrent_users, user_prompts))
 
@@ -442,11 +449,20 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
 
                 if response.status_code != 200:
                     body = await response.aread()
-                    log.warning(
-                        "/completion returned %d: %s",
-                        response.status_code,
-                        body.decode()[:200],
-                    )
+                    body_text = body.decode()[:200]
+                    if "exceed" in body_text.lower() and "context" in body_text.lower():
+                        self._ctx_exceeded_count += 1
+                        log.debug(
+                            "/completion returned %d (context exceeded): %s",
+                            response.status_code,
+                            body_text,
+                        )
+                    else:
+                        log.warning(
+                            "/completion returned %d: %s",
+                            response.status_code,
+                            body_text,
+                        )
                     return None
 
                 async for line in response.aiter_lines():
@@ -476,7 +492,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
                         token_timestamps.append(now)
 
         except httpx.HTTPError as exc:
-            log.warning("Completion request failed: %s", exc)
+            self._disconnect_count += 1
+            log.debug("Completion request failed: %s", exc)
             return None
 
         if t_first_token is None or n_tokens == 0:
@@ -567,6 +584,18 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             metrics["p99_itl_ms"],
             f", {concurrent_users} concurrent users" if concurrent_users > 1 else "",
         )
+
+        # Summarise non-fatal errors (if any) in a single log line each.
+        if self._ctx_exceeded_count:
+            log.info(
+                "%d prompt(s) skipped: prompt exceeds per-slot context size",
+                self._ctx_exceeded_count,
+            )
+        if self._disconnect_count:
+            log.info(
+                "%d request(s) failed due to server disconnect",
+                self._disconnect_count,
+            )
 
         return {"results": metrics}
 
@@ -698,11 +727,20 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         try:
             with client.stream("POST", "/completion", json=payload) as response:
                 if response.status_code != 200:
-                    log.warning(
-                        "/completion returned %d: %s",
-                        response.status_code,
-                        response.read().decode()[:200],
-                    )
+                    body_text = response.read().decode()[:200]
+                    if "exceed" in body_text.lower() and "context" in body_text.lower():
+                        self._ctx_exceeded_count += 1
+                        log.debug(
+                            "/completion returned %d (context exceeded): %s",
+                            response.status_code,
+                            body_text,
+                        )
+                    else:
+                        log.warning(
+                            "/completion returned %d: %s",
+                            response.status_code,
+                            body_text,
+                        )
                     return None
 
                 for line in response.iter_lines():
@@ -732,7 +770,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
                         token_timestamps.append(now)
 
         except httpx.HTTPError as exc:
-            log.warning("Completion request failed: %s", exc)
+            self._disconnect_count += 1
+            log.debug("Completion request failed: %s", exc)
             return None
 
         if t_first_token is None or n_tokens == 0:

@@ -27,7 +27,7 @@ log = logging.getLogger("ppb")
 
 _HEALTH_POLL_INTERVAL_S = 0.5  # seconds between /health polls
 _HEALTH_TIMEOUT_S = 120  # max seconds to wait for server readiness
-_SERVER_STOP_TIMEOUT_S = 2  # seconds to wait after SIGINT/SIGTERM before SIGKILL
+_SERVER_STOP_TIMEOUT_S = 8  # seconds to wait after SIGINT/SIGTERM before SIGKILL
 _POST_KILL_DELAY_S = 3  # seconds to wait after SIGKILL for GPU resource reclamation
 _DEFAULT_N_PREDICT = 256  # max tokens to generate per prompt
 

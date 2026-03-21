@@ -1774,8 +1774,15 @@ class SweepConfig(BaseModel):
         arbitrary_types_allowed = True
 
     def combos(self) -> list["BenchCombo"]:
-        """Return the full Cartesian product of models × n_ctx × n_batch × concurrent_users."""
-        return [
+        """Return the full Cartesian product of models × n_ctx × n_batch × concurrent_users.
+
+        Combos are ordered so that ``concurrent_users`` is **descending**
+        within each ``(model, n_ctx)`` group.  This maximises server
+        reuse: :meth:`ensure_server` keeps the running server when
+        ``managed_parallel >= parallel``, so starting from the highest
+        concurrency avoids unnecessary restarts when sweeping down.
+        """
+        combos = [
             BenchCombo(
                 model_path=local,
                 model=hf_id,
@@ -1787,9 +1794,10 @@ class SweepConfig(BaseModel):
                 self.resolved_models,
                 self.n_ctx,
                 self.n_batch,
-                self.concurrent_users,
+                sorted(self.concurrent_users, reverse=True),
             )
         ]
+        return combos
 
 
 @dataclass

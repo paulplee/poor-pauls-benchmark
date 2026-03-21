@@ -116,6 +116,9 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         self._error_threshold: float = _DEFAULT_ERROR_THRESHOLD
         self._ramp_delay_s: float = _DEFAULT_RAMP_DELAY_S
         self._prompt_distribution: str = "shared"
+        # Per-level error counters (reset before each level).
+        self._ctx_exceeded_count: int = 0
+        self._disconnect_count: int = 0
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -268,6 +271,8 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         self, concurrent_users: int,
     ) -> dict[str, Any] | None:
         """Test one concurrency level and return aggregated metrics."""
+        self._ctx_exceeded_count = 0
+        self._disconnect_count = 0
         base_url = f"http://127.0.0.1:{self._port}"
         user_prompts = self._distribute_prompts(concurrent_users)
         t_start = time.monotonic()
@@ -329,6 +334,20 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
             "p50_queue_ms": round(percentile(sorted_q, 50) * 1000, 2),
             "p99_queue_ms": round(percentile(sorted_q, 99) * 1000, 2),
         }
+
+        # Summarise non-fatal errors (if any) in a single log line each.
+        if self._ctx_exceeded_count:
+            log.info(
+                "Level %d: %d prompt(s) skipped: prompt exceeds per-slot context size",
+                concurrent_users,
+                self._ctx_exceeded_count,
+            )
+        if self._disconnect_count:
+            log.info(
+                "Level %d: %d request(s) failed due to server disconnect",
+                concurrent_users,
+                self._disconnect_count,
+            )
 
         return metrics
 
@@ -402,11 +421,20 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
 
                 if response.status_code != 200:
                     body = await response.aread()
-                    log.warning(
-                        "/completion returned %d: %s",
-                        response.status_code,
-                        body.decode()[:200],
-                    )
+                    body_text = body.decode()[:200]
+                    if "exceed" in body_text.lower() and "context" in body_text.lower():
+                        self._ctx_exceeded_count += 1
+                        log.debug(
+                            "/completion returned %d (context exceeded): %s",
+                            response.status_code,
+                            body_text,
+                        )
+                    else:
+                        log.warning(
+                            "/completion returned %d: %s",
+                            response.status_code,
+                            body_text,
+                        )
                     return None
 
                 async for line in response.aiter_lines():
@@ -436,7 +464,8 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
                         token_timestamps.append(now)
 
         except httpx.HTTPError as exc:
-            log.warning("Completion request failed: %s", exc)
+            self._disconnect_count += 1
+            log.debug("Completion request failed: %s", exc)
             return None
 
         if t_first_token is None or n_tokens == 0:
