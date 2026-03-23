@@ -37,6 +37,10 @@ class LlamaBenchRunner(BaseRunner):
 
     def __init__(self) -> None:
         self._cmd: str = ""
+        self._n_gpu_layers: int | None = None
+        self._tensor_split: str | None = None
+        self._split_mode: str | None = None
+        self._main_gpu: int | None = None
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -52,6 +56,15 @@ class LlamaBenchRunner(BaseRunner):
             "llama_bench_cmd",
             os.getenv("PPB_LLAMA_BENCH", "llama-bench"),
         )
+        # Multi-GPU params (optional — omit CLI flag when not set)
+        ngl = runner_params.get("n_gpu_layers")
+        self._n_gpu_layers = int(ngl) if ngl is not None else None
+        ts = runner_params.get("tensor_split")
+        self._tensor_split = str(ts) if ts is not None else None
+        sm = runner_params.get("split_mode")
+        self._split_mode = str(sm) if sm is not None else None
+        mg = runner_params.get("main_gpu")
+        self._main_gpu = int(mg) if mg is not None else None
 
     def run(self, config: dict[str, Any]) -> dict | None:
         """Run ``llama-bench`` for one (model, n_ctx, n_batch) combo.
@@ -75,6 +88,14 @@ class LlamaBenchRunner(BaseRunner):
             "-b", str(config["n_batch"]),
             "-o", "json",
         ]
+        if self._n_gpu_layers is not None:
+            cmd += ["-ngl", str(self._n_gpu_layers)]
+        if self._tensor_split:
+            cmd += ["--tensor-split", self._tensor_split]
+        if self._split_mode:
+            cmd += ["--split-mode", self._split_mode]
+        if self._main_gpu is not None:
+            cmd += ["--main-gpu", str(self._main_gpu)]
 
         log.debug("Running: %s", " ".join(cmd))
 
@@ -118,6 +139,14 @@ class LlamaBenchRunner(BaseRunner):
             "-n", "0",          # allocation-only — skip token generation
             "-o", "json",
         ]
+        if self._n_gpu_layers is not None:
+            cmd += ["-ngl", str(self._n_gpu_layers)]
+        if self._tensor_split:
+            cmd += ["--tensor-split", self._tensor_split]
+        if self._split_mode:
+            cmd += ["--split-mode", self._split_mode]
+        if self._main_gpu is not None:
+            cmd += ["--main-gpu", str(self._main_gpu)]
         log.debug("probe_ctx n_ctx=%d — running: %s", n_ctx, " ".join(cmd))
         proc = subprocess.run(cmd, capture_output=True, text=True)
 

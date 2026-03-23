@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from utils.flattener import COLUMN_ORDER, MASTER_SCHEMA, compute_file_sha256, flatten_benchmark_row
+from utils.flattener import COLUMN_ORDER, MASTER_SCHEMA, compute_file_sha256, flatten_benchmark_row, _parse_model_provenance
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +28,32 @@ def _make_hardware():
                 "driver": "590.40",
                 "cuda_version": "13.0",
             }
+        ],
+        "runtime": {"python_version": "3.13.12"},
+    }
+
+
+def _make_dual_gpu_hardware():
+    """Hardware snapshot for a dual NVIDIA GeForce RTX 4060 Ti system."""
+    return {
+        "os": {"system": "Linux", "release": "6.17.0", "machine": "x86_64"},
+        "cpu": {"model": "Intel Core i9-14900K", "cores": "24"},
+        "ram": {"total_gb": 64.0},
+        "gpus": [
+            {
+                "index": 0,
+                "name": "NVIDIA GeForce RTX 4060 Ti",
+                "vram_total_gb": 16.0,
+                "driver": "570.86",
+                "cuda_version": "12.8",
+            },
+            {
+                "index": 1,
+                "name": "NVIDIA GeForce RTX 4060 Ti",
+                "vram_total_gb": 16.0,
+                "driver": "570.86",
+                "cuda_version": "12.8",
+            },
         ],
         "runtime": {"python_version": "3.13.12"},
     }
@@ -93,6 +119,88 @@ LOADTEST_ROW = {
         ],
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Model provenance (model_org / model_repo)
+# ---------------------------------------------------------------------------
+
+class TestModelProvenance:
+    def test_hf_path_extracts_org_and_repo(self):
+        assert _parse_model_provenance("unsloth/Qwen3.5-2B-GGUF/model.gguf") == (
+            "unsloth",
+            "unsloth/Qwen3.5-2B-GGUF",
+        )
+
+    def test_local_absolute_path_returns_none(self):
+        assert _parse_model_provenance("/Volumes/DATA/models/model.gguf") == (None, None)
+
+    def test_local_relative_path_returns_none(self):
+        assert _parse_model_provenance("./models/model.gguf") == (None, None)
+
+    def test_none_returns_none(self):
+        assert _parse_model_provenance(None) == (None, None)
+
+    def test_flat_row_has_provenance_fields(self):
+        row = {**LLAMA_BENCH_ROW, "model": "unsloth/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf"}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["model_org"] == "unsloth"
+        assert flat["model_repo"] == "unsloth/Qwen3.5-2B-GGUF"
+
+    def test_local_model_provenance_is_null(self):
+        row = {**LLAMA_BENCH_ROW, "model": "/local/path/to/model.gguf"}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["model_org"] is None
+        assert flat["model_repo"] is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-GPU hardware fields
+# ---------------------------------------------------------------------------
+
+class TestMultiGpuHardware:
+    def test_dual_gpu_count(self):
+        row = {**LLAMA_SERVER_ROW, "hardware": _make_dual_gpu_hardware()}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["gpu_count"] == 2
+
+    def test_dual_gpu_names_joined(self):
+        row = {**LLAMA_SERVER_ROW, "hardware": _make_dual_gpu_hardware()}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["gpu_names"] == "NVIDIA GeForce RTX 4060 Ti, NVIDIA GeForce RTX 4060 Ti"
+
+    def test_dual_gpu_total_vram(self):
+        row = {**LLAMA_SERVER_ROW, "hardware": _make_dual_gpu_hardware()}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["gpu_total_vram_gb"] == 32.0
+
+    def test_dual_gpu_name_is_primary_gpu(self):
+        """gpu_name stays as GPU 0 for backward compat with viz site filters."""
+        row = {**LLAMA_SERVER_ROW, "hardware": _make_dual_gpu_hardware()}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["gpu_name"] == "NVIDIA GeForce RTX 4060 Ti"
+
+    def test_no_gpu_count_is_zero(self):
+        row = {**LLAMA_SERVER_ROW, "hardware": {**_make_hardware(), "gpus": []}}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["gpu_count"] == 0
+        assert flat["gpu_names"] is None
+        assert flat["gpu_total_vram_gb"] is None
+
+    def test_split_mode_and_tensor_split_from_record(self):
+        row = {
+            **LLAMA_SERVER_ROW,
+            "split_mode": "layer",
+            "tensor_split": "1,1",
+        }
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["split_mode"] == "layer"
+        assert flat["tensor_split"] == "1,1"
+
+    def test_split_mode_null_when_absent(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["split_mode"] is None
+        assert flat["tensor_split"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +291,10 @@ class TestLlamaBench:
         assert row["gpu_name"] == "NVIDIA RTX 5090"
         assert row["gpu_vram_gb"] == 32.0
         assert row["gpu_driver"] == "590.40"
+        # Single-GPU multi-GPU fields
+        assert row["gpu_count"] == 1
+        assert row["gpu_names"] == "NVIDIA RTX 5090"
+        assert row["gpu_total_vram_gb"] == 32.0
 
     def test_per_item_fields(self):
         rows = flatten_benchmark_row(LLAMA_BENCH_ROW)

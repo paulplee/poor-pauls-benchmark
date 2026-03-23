@@ -104,6 +104,19 @@ class ServerMixin:
         ]
         if parallel > 1:
             cmd += ["--parallel", str(parallel)]
+        # Multi-GPU params — populated by subclass setup() when specified
+        n_gpu_layers = getattr(self, "_n_gpu_layers", None)
+        tensor_split = getattr(self, "_tensor_split", None)
+        split_mode = getattr(self, "_split_mode", None)
+        main_gpu = getattr(self, "_main_gpu", None)
+        if n_gpu_layers is not None:
+            cmd += ["-ngl", str(n_gpu_layers)]
+        if tensor_split:
+            cmd += ["--tensor-split", tensor_split]
+        if split_mode:
+            cmd += ["--split-mode", split_mode]
+        if main_gpu is not None:
+            cmd += ["--main-gpu", str(main_gpu)]
 
         log.debug("Starting llama-server: %s", " ".join(cmd))
 

@@ -2619,6 +2619,10 @@ def execute_sweep(
                             "hardware": _hw_sniffer.snapshot(),
                             "results": raw_result["results"],
                         }
+                        # Record multi-GPU split params for provenance when set
+                        for _key in ("split_mode", "tensor_split", "n_gpu_layers", "main_gpu"):
+                            if cfg.runner_params.get(_key) is not None:
+                                record[_key] = cfg.runner_params[_key]
                         if suite_run_id is not None:
                             record["suite_run_id"] = suite_run_id
                         if avg_power_w is not None:

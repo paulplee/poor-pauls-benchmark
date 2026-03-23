@@ -29,16 +29,23 @@ COLUMN_ORDER: list[str] = [
     "model",
     "model_base",
     "quant",
+    "model_org",
+    "model_repo",
     "runner_type",
     # Hardware
     "gpu_name",
     "gpu_vram_gb",
     "gpu_driver",
+    "gpu_count",
+    "gpu_names",
+    "gpu_total_vram_gb",
     "backends",
     "cpu_model",
     # Configuration
     "n_ctx",
     "n_batch",
+    "split_mode",
+    "tensor_split",
     "concurrent_users",
     # Performance — raw speed
     "throughput_tok_s",
@@ -216,6 +223,31 @@ def _stamp_provenance(flat: dict[str, Any]) -> None:
 _QUANT_SUFFIX_RE = re.compile(r"[-_]([QqFfIiBb][A-Za-z0-9_]*)\.gguf$")
 
 
+def _parse_model_provenance(model: str | None) -> tuple[str | None, str | None]:
+    """Extract (model_org, model_repo) from a Hugging Face model path.
+
+    HF model paths follow the pattern ``org/repo/filename.gguf``.
+    Local paths (starting with ``/``, ``.``, or ``~``) return ``(None, None)``.
+
+    Examples::
+
+        >>> _parse_model_provenance("unsloth/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf")
+        ('unsloth', 'unsloth/Qwen3.5-2B-GGUF')
+        >>> _parse_model_provenance("/Volumes/DATA/models/model.gguf")
+        (None, None)
+        >>> _parse_model_provenance(None)
+        (None, None)
+    """
+    if not model:
+        return None, None
+    if model.startswith("/") or model.startswith(".") or model.startswith("~"):
+        return None, None
+    parts = model.split("/")
+    if len(parts) >= 3:
+        return parts[0], f"{parts[0]}/{parts[1]}"
+    return None, None
+
+
 def _parse_model_filename(filename: str | None) -> tuple[str | None, str | None]:
     """Extract (model_base, quant) from a GGUF filename.
 
@@ -313,14 +345,19 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
     model = row.get("model")
     fname = PurePosixPath(model).name if model else None
     base, quant = _parse_model_filename(fname)
+    model_org, model_repo = _parse_model_provenance(model)
     return {
         "timestamp": row.get("timestamp"),
         "runner_type": row.get("runner_type"),
         "model": model,
         "model_base": base,
         "quant": quant,
+        "model_org": model_org,
+        "model_repo": model_repo,
         "n_ctx": row.get("n_ctx"),
         "n_batch": row.get("n_batch"),
+        "split_mode": row.get("split_mode"),
+        "tensor_split": row.get("tensor_split"),
         "concurrent_users": row.get("concurrent_users"),
         # Power draw measured during the run (Watts).
         # Source: NVIDIA NVML (GPU board), Linux RAPL (CPU package),
@@ -361,6 +398,14 @@ def _extract_hardware(hw: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         "gpu_name": gpu0.get("name"),
         "gpu_vram_gb": gpu0.get("vram_total_gb"),
         "gpu_driver": gpu0.get("driver"),
+        # Multi-GPU fields (backward-compat: single-GPU runs still populate these)
+        "gpu_count": len(gpus),
+        "gpu_names": ", ".join(g["name"] for g in gpus if g.get("name")) or None,
+        "gpu_total_vram_gb": (
+            round(sum(g["vram_total_gb"] for g in gpus if g.get("vram_total_gb") is not None), 1)
+            if gpus and any(g.get("vram_total_gb") is not None for g in gpus)
+            else None
+        ),
     }
     return fields, gpu0.get("cuda_version")
 

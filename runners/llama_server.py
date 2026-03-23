@@ -137,6 +137,11 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._process: subprocess.Popen[str] | None = None
         self._port: int = 0
         self._prompt_distribution: str = "shared"
+        # Multi-GPU params (optional — omit CLI flag when not set)
+        self._n_gpu_layers: int | None = None
+        self._tensor_split: str | None = None
+        self._split_mode: str | None = None
+        self._main_gpu: int | None = None
         # Managed server state for server-reuse optimisation.
         self._managed_model: str | None = None
         self._managed_n_ctx: int | None = None
@@ -160,6 +165,15 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._stop_timeout = float(
             runner_params.get("stop_timeout", _SERVER_STOP_TIMEOUT_S)
         )
+        # Multi-GPU params
+        ngl = runner_params.get("n_gpu_layers")
+        self._n_gpu_layers = int(ngl) if ngl is not None else None
+        ts = runner_params.get("tensor_split")
+        self._tensor_split = str(ts) if ts is not None else None
+        sm = runner_params.get("split_mode")
+        self._split_mode = str(sm) if sm is not None else None
+        mg = runner_params.get("main_gpu")
+        self._main_gpu = int(mg) if mg is not None else None
 
         num_prompts = int(runner_params.get("num_prompts", 10))
         dataset_dir_str = runner_params.get("dataset_dir")

@@ -141,6 +141,46 @@ n_batch = [512, 1024]
 # -------------------------------------------------------------------
 # [sweep.runner_params]
 # llama_bench_cmd = "llama-bench"
+#
+# -------------------------------------------------------------------
+# Multi-GPU parameters (optional — omit to use defaults)
+#
+# These map directly to llama.cpp CLI flags and apply to ALL runners
+# (llama-bench, llama-server, llama-server-loadtest).
+#
+# n_gpu_layers
+#   Number of model layers to offload to GPU.
+#   -1 offloads all layers (default when omitted).
+#   Set to a positive integer to split layers between CPU and GPU.
+#   Maps to: -ngl <n>
+#
+# tensor_split
+#   Comma-separated GPU weight ratios for multi-GPU setups.
+#   Values are relative — "1,1" splits equally, "3,1" puts 75% on GPU 0.
+#   Omit for single-GPU machines.
+#   Maps to: --tensor-split <s>
+#
+# split_mode
+#   How tensors are distributed across multiple GPUs.
+#     "none"  — use only the main GPU
+#     "layer" — split layers across GPUs (default when tensor_split is set)
+#     "row"   — split rows across GPUs (experimental)
+#   Maps to: --split-mode <m>
+#
+# main_gpu
+#   Index of the primary GPU (0-based). Default: 0.
+#   On heterogeneous setups, use the GPU with the most VRAM.
+#   Maps to: --main-gpu <i>
+#
+# Example — dual identical GPUs with equal split:
+#   tensor_split = "1,1"
+#   split_mode   = "layer"
+#
+# Example — heterogeneous GPUs (24 GB + 8 GB), more weight on GPU 0:
+#   tensor_split = "3,1"
+#   split_mode   = "layer"
+#   main_gpu     = 0
+# -------------------------------------------------------------------
 
 
 # ===================================================================

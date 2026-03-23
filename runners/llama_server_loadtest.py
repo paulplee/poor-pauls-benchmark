@@ -114,6 +114,11 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         self._error_threshold: float = _DEFAULT_ERROR_THRESHOLD
         self._ramp_delay_s: float = _DEFAULT_RAMP_DELAY_S
         self._prompt_distribution: str = "shared"
+        # Multi-GPU params (optional — omit CLI flag when not set)
+        self._n_gpu_layers: int | None = None
+        self._tensor_split: str | None = None
+        self._split_mode: str | None = None
+        self._main_gpu: int | None = None
         # Per-level error counters (reset before each level).
         self._ctx_exceeded_count: int = 0
         self._disconnect_count: int = 0
@@ -140,6 +145,15 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         self._stop_timeout = float(
             runner_params.get("stop_timeout", _SERVER_STOP_TIMEOUT_S)
         )
+        # Multi-GPU params
+        ngl = runner_params.get("n_gpu_layers")
+        self._n_gpu_layers = int(ngl) if ngl is not None else None
+        ts = runner_params.get("tensor_split")
+        self._tensor_split = str(ts) if ts is not None else None
+        sm = runner_params.get("split_mode")
+        self._split_mode = str(sm) if sm is not None else None
+        mg = runner_params.get("main_gpu")
+        self._main_gpu = int(mg) if mg is not None else None
 
         raw_steps = runner_params.get("user_steps")
         if raw_steps is not None:
