@@ -1764,6 +1764,7 @@ class SweepConfig(BaseModel):
     n_ctx: list[int]
     n_batch: list[int]
     concurrent_users: list[int] = Field(default_factory=lambda: [1])
+    min_ctx_per_slot: int = 512
     runner_type: str = "llama-bench"
     runner_params: dict[str, Any] = Field(default_factory=dict)
 
@@ -2467,6 +2468,25 @@ def execute_sweep(
         if skipped:
             console.print(
                 f"  [warning]Skipping {skipped} combo(s) exceeding per-model ctx cap[/warning]"
+            )
+
+    # --- Drop combos where per-slot context is too small ----------------
+    # When llama-server runs with --parallel N it divides n_ctx equally
+    # across N slots.  If the per-slot context is smaller than a prompt
+    # the server returns HTTP 400.  Filter these out early.
+    if cfg.min_ctx_per_slot > 0 and cfg.concurrent_users != [1]:
+        original = len(combos)
+        combos = [
+            c
+            for c in combos
+            if c.concurrent_users <= 1
+            or c.n_ctx // c.concurrent_users >= cfg.min_ctx_per_slot
+        ]
+        slot_skipped = original - len(combos)
+        if slot_skipped:
+            console.print(
+                f"  [warning]Skipping {slot_skipped} combo(s) where "
+                f"n_ctx/users < {cfg.min_ctx_per_slot} tokens per slot[/warning]"
             )
 
     # --- Group combos by model (models are already the outermost axis) ----

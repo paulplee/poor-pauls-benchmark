@@ -272,7 +272,7 @@ class TestExecuteSweep:
         cfg = _sweep_toml(
             tmp_path,
             tmp_model,
-            n_ctx="[512]",
+            n_ctx="[2048]",
             n_batch="[256]",
             concurrent_users="[1, 2]",
         )
@@ -294,7 +294,7 @@ class TestExecuteSweep:
         cfg = _sweep_toml(
             tmp_path,
             tmp_model,
-            n_ctx="[512]",
+            n_ctx="[4096]",
             n_batch="[256]",
             concurrent_users="[4]",
         )
@@ -350,6 +350,35 @@ class TestExecuteSweep:
             patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)),
         ):
             execute_sweep(results_file=tmp_path / "r.jsonl", config_path=cfg)
+
+    def test_min_ctx_per_slot_filters_small_combos(
+        self,
+        tmp_path: Path,
+        tmp_model: Path,
+    ) -> None:
+        """Combos where n_ctx/users < min_ctx_per_slot should be skipped."""
+        from ppb import execute_sweep
+
+        # n_ctx=2048, users=[2, 4, 8, 16] with min_ctx_per_slot=512
+        # 2048/2=1024 OK, 2048/4=512 OK, 2048/8=256 SKIP, 2048/16=128 SKIP
+        cfg = _sweep_toml(
+            tmp_path,
+            tmp_model,
+            n_ctx="[2048]",
+            n_batch="[256]",
+            concurrent_users="[2, 4, 8, 16]",
+            min_ctx_per_slot="512",
+        )
+        results = tmp_path / "results.jsonl"
+        with patch("ppb._ensure_models", side_effect=_mock_ensure_models(tmp_model)):
+            execute_sweep(results_file=results, config_path=cfg)
+
+        lines = results.read_text().strip().splitlines()
+        # Only users=2 (1024/slot) and users=4 (512/slot) should run
+        assert len(lines) == 2
+        records = [json.loads(l) for l in lines]
+        user_counts = sorted(r["concurrent_users"] for r in records)
+        assert user_counts == [2, 4]
 
 
 # ==========================================================================

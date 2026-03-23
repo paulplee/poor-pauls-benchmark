@@ -107,6 +107,16 @@ class TestSweepConfig:
         assert c.n_ctx == 1024
         assert c.n_batch == 256
 
+    # -- min_ctx_per_slot -----------------------------------------------------
+
+    def test_min_ctx_per_slot_default(self) -> None:
+        cfg = self._make_config()
+        assert cfg.min_ctx_per_slot == 512
+
+    def test_min_ctx_per_slot_custom(self) -> None:
+        cfg = self._make_config(min_ctx_per_slot=1024)
+        assert cfg.min_ctx_per_slot == 1024
+
 
 # ==========================================================================
 # BenchCombo

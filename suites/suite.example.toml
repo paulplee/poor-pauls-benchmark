@@ -135,6 +135,16 @@ n_batch = [512, 1024]
 # concurrent_users = [1, 2, 4, 8, 16, 32]
 
 # -------------------------------------------------------------------
+# min_ctx_per_slot (optional — default: 512)
+#   Minimum context tokens per parallel slot.  When llama-server runs
+#   with --parallel N, total n_ctx is divided among N slots.  Combos
+#   where n_ctx / concurrent_users < this value are automatically
+#   skipped — they'd only produce HTTP 400 errors because prompts
+#   wouldn't fit in a slot.  Set to 0 to disable this safety check.
+# -------------------------------------------------------------------
+# min_ctx_per_slot = 512
+
+# -------------------------------------------------------------------
 # [sweep.runner_params] (optional)
 #   Runner-specific overrides.  For llama-bench:
 #     llama_bench_cmd = "/path/to/llama-bench"   # override binary path
