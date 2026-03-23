@@ -577,6 +577,87 @@ Results land in `data/results_<timestamp>_<uuid>.jsonl` inside the [`poor-paul/p
 
 For a fully automated "shoot and forget" workflow, add a `[publish]` section to your suite TOML and use `ppb all` — see [§3](#3-run-the-full-suite-all).
 
+### 7. Migrate Legacy Results to the Current Schema
+
+PPB extended its result schema to add **model provenance** (`model_org`, `model_repo`) and **multi-GPU** fields (`gpu_count`, `gpu_names`, `gpu_total_vram_gb`, `split_mode`, `tensor_split`). Existing raw `.jsonl` files written before this change already contain all the data needed — only the flat `.csv` exports need to be regenerated.
+
+> **Note:** New runs produce the full schema automatically. This step is only needed for historical result files.
+
+#### New columns
+
+| Column              | Description                                                                     |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `model_org`         | HF organisation extracted from the model path, e.g. `unsloth`                   |
+| `model_repo`        | Full HF `org/repo` string, e.g. `unsloth/Qwen3.5-2B-GGUF`                       |
+| `gpu_count`         | Number of GPUs used in the run                                                  |
+| `gpu_names`         | Comma-joined list of GPU names (`gpu_name` for single-GPU runs)                 |
+| `gpu_total_vram_gb` | Sum of VRAM across all GPUs in GB                                               |
+| `split_mode`        | llama.cpp layer-split strategy (`layer`, `row`, `none`) — `null` for single-GPU |
+| `tensor_split`      | Per-GPU VRAM weight string (e.g. `"1,1"`) — `null` for single-GPU runs          |
+
+#### Prerequisites
+
+1. **Finish** all active benchmark runs before migrating.
+2. **Back up** your results directory (the script refuses to run without this):
+
+```bash
+mkdir results/backup
+cp results/*.* results/backup/
+```
+
+#### Run the migration
+
+```bash
+# 1. Dry run — reads every *.jsonl and prints what would change (no files written)
+uv run scripts/migrate_schema.py --dry-run
+
+# 2. Apply — overwrites *.csv files in-place with the new schema
+uv run scripts/migrate_schema.py
+```
+
+The script leaves raw `*.jsonl` source files untouched; only the flat `*.csv` files are overwritten.
+
+Sample dry-run output:
+
+```text
+Found 14 JSONL file(s) to migrate.
+
+  Qwen3.5-2B_20260313_1005.jsonl: 128 row(s)
+    new fields: {'model_org': 'unsloth', 'model_repo': 'unsloth/Qwen3.5-2B-GGUF',
+                 'gpu_count': 1, 'gpu_names': 'NVIDIA GeForce RTX 4060 Ti',
+                 'gpu_total_vram_gb': 16.0, 'split_mode': None, 'tensor_split': None}
+    [dry-run] would write Qwen3.5-2B_20260313_1005.csv
+  ...
+
+[dry-run] Migration complete — 3817 total flat rows across 14 file(s).
+Re-run without --dry-run to overwrite CSV files.
+```
+
+#### Re-publish to Hugging Face
+
+After verifying the regenerated CSVs look correct, delete the old data from the HF dataset and re-upload everything:
+
+```bash
+# 1. Delete all files in paulplee/ppb-results/data/ via the HF web UI, then:
+
+# 2. Publish all JSONL files in one command (shell glob expands to a list)
+uv run ppb.py publish results/*.jsonl --upload
+
+# Or with an explicit token if HF_TOKEN is not set in your environment
+uv run ppb.py publish results/*.jsonl --upload --token $HF_TOKEN
+```
+
+PPB batches all matching files into a single upload session.
+
+#### Cleanup
+
+Once Hugging Face is verified:
+
+```bash
+rm scripts/migrate_schema.py
+rm -rf results/backup/
+```
+
 ---
 
 ## Concurrent User Benchmarking
