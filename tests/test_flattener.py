@@ -9,12 +9,19 @@ from pathlib import Path
 
 import pytest
 
-from utils.flattener import COLUMN_ORDER, MASTER_SCHEMA, compute_file_sha256, flatten_benchmark_row, _parse_model_provenance
+from utils.flattener import (
+    COLUMN_ORDER,
+    MASTER_SCHEMA,
+    compute_file_sha256,
+    flatten_benchmark_row,
+    _parse_model_provenance,
+)
 
 
 # ---------------------------------------------------------------------------
 # Fixtures — minimal but structurally complete benchmark rows
 # ---------------------------------------------------------------------------
+
 
 def _make_hardware():
     return {
@@ -125,6 +132,7 @@ LOADTEST_ROW = {
 # Model provenance (model_org / model_repo)
 # ---------------------------------------------------------------------------
 
+
 class TestModelProvenance:
     def test_hf_path_extracts_org_and_repo(self):
         assert _parse_model_provenance("unsloth/Qwen3.5-2B-GGUF/model.gguf") == (
@@ -133,7 +141,10 @@ class TestModelProvenance:
         )
 
     def test_local_absolute_path_returns_none(self):
-        assert _parse_model_provenance("/Volumes/DATA/models/model.gguf") == (None, None)
+        assert _parse_model_provenance("/Volumes/DATA/models/model.gguf") == (
+            None,
+            None,
+        )
 
     def test_local_relative_path_returns_none(self):
         assert _parse_model_provenance("./models/model.gguf") == (None, None)
@@ -142,7 +153,10 @@ class TestModelProvenance:
         assert _parse_model_provenance(None) == (None, None)
 
     def test_flat_row_has_provenance_fields(self):
-        row = {**LLAMA_BENCH_ROW, "model": "unsloth/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf"}
+        row = {
+            **LLAMA_BENCH_ROW,
+            "model": "unsloth/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf",
+        }
         flat = flatten_benchmark_row(row)[0]
         assert flat["model_org"] == "unsloth"
         assert flat["model_repo"] == "unsloth/Qwen3.5-2B-GGUF"
@@ -158,6 +172,7 @@ class TestModelProvenance:
 # Multi-GPU hardware fields
 # ---------------------------------------------------------------------------
 
+
 class TestMultiGpuHardware:
     def test_dual_gpu_count(self):
         row = {**LLAMA_SERVER_ROW, "hardware": _make_dual_gpu_hardware()}
@@ -167,7 +182,10 @@ class TestMultiGpuHardware:
     def test_dual_gpu_names_joined(self):
         row = {**LLAMA_SERVER_ROW, "hardware": _make_dual_gpu_hardware()}
         flat = flatten_benchmark_row(row)[0]
-        assert flat["gpu_names"] == "NVIDIA GeForce RTX 4060 Ti, NVIDIA GeForce RTX 4060 Ti"
+        assert (
+            flat["gpu_names"]
+            == "NVIDIA GeForce RTX 4060 Ti, NVIDIA GeForce RTX 4060 Ti"
+        )
 
     def test_dual_gpu_total_vram(self):
         row = {**LLAMA_SERVER_ROW, "hardware": _make_dual_gpu_hardware()}
@@ -206,6 +224,7 @@ class TestMultiGpuHardware:
 # ---------------------------------------------------------------------------
 # Model parsing (model_base / quant extraction)
 # ---------------------------------------------------------------------------
+
 
 class TestModelParsing:
     def test_extracts_base_and_quant(self):
@@ -246,6 +265,7 @@ class TestModelParsing:
 # backends enrichment
 # ---------------------------------------------------------------------------
 
+
 class TestBackendsEnrichment:
     def test_cuda_version_appended(self):
         """When hardware has cuda_version, backends should read 'CUDA 13.0'."""
@@ -268,6 +288,7 @@ class TestBackendsEnrichment:
 # ---------------------------------------------------------------------------
 # llama-bench
 # ---------------------------------------------------------------------------
+
 
 class TestLlamaBench:
     def test_explodes_to_n_rows(self):
@@ -321,6 +342,7 @@ class TestLlamaBench:
 # llama-server
 # ---------------------------------------------------------------------------
 
+
 class TestLlamaServer:
     def test_single_row(self):
         rows = flatten_benchmark_row(LLAMA_SERVER_ROW)
@@ -341,6 +363,7 @@ class TestLlamaServer:
 # llama-server-loadtest
 # ---------------------------------------------------------------------------
 
+
 class TestLoadtest:
     def test_single_row(self):
         rows = flatten_benchmark_row(LOADTEST_ROW)
@@ -360,6 +383,7 @@ class TestLoadtest:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestEdgeCases:
     def test_unknown_runner_type(self):
@@ -394,6 +418,7 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 # Unified schema — every row must have exactly the MASTER_SCHEMA keys
 # ---------------------------------------------------------------------------
+
 
 class TestUnifiedSchema:
     """Ensure every runner produces rows with the exact MASTER_SCHEMA keys."""
@@ -432,6 +457,7 @@ class TestUnifiedSchema:
 # Provenance / fingerprint fields
 # ---------------------------------------------------------------------------
 
+
 class TestProvenance:
     def test_schema_version_is_2(self):
         flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
@@ -466,6 +492,7 @@ class TestProvenance:
 # ---------------------------------------------------------------------------
 # Column order
 # ---------------------------------------------------------------------------
+
 
 class TestColumnOrder:
     """COLUMN_ORDER drives CSV headers and HF viewer column order."""
@@ -529,6 +556,7 @@ class TestColumnOrder:
 # ---------------------------------------------------------------------------
 # File hashing
 # ---------------------------------------------------------------------------
+
 
 class TestFileHash:
     def test_compute_file_sha256_matches_hashlib(self):

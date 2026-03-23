@@ -2640,7 +2640,12 @@ def execute_sweep(
                             "results": raw_result["results"],
                         }
                         # Record multi-GPU split params for provenance when set
-                        for _key in ("split_mode", "tensor_split", "n_gpu_layers", "main_gpu"):
+                        for _key in (
+                            "split_mode",
+                            "tensor_split",
+                            "n_gpu_layers",
+                            "main_gpu",
+                        ):
                             if cfg.runner_params.get(_key) is not None:
                                 record[_key] = cfg.runner_params[_key]
                         if suite_run_id is not None:

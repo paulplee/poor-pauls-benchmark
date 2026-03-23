@@ -402,7 +402,14 @@ def _extract_hardware(hw: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         "gpu_count": len(gpus),
         "gpu_names": ", ".join(g["name"] for g in gpus if g.get("name")) or None,
         "gpu_total_vram_gb": (
-            round(sum(g["vram_total_gb"] for g in gpus if g.get("vram_total_gb") is not None), 1)
+            round(
+                sum(
+                    g["vram_total_gb"]
+                    for g in gpus
+                    if g.get("vram_total_gb") is not None
+                ),
+                1,
+            )
             if gpus and any(g.get("vram_total_gb") is not None for g in gpus)
             else None
         ),

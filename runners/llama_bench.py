@@ -83,10 +83,14 @@ class LlamaBenchRunner(BaseRunner):
         """
         cmd: list[str] = [
             self._cmd,
-            "-m", str(config["model_path"]),
-            "-p", str(config["n_ctx"]),
-            "-b", str(config["n_batch"]),
-            "-o", "json",
+            "-m",
+            str(config["model_path"]),
+            "-p",
+            str(config["n_ctx"]),
+            "-b",
+            str(config["n_batch"]),
+            "-o",
+            "json",
         ]
         if self._n_gpu_layers is not None:
             cmd += ["-ngl", str(self._n_gpu_layers)]
@@ -134,10 +138,14 @@ class LlamaBenchRunner(BaseRunner):
         """
         cmd: list[str] = [
             self._cmd,
-            "-m", str(model_path),
-            "-p", str(n_ctx),
-            "-n", "0",          # allocation-only — skip token generation
-            "-o", "json",
+            "-m",
+            str(model_path),
+            "-p",
+            str(n_ctx),
+            "-n",
+            "0",  # allocation-only — skip token generation
+            "-o",
+            "json",
         ]
         if self._n_gpu_layers is not None:
             cmd += ["-ngl", str(self._n_gpu_layers)]
