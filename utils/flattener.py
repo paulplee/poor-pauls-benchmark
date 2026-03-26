@@ -96,7 +96,7 @@ MASTER_SCHEMA: dict[str, None] = dict.fromkeys(COLUMN_ORDER + ["raw_payload"])
 # Provenance / fingerprint helpers
 # ---------------------------------------------------------------------------
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = "0.1.0"
 
 
 def _get_benchmark_version() -> str:

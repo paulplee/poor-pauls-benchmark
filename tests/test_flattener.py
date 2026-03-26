@@ -459,9 +459,9 @@ class TestUnifiedSchema:
 
 
 class TestProvenance:
-    def test_schema_version_is_2(self):
+    def test_schema_version(self):
         flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
-        assert flat["schema_version"] == 2
+        assert flat["schema_version"] == "0.1.0"
 
     def test_benchmark_version_present(self):
         flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]

@@ -5,15 +5,15 @@ DO NOT run this until all benchmark machines have finished their current runs.
 What it does
 ------------
 Re-flattens every ``results/*.jsonl`` file using the current (updated)
-flattener, which now populates the following new columns:
+flattener.  For each row the script:
 
-    model_org           — e.g. "unsloth"  (parsed from existing model field)
-    model_repo          — e.g. "unsloth/Qwen3.5-2B-GGUF"
-    gpu_count           — number of GPUs  (1 for all historical runs)
-    gpu_names           — comma-joined GPU names  (same as gpu_name for 1 GPU)
-    gpu_total_vram_gb   — sum of VRAM across all GPUs
-    split_mode          — null for historical runs (not used)
-    tensor_split        — null for historical runs (not used)
+  1. Adds missing columns that did not exist in older schema versions
+     (model_org, model_repo, gpu_count, gpu_names, gpu_total_vram_gb,
+     split_mode, tensor_split).  Values are derived from existing raw data.
+  2. Preserves columns that already exist in newer results — the flattener
+     reads them from the raw JSONL record and keeps them as-is.
+  3. Resets ``schema_version`` to ``0.1.0`` on every row (the new canonical
+     version aligned with ``benchmark_version`` / ``pyproject.toml``).
 
 The raw ``*.jsonl`` files are the source of truth and are NOT modified.
 Only the flat ``*.csv`` files are overwritten.
@@ -47,7 +47,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from utils.flattener import COLUMN_ORDER, flatten_benchmark_row  # noqa: E402
+from utils.flattener import COLUMN_ORDER, _SCHEMA_VERSION, flatten_benchmark_row  # noqa: E402
 
 
 def _find_results_dir() -> Path:
@@ -88,7 +88,8 @@ def migrate(results: Path, dry_run: bool) -> None:
         print("No *.jsonl files found in results/", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Found {len(jsonl_files)} JSONL file(s) to migrate.\n")
+    print(f"Found {len(jsonl_files)} JSONL file(s) to migrate.")
+    print(f"Target schema_version: {_SCHEMA_VERSION}\n")
 
     total_rows = 0
     for jsonl_path in jsonl_files:
@@ -117,6 +118,7 @@ def migrate(results: Path, dry_run: bool) -> None:
             new_fields = {
                 k: sample.get(k)
                 for k in (
+                    "schema_version",
                     "model_org",
                     "model_repo",
                     "gpu_count",
