@@ -101,6 +101,25 @@
 [sweep]
 
 # -------------------------------------------------------------------
+# Thermal safety (optional)
+#   Prevent sustained GPU/CPU load from overheating the system.
+#   Between benchmark runs the tool checks temps and pauses if needed.
+#
+#   gpu_temp_limit_c: pause if GPU temp ≥ this (°C).  Default: 85
+#   cpu_temp_limit_c: pause if CPU temp ≥ this (°C).  Default: 90
+#   cooldown_s:       minimum seconds between runs.    Default: 0
+#
+#   Recommended for high-TDP GPUs (RTX 4090/5090, etc.) to avoid
+#   PSU/VRM thermal shutdowns during long sweeps:
+#     gpu_temp_limit_c = 75
+#     cpu_temp_limit_c = 80
+#     cooldown_s = 15
+# -------------------------------------------------------------------
+# gpu_temp_limit_c = 85
+# cpu_temp_limit_c = 90
+# cooldown_s = 0
+
+# -------------------------------------------------------------------
 # n_ctx (required)
 #   List of prompt token counts to benchmark.
 #   Passed to llama-bench as -p (--n-prompt), which drives the KV cache

@@ -1571,6 +1571,102 @@ class ThermalSampler:
 
 
 # ---------------------------------------------------------------------------
+# Thermal guard (inter-run cooldown & safety limits)
+# ---------------------------------------------------------------------------
+
+
+class ThermalGuard:
+    """Check system thermals between benchmark runs and wait if too hot.
+
+    Uses the same sensor detection logic as :class:`ThermalSampler` but
+    performs **one-shot** reads rather than background sampling.  Inserted
+    between sweep iterations to prevent sustained thermal stress from
+    shutting down the system.
+
+    Configuration (all optional, set via ``[sweep]`` TOML keys):
+
+    * ``gpu_temp_limit_c`` — pause before the next run if the GPU is at
+      or above this temperature (°C).  Default: ``85``.
+    * ``cpu_temp_limit_c`` — same for CPU.  Default: ``90``.
+    * ``cooldown_s`` — minimum seconds to wait between runs regardless of
+      temperature.  Default: ``0`` (no mandatory cooldown).
+
+    When a temperature limit is hit the guard prints a status line and
+    polls every 5 s until the reading drops below the limit (with 3 °C
+    of hysteresis to avoid flip-flopping).
+    """
+
+    _POLL_S = 5.0  # polling interval while waiting to cool down
+
+    def __init__(
+        self,
+        gpu_temp_limit_c: float = 85.0,
+        cpu_temp_limit_c: float = 90.0,
+        cooldown_s: float = 0.0,
+    ) -> None:
+        self.gpu_temp_limit_c = gpu_temp_limit_c
+        self.cpu_temp_limit_c = cpu_temp_limit_c
+        self.cooldown_s = cooldown_s
+        # Build one-shot readers once
+        ts = ThermalSampler()
+        system = platform.system()
+        self._gpu_reader = ts._make_gpu_temp_reader(system)
+        self._cpu_reader = ts._make_cpu_temp_reader(system)
+
+    # -- public API --------------------------------------------------------
+
+    def read_gpu_temp(self) -> float | None:
+        """One-shot GPU temperature in °C, or None."""
+        return self._gpu_reader() if self._gpu_reader else None
+
+    def read_cpu_temp(self) -> float | None:
+        """One-shot CPU temperature in °C, or None."""
+        return self._cpu_reader() if self._cpu_reader else None
+
+    def wait_if_needed(self) -> None:
+        """Block until thermals are safe and any mandatory cooldown has elapsed."""
+        if self.cooldown_s > 0:
+            time.sleep(self.cooldown_s)
+
+        hysteresis = 3.0  # resume once temp drops this far below the limit
+        waited = False
+
+        while True:
+            gpu_t = self.read_gpu_temp()
+            cpu_t = self.read_cpu_temp()
+
+            gpu_hot = gpu_t is not None and gpu_t >= (
+                self.gpu_temp_limit_c - (hysteresis if waited else 0)
+            )
+            cpu_hot = cpu_t is not None and cpu_t >= (
+                self.cpu_temp_limit_c - (hysteresis if waited else 0)
+            )
+
+            if not gpu_hot and not cpu_hot:
+                if waited:
+                    console.print("  [success]✓[/success] Temps safe — resuming")
+                return
+
+            # Build status message
+            parts: list[str] = []
+            if gpu_t is not None:
+                parts.append(f"GPU {gpu_t:.0f}°C")
+            if cpu_t is not None:
+                parts.append(f"CPU {cpu_t:.0f}°C")
+            reason = ", ".join(parts)
+
+            if not waited:
+                console.print(
+                    f"  [warning]⏸  Cooling down[/warning] — {reason} "
+                    f"(limits: GPU {self.gpu_temp_limit_c:.0f}°C / "
+                    f"CPU {self.cpu_temp_limit_c:.0f}°C)"
+                )
+                waited = True
+
+            time.sleep(self._POLL_S)
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
@@ -1774,6 +1870,11 @@ class SweepConfig(BaseModel):
     min_ctx_per_slot: int = 512
     runner_type: str = "llama-bench"
     runner_params: dict[str, Any] = Field(default_factory=dict)
+
+    # Thermal / power safety limits (inter-run cooldown)
+    gpu_temp_limit_c: float = 85.0
+    cpu_temp_limit_c: float = 90.0
+    cooldown_s: float = 0.0
 
     # Populated externally by _ensure_models(); not read from TOML.
     resolved_models: list[tuple[Path, str]] = Field(default_factory=list)
@@ -2546,6 +2647,12 @@ def execute_sweep(
     srv = runner if isinstance(runner, ServerMixin) else None
     _use_server_reuse = runner.supports_server_reuse
 
+    _thermal_guard = ThermalGuard(
+        gpu_temp_limit_c=cfg.gpu_temp_limit_c,
+        cpu_temp_limit_c=cfg.cpu_temp_limit_c,
+        cooldown_s=cfg.cooldown_s,
+    )
+
     passed = failed = 0
     skipped = 0
     i = 0  # global combo counter
@@ -2614,6 +2721,11 @@ def execute_sweep(
                         "n_batch": combo.n_batch,
                         "concurrent_users": combo.concurrent_users,
                     }
+
+                    # --- Thermal guard: wait if system is too hot ---------
+                    if i > 1:
+                        _thermal_guard.wait_if_needed()
+
                     t0 = time.monotonic()
                     _power_sampler = PowerSampler()
                     _thermal_sampler = ThermalSampler()
