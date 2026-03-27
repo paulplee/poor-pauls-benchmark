@@ -1577,7 +1577,7 @@ class ThermalSampler:
 
 def _ensure_models(
     repo_id: str,
-    filename: str,
+    filename: str | list[str],
     models_dir: str | Path = "./models",
     token: str | None = None,
 ) -> list[tuple[Path, str]]:
@@ -1600,7 +1600,7 @@ def _ensure_models(
 
 def _resolve_models(
     repo_id: str,
-    filename_pattern: str,
+    filename_pattern: str | list[str],
     models_dir: str | Path = "./models",
     token: str | None = None,
 ) -> list[tuple[Path, str, bool]]:
@@ -1633,7 +1633,13 @@ def _resolve_models(
         raise
 
     repo_files_by_name: dict[str, RepoFile] = {f.rfilename: f for f in all_repo_files}
-    matches = fnmatch.filter(repo_files_by_name.keys(), filename_pattern)
+    patterns = (
+        [filename_pattern] if isinstance(filename_pattern, str) else filename_pattern
+    )
+    matches: list[str] = []
+    for pat in patterns:
+        matches.extend(fnmatch.filter(repo_files_by_name.keys(), pat))
+    matches = list(dict.fromkeys(matches))  # dedupe, preserving order
     matches = [m for m in matches if not Path(m).name.startswith("mmproj-")]
 
     if not matches:
@@ -1745,7 +1751,8 @@ class SweepConfig(BaseModel):
     """Validated representation of the ``[sweep]`` block in a sweep TOML file.
 
     ``repo_id`` / ``filename`` identify a Hugging Face GGUF model.
-    ``filename`` may be a glob pattern (e.g. ``"*Q4_K_M.gguf"``).
+    ``filename`` may be a glob pattern (e.g. ``"*Q4_K_M.gguf"``)
+    or a list of patterns / exact filenames.
 
     Example TOML::
 
@@ -1758,7 +1765,7 @@ class SweepConfig(BaseModel):
     """
 
     repo_id: str
-    filename: str
+    filename: str | list[str]
     exclude_filename: list[str] = Field(default_factory=list)
     models_dir: str = "./models"
     n_ctx: list[int]
@@ -1831,7 +1838,7 @@ class VramCliffConfig(BaseModel):
     """
 
     repo_id: str
-    filename: str
+    filename: str | list[str]
     models_dir: str = "./models"
     min_ctx: int = 2048
     max_ctx: int = 131072
@@ -1902,7 +1909,7 @@ def _make_rich_tqdm(progress: Progress) -> type:
 
 def download_model(
     repo_id: str,
-    filename_pattern: str,
+    filename_pattern: str | list[str],
     token: Optional[str] = None,
     models_dir: Optional[Path] = None,
 ) -> list[Path]:
@@ -1916,8 +1923,9 @@ def download_model(
     repo_id:
         Hugging Face repository ID, e.g. ``"unsloth/Qwen3.5-0.8B-GGUF"``.
     filename_pattern:
-        Glob pattern matched against the repo's file listing,
-        e.g. ``"*Q4_K_M.gguf"`` or ``"*.gguf"``.
+        Glob pattern (or list of patterns / exact filenames) matched against
+        the repo's file listing, e.g. ``"*Q4_K_M.gguf"``, ``"*.gguf"``,
+        or ``["model-Q4_K_M.gguf", "model-Q8_0.gguf"]``.
     token:
         Optional Hugging Face API token.  When *None* the token saved by
         ``huggingface-cli login`` (or the ``HF_TOKEN`` env-var) is used.
@@ -1962,7 +1970,13 @@ def download_model(
         raise
 
     repo_files_by_name: dict[str, RepoFile] = {f.rfilename: f for f in all_repo_files}
-    matches = fnmatch.filter(repo_files_by_name.keys(), filename_pattern)
+    patterns = (
+        [filename_pattern] if isinstance(filename_pattern, str) else filename_pattern
+    )
+    matches: list[str] = []
+    for pat in patterns:
+        matches.extend(fnmatch.filter(repo_files_by_name.keys(), pat))
+    matches = list(dict.fromkeys(matches))  # dedupe, preserving order
 
     # Silently exclude mmproj sidecar files — they are multimodal-projector
     # weights that cannot be benchmarked as standalone models.  Users
@@ -3028,7 +3042,7 @@ def vram_cliff(
     """
     # --- Load TOML defaults if a config was provided -------------------------
     al_repo_id: str | None = repo_id
-    al_filename: str | None = filename_pattern
+    al_filename: str | list[str] | None = filename_pattern
     al_models_dir: str = models_dir or "./models"
     al_min: int = 2048
     al_max: int = 131072

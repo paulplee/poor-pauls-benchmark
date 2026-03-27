@@ -45,7 +45,8 @@
 #   Hugging Face repository ID for the GGUF model.
 #
 # filename (required)
-#   GGUF filename or glob pattern matched against the repo.
+#   GGUF filename, glob pattern, or list of filenames/patterns
+#   matched against the repo.
 #
 # models_dir (optional — default: "./models")
 #   Local directory where downloaded models are stored.
@@ -54,6 +55,7 @@
 #     repo_id    = "unsloth/Qwen3.5-0.8B-GGUF"
 #     filename   = "Qwen3.5-0.8B-IQ4_XS.gguf"   # single file
 #     filename   = "*.gguf"                       # all quants
+#     filename   = ["*-Q4_K_M.gguf", "*-Q8_0.gguf"]  # specific quants
 #     models_dir = "./models"
 # -------------------------------------------------------------------
 # repo_id    = "unsloth/Qwen3.5-0.8B-GGUF"
