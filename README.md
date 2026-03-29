@@ -25,6 +25,11 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 - **Integrated Model Downloader:** Native integration with Hugging Face Hub to automatically download, cache, and verify GGUF models as part of any benchmark run.
 - **Automated Hardware Fingerprinting:** PPB automatically detects your OS, RAM, CPU architecture, and GPU details (via `pynvml` on Linux/Windows or `system_profiler` on macOS). Hardware profiles are embedded in every result record and can be viewed any time with `ppb hw-info`.
 - **Concurrent User Simulation:** Measure how latency degrades under load by setting `concurrent_users = [1, 2, 4, 8, 16, 32]` (or any values you like — there is no hard upper limit) in your sweep config. The `llama-server-loadtest` runner auto-discovers maximum sustainable concurrency.
+- **LLM Engine Detection:** Every record captures `llm_engine_name` and `llm_engine_version` (including build hashes) so results from different inference backends remain comparable.
+- **OS Distro Detection:** Automatically identifies the Linux distribution (Ubuntu, Fedora, etc.), macOS version, or Windows version alongside the kernel info.
+- **Workload Classification:** Records include `task_type`, `prompt_dataset`, `num_prompts`, and `n_predict` so readers know exactly what workload produced each result.
+- **Quality Scoring:** An optional `quality_score` field (defaults to `null`) is reserved for future output-quality evaluation.
+- **Extensible Tags:** A free-form `tags` JSON column lets you attach arbitrary metadata (CI run IDs, experiment labels, etc.) without schema changes.
 - **Stable Result Envelope:** Every JSONL record includes `runner_type`, `timestamp`, and `hardware` — so results from different runners or years apart remain comparable.
 
 ## Project Structure
@@ -401,8 +406,12 @@ Each line written to the JSONL file is a self-contained record with a **stable e
   "model": "unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf",
   "n_ctx": 8192,
   "n_batch": 512,
+  "llm_engine_name": "llama.cpp",
+  "llm_engine_version": "b5063 (58ab80c3)",
+  "task_type": "text-generation",
+  "prompt_dataset": null,
   "hardware": {
-    "os": { "system": "Linux", "release": "6.8.0", "machine": "x86_64" },
+    "os": { "system": "Linux", "release": "6.8.0", "machine": "x86_64", "distro": "Ubuntu", "distro_version": "24.04" },
     "cpu": { "model": "AMD Ryzen 9 7950X", "cores": "32" },
     "ram": { "total_gb": 63.9 },
     "gpus": [
@@ -514,6 +523,7 @@ Sample output:
 ```text
   Hardware Profile
     OS          : Linux 6.8.0  (x86_64)
+    Distro      : Ubuntu 24.04
     CPU         : AMD Ryzen 9 7950X  (32 cores)
     RAM         : 63.9 GB
     GPU [0]     : NVIDIA GeForce RTX 5090  31.8 GB VRAM  sm_120  CUDA 13.0  driver 580.126.09  600 W TDP  PCIe 5.0 x16
@@ -579,21 +589,31 @@ For a fully automated "shoot and forget" workflow, add a `[publish]` section to 
 
 ### 7. Migrate Legacy Results to the Current Schema
 
-PPB extended its result schema to add **model provenance** (`model_org`, `model_repo`) and **multi-GPU** fields (`gpu_count`, `gpu_names`, `gpu_total_vram_gb`, `split_mode`, `tensor_split`). Existing raw `.jsonl` files written before this change already contain all the data needed — only the flat `.csv` exports need to be regenerated.
+PPB extended its result schema to add **model provenance**, **multi-GPU**, **LLM engine**, **workload**, **quality**, and **OS distro** fields. Existing raw `.jsonl` files written before this change already contain all the data needed — only the flat `.csv` exports need to be regenerated.
 
 > **Note:** New runs produce the full schema automatically. This step is only needed for historical result files.
 
 #### New columns
 
-| Column              | Description                                                                     |
-| ------------------- | ------------------------------------------------------------------------------- |
-| `model_org`         | HF organisation extracted from the model path, e.g. `unsloth`                   |
-| `model_repo`        | Full HF `org/repo` string, e.g. `unsloth/Qwen3.5-2B-GGUF`                       |
-| `gpu_count`         | Number of GPUs used in the run                                                  |
-| `gpu_names`         | Comma-joined list of GPU names (`gpu_name` for single-GPU runs)                 |
-| `gpu_total_vram_gb` | Sum of VRAM across all GPUs in GB                                               |
-| `split_mode`        | llama.cpp layer-split strategy (`layer`, `row`, `none`) — `null` for single-GPU |
-| `tensor_split`      | Per-GPU VRAM weight string (e.g. `"1,1"`) — `null` for single-GPU runs          |
+| Column               | Description                                                                     |
+| -------------------- | ------------------------------------------------------------------------------- |
+| `model_org`          | HF organisation extracted from the model path, e.g. `unsloth`                   |
+| `model_repo`         | Full HF `org/repo` string, e.g. `unsloth/Qwen3.5-2B-GGUF`                       |
+| `gpu_count`          | Number of GPUs used in the run                                                  |
+| `gpu_names`          | Comma-joined list of GPU names (`gpu_name` for single-GPU runs)                 |
+| `gpu_total_vram_gb`  | Sum of VRAM across all GPUs in GB                                               |
+| `split_mode`         | llama.cpp layer-split strategy (`layer`, `row`, `none`) — `null` for single-GPU |
+| `tensor_split`       | Per-GPU VRAM weight string (e.g. `"1,1"`) — `null` for single-GPU runs          |
+| `llm_engine_name`    | Inference engine identifier, e.g. `llama.cpp`                                   |
+| `llm_engine_version` | Engine version with build hash, e.g. `b5063 (58ab80c3)`                         |
+| `os_distro`          | Linux distribution name (e.g. `Ubuntu`), or `macOS` / `Windows`                 |
+| `os_distro_version`  | Distribution version string (e.g. `24.04`, `15.5`)                              |
+| `task_type`          | Workload category, e.g. `text-generation` (backfilled for legacy runs)          |
+| `prompt_dataset`     | Dataset identifier, e.g. `sharegpt-v3` (server runners) or `null` (bench)       |
+| `num_prompts`        | Number of prompts sent per run (`null` for `llama-bench`)                        |
+| `n_predict`          | Max tokens per prompt (`null` for `llama-bench`)                                 |
+| `quality_score`      | Output quality metric — reserved for future use, defaults to `null`             |
+| `tags`               | Free-form JSON string for arbitrary metadata (e.g. `{"env": "ci"}`)             |
 
 #### Prerequisites
 

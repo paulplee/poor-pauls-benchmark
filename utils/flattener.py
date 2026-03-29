@@ -32,6 +32,9 @@ COLUMN_ORDER: list[str] = [
     "model_org",
     "model_repo",
     "runner_type",
+    # LLM engine (inference backend)
+    "llm_engine_name",
+    "llm_engine_version",
     # Hardware
     "gpu_name",
     "gpu_vram_gb",
@@ -47,6 +50,11 @@ COLUMN_ORDER: list[str] = [
     "split_mode",
     "tensor_split",
     "concurrent_users",
+    # Workload
+    "task_type",
+    "prompt_dataset",
+    "num_prompts",
+    "n_predict",
     # Performance — raw speed
     "throughput_tok_s",
     # Performance — power efficiency
@@ -66,10 +74,14 @@ COLUMN_ORDER: list[str] = [
     "avg_itl_ms",
     "p50_itl_ms",
     "p99_itl_ms",
+    # Performance — quality
+    "quality_score",
     # OS / system context
     "os_system",
     "os_release",
     "os_machine",
+    "os_distro",
+    "os_distro_version",
     "cpu_cores",
     "ram_total_gb",
     # Submission metadata
@@ -86,6 +98,8 @@ COLUMN_ORDER: list[str] = [
     "run_fingerprint",
     "result_fingerprint",
     "source_file_sha256",
+    # Extensibility
+    "tags",
 ]
 
 # raw_payload is included in the row for internal use / HF uploads,
@@ -159,6 +173,7 @@ def _compute_run_fingerprint(
     return _sha256_dict(
         {
             "runner_type": _norm(flat.get("runner_type")),
+            "llm_engine_name": _norm(flat.get("llm_engine_name")),
             "model": _norm(flat.get("model")),
             "n_ctx": flat.get("n_ctx"),
             "n_batch": flat.get("n_batch"),
@@ -346,6 +361,10 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
     fname = PurePosixPath(model).name if model else None
     base, quant = _parse_model_filename(fname)
     model_org, model_repo = _parse_model_provenance(model)
+    # Promote workload fields from results when present at top level
+    results = row.get("results") or {}
+    results_dict = results if isinstance(results, dict) else {}
+
     return {
         "timestamp": row.get("timestamp"),
         "runner_type": row.get("runner_type"),
@@ -354,11 +373,21 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         "quant": quant,
         "model_org": model_org,
         "model_repo": model_repo,
+        # LLM engine (inference backend)
+        "llm_engine_name": row.get("llm_engine_name"),
+        "llm_engine_version": row.get("llm_engine_version"),
         "n_ctx": row.get("n_ctx"),
         "n_batch": row.get("n_batch"),
         "split_mode": row.get("split_mode"),
         "tensor_split": row.get("tensor_split"),
         "concurrent_users": row.get("concurrent_users"),
+        # Workload
+        "task_type": row.get("task_type"),
+        "prompt_dataset": row.get("prompt_dataset"),
+        "num_prompts": row.get("num_prompts") or results_dict.get("num_prompts_attempted"),
+        "n_predict": row.get("n_predict") or results_dict.get("n_predict"),
+        # Quality
+        "quality_score": row.get("quality_score"),
         # Power draw measured during the run (Watts).
         # Source: NVIDIA NVML (GPU board), Linux RAPL (CPU package),
         # or macOS powermetrics (SoC). None when unavailable.
@@ -372,6 +401,8 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         "avg_fan_speed_rpm": row.get("avg_fan_speed_rpm"),
         "max_fan_speed_rpm": row.get("max_fan_speed_rpm"),
         "suite_run_id": row.get("suite_run_id"),
+        # Extensibility
+        "tags": row.get("tags"),
     }
 
 
@@ -392,6 +423,8 @@ def _extract_hardware(hw: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         "os_system": os_info.get("system"),
         "os_release": os_info.get("release"),
         "os_machine": os_info.get("machine"),
+        "os_distro": os_info.get("distro"),
+        "os_distro_version": os_info.get("distro_version"),
         "cpu_model": cpu.get("model"),
         "cpu_cores": cpu.get("cores"),
         "ram_total_gb": ram.get("total_gb"),

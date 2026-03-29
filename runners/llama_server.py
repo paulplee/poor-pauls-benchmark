@@ -22,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import re
+import shutil
 import statistics
 import subprocess
 import time
@@ -149,6 +151,35 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         # Per-run error counters (reset before each run).
         self._ctx_exceeded_count: int = 0
         self._disconnect_count: int = 0
+        self._engine_version: str | None = None
+
+    # ---- metadata -----------------------------------------------------------
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "llm_engine_name": "llama.cpp",
+            "llm_engine_version": self._engine_version,
+        }
+
+    def _detect_engine_version(self) -> str | None:
+        binary = self._cmd
+        if not shutil.which(binary):
+            return None
+        try:
+            proc = subprocess.run(
+                [binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                m = re.search(r"version:\s*(.+)", proc.stdout, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+                return proc.stdout.strip() or None
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+        return None
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -174,6 +205,9 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._split_mode = str(sm) if sm is not None else None
         mg = runner_params.get("main_gpu")
         self._main_gpu = int(mg) if mg is not None else None
+
+        # Detect engine version
+        self._engine_version = self._detect_engine_version()
 
         num_prompts = int(runner_params.get("num_prompts", 10))
         dataset_dir_str = runner_params.get("dataset_dir")

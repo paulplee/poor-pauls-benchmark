@@ -43,7 +43,10 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import re
+import shutil
 import statistics
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -122,6 +125,35 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         # Per-level error counters (reset before each level).
         self._ctx_exceeded_count: int = 0
         self._disconnect_count: int = 0
+        self._engine_version: str | None = None
+
+    # ---- metadata -----------------------------------------------------------
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "llm_engine_name": "llama.cpp",
+            "llm_engine_version": self._engine_version,
+        }
+
+    def _detect_engine_version(self) -> str | None:
+        binary = self._cmd
+        if not shutil.which(binary):
+            return None
+        try:
+            proc = subprocess.run(
+                [binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                m = re.search(r"version:\s*(.+)", proc.stdout, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+                return proc.stdout.strip() or None
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+        return None
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -185,6 +217,9 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
 
         if not self._prompts:
             log.warning("No usable prompts loaded from dataset")
+
+        # Detect engine version
+        self._engine_version = self._detect_engine_version()
 
     def run(self, config: dict[str, Any]) -> dict | None:
         """Escalate concurrency levels against a single server instance.

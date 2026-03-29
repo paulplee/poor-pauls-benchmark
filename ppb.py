@@ -122,12 +122,48 @@ class HardwareSniffer:
 
     @staticmethod
     def _detect_os() -> dict:
-        return {
+        data: dict = {
             "system": platform.system(),
             "release": platform.release(),
             "version": platform.version(),
             "machine": platform.machine(),
         }
+
+        system = data["system"]
+
+        if system == "Linux":
+            # Parse /etc/os-release for distro name and version.
+            try:
+                with open("/etc/os-release") as f:
+                    os_release: dict[str, str] = {}
+                    for line in f:
+                        line = line.strip()
+                        if "=" in line:
+                            key, _, val = line.partition("=")
+                            os_release[key] = val.strip('"')
+                    if "NAME" in os_release:
+                        data["distro"] = os_release["NAME"]
+                    if "VERSION_ID" in os_release:
+                        data["distro_version"] = os_release["VERSION_ID"]
+            except OSError:
+                pass
+        elif system == "Darwin":
+            data["distro"] = "macOS"
+            try:
+                out = subprocess.check_output(
+                    ["sw_vers", "-productVersion"], text=True, timeout=5
+                ).strip()
+                if out:
+                    data["distro_version"] = out
+            except (subprocess.SubprocessError, FileNotFoundError):
+                pass
+        elif system == "Windows":
+            data["distro"] = "Windows"
+            ver = platform.version()
+            if ver:
+                data["distro_version"] = ver
+
+        return data
 
     # -- CPU ---------------------------------------------------------------
 
@@ -2765,6 +2801,29 @@ def execute_sweep(
                             "hardware": _hw_sniffer.snapshot(),
                             "results": raw_result["results"],
                         }
+                        # LLM engine metadata from the runner
+                        _meta = runner.metadata()
+                        record["llm_engine_name"] = _meta.get("llm_engine_name")
+                        record["llm_engine_version"] = _meta.get("llm_engine_version")
+                        # Workload classification
+                        record["task_type"] = cfg.runner_params.get(
+                            "task_type", "text-generation"
+                        )
+                        record["prompt_dataset"] = cfg.runner_params.get(
+                            "prompt_dataset",
+                            "sharegpt-v3"
+                            if cfg.runner_type
+                            in ("llama-server", "llama-server-loadtest")
+                            else None,
+                        )
+                        # Tags (arbitrary JSON dict for ad-hoc metadata)
+                        _tags = cfg.runner_params.get("tags")
+                        if _tags is not None:
+                            record["tags"] = (
+                                json.dumps(_tags)
+                                if isinstance(_tags, dict)
+                                else str(_tags)
+                            )
                         # Record multi-GPU split params for provenance when set
                         for _key in (
                             "split_mode",

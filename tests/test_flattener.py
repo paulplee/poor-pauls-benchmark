@@ -25,7 +25,13 @@ from utils.flattener import (
 
 def _make_hardware():
     return {
-        "os": {"system": "Linux", "release": "6.17.0", "machine": "x86_64"},
+        "os": {
+            "system": "Linux",
+            "release": "6.17.0",
+            "machine": "x86_64",
+            "distro": "Ubuntu",
+            "distro_version": "24.04",
+        },
         "cpu": {"model": "AMD Ryzen 7 7800X3D", "cores": "16"},
         "ram": {"total_gb": 124.9},
         "gpus": [
@@ -43,7 +49,13 @@ def _make_hardware():
 def _make_dual_gpu_hardware():
     """Hardware snapshot for a dual NVIDIA GeForce RTX 4060 Ti system."""
     return {
-        "os": {"system": "Linux", "release": "6.17.0", "machine": "x86_64"},
+        "os": {
+            "system": "Linux",
+            "release": "6.17.0",
+            "machine": "x86_64",
+            "distro": "Ubuntu",
+            "distro_version": "24.04",
+        },
         "cpu": {"model": "Intel Core i9-14900K", "cores": "24"},
         "ram": {"total_gb": 64.0},
         "gpus": [
@@ -72,6 +84,9 @@ LLAMA_BENCH_ROW = {
     "model": "test-org/test-repo/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 8192,
     "n_batch": 512,
+    "llm_engine_name": "llama.cpp",
+    "llm_engine_version": "b5063 (58ab80c3)",
+    "task_type": "text-generation",
     "hardware": _make_hardware(),
     "results": [
         {
@@ -97,8 +112,15 @@ LLAMA_SERVER_ROW = {
     "model": "test-org/test-repo/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 16384,
     "n_batch": 512,
+    "llm_engine_name": "llama.cpp",
+    "llm_engine_version": "b5063 (58ab80c3)",
+    "task_type": "text-generation",
+    "prompt_dataset": "sharegpt-v3",
     "hardware": _make_hardware(),
     "results": {
+        "num_prompts_attempted": 10,
+        "num_prompts_succeeded": 10,
+        "n_predict": 256,
         "throughput_tok_s": 59.26,
         "avg_ttft_ms": 142.5,
         "p50_ttft_ms": 138.2,
@@ -115,6 +137,9 @@ LOADTEST_ROW = {
     "model": "test-org/test-repo/Qwen3.5-9B-Q8_0.gguf",
     "n_ctx": 8192,
     "n_batch": 512,
+    "llm_engine_name": "llama.cpp",
+    "task_type": "text-generation",
+    "prompt_dataset": "sharegpt-v3",
     "hardware": _make_hardware(),
     "results": {
         "error_threshold": 0.1,
@@ -569,3 +594,118 @@ class TestFileHash:
             assert compute_file_sha256(tmp_path) == expected
         finally:
             tmp_path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# New schema columns — LLM engine, workload, quality, OS distro, tags
+# ---------------------------------------------------------------------------
+
+
+class TestLlmEngine:
+    def test_engine_name_propagated(self):
+        flat = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
+        assert flat["llm_engine_name"] == "llama.cpp"
+
+    def test_engine_version_propagated(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["llm_engine_version"] == "b5063 (58ab80c3)"
+
+    def test_engine_name_defaults_to_none(self):
+        row = {**LLAMA_BENCH_ROW}
+        del row["llm_engine_name"]
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["llm_engine_name"] is None
+
+    def test_engine_version_defaults_to_none(self):
+        row = {**LLAMA_BENCH_ROW}
+        del row["llm_engine_version"]
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["llm_engine_version"] is None
+
+
+class TestOsDistro:
+    def test_distro_extracted(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["os_distro"] == "Ubuntu"
+
+    def test_distro_version_extracted(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["os_distro_version"] == "24.04"
+
+    def test_distro_none_when_missing(self):
+        hw = {**_make_hardware(), "os": {"system": "Linux", "release": "6.17.0", "machine": "x86_64"}}
+        row = {**LLAMA_SERVER_ROW, "hardware": hw}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["os_distro"] is None
+        assert flat["os_distro_version"] is None
+
+    def test_distro_none_when_no_hardware(self):
+        row = {**LLAMA_SERVER_ROW, "hardware": None}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["os_distro"] is None
+        assert flat["os_distro_version"] is None
+
+
+class TestWorkloadColumns:
+    def test_task_type_propagated(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["task_type"] == "text-generation"
+
+    def test_task_type_defaults_to_none(self):
+        row = {**LLAMA_BENCH_ROW}
+        del row["task_type"]
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["task_type"] is None
+
+    def test_prompt_dataset_propagated(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["prompt_dataset"] == "sharegpt-v3"
+
+    def test_prompt_dataset_none_for_bench(self):
+        flat = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
+        assert flat["prompt_dataset"] is None
+
+    def test_num_prompts_from_results(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["num_prompts"] == 10
+
+    def test_num_prompts_none_for_bench(self):
+        flat = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
+        assert flat["num_prompts"] is None
+
+    def test_n_predict_from_results(self):
+        flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
+        assert flat["n_predict"] == 256
+
+    def test_n_predict_none_for_bench(self):
+        flat = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
+        assert flat["n_predict"] is None
+
+
+class TestQualityScore:
+    def test_defaults_to_none(self):
+        flat = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
+        assert flat["quality_score"] is None
+
+    def test_propagated_when_present(self):
+        row = {**LLAMA_SERVER_ROW, "quality_score": 0.85}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["quality_score"] == 0.85
+
+
+class TestTags:
+    def test_defaults_to_none(self):
+        flat = flatten_benchmark_row(LLAMA_BENCH_ROW)[0]
+        assert flat["tags"] is None
+
+    def test_string_passed_through(self):
+        row = {**LLAMA_SERVER_ROW, "tags": '{"env": "ci"}'}
+        flat = flatten_benchmark_row(row)[0]
+        assert flat["tags"] == '{"env": "ci"}'
+
+    def test_dict_serialized_to_json(self):
+        row = {**LLAMA_SERVER_ROW, "tags": json.dumps({"env": "ci", "run": 42})}
+        flat = flatten_benchmark_row(row)[0]
+        parsed = json.loads(flat["tags"])
+        assert parsed["env"] == "ci"
+        assert parsed["run"] == 42

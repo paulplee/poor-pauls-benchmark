@@ -9,10 +9,13 @@ flattener.  For each row the script:
 
   1. Adds missing columns that did not exist in older schema versions
      (model_org, model_repo, gpu_count, gpu_names, gpu_total_vram_gb,
-     split_mode, tensor_split).  Values are derived from existing raw data.
+     split_mode, tensor_split, llm_engine_name, llm_engine_version,
+     os_distro, os_distro_version, task_type, prompt_dataset,
+     num_prompts, n_predict, quality_score, tags).
+     Values are derived from existing raw data where possible.
   2. Preserves columns that already exist in newer results — the flattener
      reads them from the raw JSONL record and keeps them as-is.
-  3. Resets ``schema_version`` to ``0.1.0`` on every row (the new canonical
+  3. Resets ``schema_version`` to ``0.1.0`` on every row (the canonical
      version aligned with ``benchmark_version`` / ``pyproject.toml``).
 
 The raw ``*.jsonl`` files are the source of truth and are NOT modified.
@@ -40,6 +43,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -82,6 +86,87 @@ def _write_csv(rows: list[dict], out_path: Path) -> None:
         writer.writerows(rows)
 
 
+# ---------------------------------------------------------------------------
+# Backfill helpers — enrich raw JSONL records before flattening
+# ---------------------------------------------------------------------------
+
+# Regex to parse OS distro from kernel version string.
+# Example: "#8-Ubuntu SMP PREEMPT_DYNAMIC" → "Ubuntu"
+_DISTRO_RE = re.compile(
+    r"(?i)\b(ubuntu|debian|fedora|centos|rhel|arch|suse|dgx\s*os|pop!?_os|manjaro|alpine)"
+)
+
+
+def _parse_engine_version(raw: dict) -> str | None:
+    """Extract llama.cpp version from the runtime info in the raw record.
+
+    Typical value in raw: ``"version: b5063 (58ab80c3)"``
+    Returns:              ``"b5063 (58ab80c3)"``
+    """
+    runtime = (raw.get("hardware") or {}).get("runtime") or {}
+    ver_str = runtime.get("llama_bench", "")
+    if not ver_str:
+        return None
+    m = re.search(r"version:\s*(.+)", ver_str, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return ver_str.strip() or None
+
+
+def _parse_os_distro(raw: dict) -> str | None:
+    """Best-effort extraction of OS distro from kernel version string."""
+    os_info = (raw.get("hardware") or {}).get("os") or {}
+    # If the record already has distro info (from newer runs), return as-is
+    if os_info.get("distro"):
+        return os_info["distro"]
+    # Fall back to heuristic on the version string
+    version = os_info.get("version", "")
+    system = os_info.get("system", "")
+    if system == "Darwin":
+        return "macOS"
+    if system == "Windows":
+        return "Windows"
+    m = _DISTRO_RE.search(version)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _backfill_record(raw: dict) -> dict:
+    """Inject backfill fields into a raw JSONL record before flattening.
+
+    Only sets keys that are absent — newer records that already contain
+    these fields are left untouched.
+    """
+    runner_type = raw.get("runner_type", "")
+
+    # LLM engine identity
+    if "llm_engine_name" not in raw:
+        raw["llm_engine_name"] = "llama.cpp"
+    if "llm_engine_version" not in raw:
+        raw["llm_engine_version"] = _parse_engine_version(raw)
+
+    # OS distro (inject into hardware.os so _extract_hardware picks it up)
+    os_info = (raw.get("hardware") or {}).get("os")
+    if os_info is not None and "distro" not in os_info:
+        distro = _parse_os_distro(raw)
+        if distro:
+            os_info["distro"] = distro
+        # distro_version cannot be recovered from existing data
+
+    # Task type
+    if "task_type" not in raw:
+        raw["task_type"] = "text-generation"
+
+    # Prompt dataset
+    if "prompt_dataset" not in raw:
+        if runner_type in ("llama-server", "llama-server-loadtest"):
+            raw["prompt_dataset"] = "sharegpt-v3"
+
+    # quality_score and tags default to None (handled by flattener)
+    return raw
+
+
 def migrate(results: Path, dry_run: bool) -> None:
     jsonl_files = sorted(results.glob("*.jsonl"))
     if not jsonl_files:
@@ -108,6 +193,7 @@ def migrate(results: Path, dry_run: bool) -> None:
                         file=sys.stderr,
                     )
                     continue
+                raw = _backfill_record(raw)
                 flat_rows.extend(flatten_benchmark_row(raw))
 
         csv_path = jsonl_path.with_suffix(".csv")
@@ -126,6 +212,16 @@ def migrate(results: Path, dry_run: bool) -> None:
                     "gpu_total_vram_gb",
                     "split_mode",
                     "tensor_split",
+                    "llm_engine_name",
+                    "llm_engine_version",
+                    "os_distro",
+                    "os_distro_version",
+                    "task_type",
+                    "prompt_dataset",
+                    "num_prompts",
+                    "n_predict",
+                    "quality_score",
+                    "tags",
                 )
             }
             print(f"  {jsonl_path.name}: {len(flat_rows)} row(s)")

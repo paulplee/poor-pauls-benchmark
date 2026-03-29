@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,7 @@ class LlamaBenchRunner(BaseRunner):
         self._tensor_split: str | None = None
         self._split_mode: str | None = None
         self._main_gpu: int | None = None
+        self._engine_version: str | None = None
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -65,6 +68,46 @@ class LlamaBenchRunner(BaseRunner):
         self._split_mode = str(sm) if sm is not None else None
         mg = runner_params.get("main_gpu")
         self._main_gpu = int(mg) if mg is not None else None
+
+        # Detect engine version
+        self._engine_version = self._detect_engine_version()
+
+    # ---- metadata -----------------------------------------------------------
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "llm_engine_name": "llama.cpp",
+            "llm_engine_version": self._engine_version,
+        }
+
+    @staticmethod
+    def _parse_version_string(text: str) -> str | None:
+        """Extract version + build hash from ``llama-bench --version`` output.
+
+        Typical output: ``version: b5063 (58ab80c3)``
+        Returns:        ``"b5063 (58ab80c3)"``
+        """
+        m = re.search(r"version:\s*(.+)", text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+        return text.strip() or None
+
+    def _detect_engine_version(self) -> str | None:
+        binary = self._cmd
+        if not shutil.which(binary):
+            return None
+        try:
+            proc = subprocess.run(
+                [binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return self._parse_version_string(proc.stdout)
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+        return None
 
     def run(self, config: dict[str, Any]) -> dict | None:
         """Run ``llama-bench`` for one (model, n_ctx, n_batch) combo.

@@ -64,6 +64,19 @@ class BaseRunner(ABC):
 
     # ---- optional capabilities ----------------------------------------------
 
+    def metadata(self) -> dict[str, Any]:
+        """Return engine metadata for the result envelope.
+
+        Override in subclasses to provide the inference engine name and
+        version.  The orchestrator merges this into every JSONL record.
+
+        Returns
+        -------
+        dict
+            ``{"llm_engine_name": str, "llm_engine_version": str | None}``
+        """
+        return {"llm_engine_name": "unknown", "llm_engine_version": None}
+
     def probe_ctx(self, model_path: Path, n_ctx: int) -> bool:
         """Return *True* if *model_path* can allocate a KV cache of *n_ctx*.
 
