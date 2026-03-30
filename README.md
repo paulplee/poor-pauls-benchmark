@@ -569,10 +569,13 @@ Flatten your raw JSONL results to a local CSV and optionally upload to the centr
 
 ```bash
 # Step 1 — flatten to a local CSV (review in Excel first)
-python ppb.py publish --results results/my_run.jsonl
+python ppb.py publish results/my_run.jsonl
 
-# Step 2 — when you’re happy, upload to the leaderboard
-python ppb.py publish --results results/my_run.jsonl --upload
+# Step 2 — when you're happy, upload to the leaderboard
+python ppb.py publish results/my_run.jsonl --upload
+
+# Publish all JSONL files at once
+python ppb.py publish results/*.jsonl --upload
 ```
 
 The CSV is written alongside the input file (e.g. `results/my_run.csv`).
@@ -655,12 +658,17 @@ Re-run without --dry-run to overwrite CSV files.
 
 #### Re-publish to Hugging Face
 
-After verifying the regenerated CSVs look correct, delete the old data from the HF dataset and re-upload everything:
+After verifying the regenerated CSVs look correct, back up the existing HF dataset, wipe the old data, and re-upload everything:
 
 ```bash
-# 1. Delete all files in paulplee/ppb-results/data/ via the HF web UI, then:
+# 1. Back up the existing HF dataset locally before wiping
+uv run scripts/download_hf_dataset.py
+# Downloads to results/hf-backup/ by default. Custom destination:
+# uv run scripts/download_hf_dataset.py --local-dir results/my-backup
 
-# 2. Publish all JSONL files in one command (shell glob expands to a list)
+# 2. Delete all files in paulplee/ppb-results/data/ via the HF web UI, then:
+
+# 3. Publish all JSONL files in one command (shell glob expands to a list)
 uv run ppb.py publish results/*.jsonl --upload
 
 # Or with an explicit token if HF_TOKEN is not set in your environment
@@ -668,6 +676,14 @@ uv run ppb.py publish results/*.jsonl --upload --token $HF_TOKEN
 ```
 
 PPB batches all matching files into a single upload session.
+
+##### `download_hf_dataset.py` options
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--repo-id` | `paulplee/ppb-results` | HF dataset repo to download |
+| `--local-dir` | `results/hf-backup` | Local destination directory |
+| `--token` | _(env / cached)_ | HF API token (falls back to `HF_TOKEN` env var or cached `huggingface-cli login`) |
 
 #### Cleanup
 
@@ -819,7 +835,7 @@ python ppb.py all suites/my_gpu.toml   # add [publish] section to auto-upload
 Or manually:
 
 1. Run a benchmark sweep: `python ppb.py all suites/my_gpu.toml`.
-2. Publish your results: `python ppb.py publish --results results/my_run.jsonl --upload`.
+2. Publish your results: `python ppb.py publish results/my_run.jsonl --upload`.
 
 You can also open an Issue titled "Benchmark Submission: [Your Hardware]" and attach your results file.
 
