@@ -12,6 +12,7 @@ that the orchestrator correctly:
 from __future__ import annotations
 
 import json
+import struct
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +21,7 @@ import pytest
 
 from runners import _REGISTRY, register_runner
 from tests.conftest import FakeRunner
+from tests.test_gguf_metadata import write_synthetic_gguf, _T_STRING, _T_UINT64
 
 
 # ---------------------------------------------------------------------------
@@ -1602,3 +1604,263 @@ class TestThermalFlattener:
         assert row["avg_gpu_temp_c"] is None
         assert row["avg_cpu_temp_c"] is None
         assert row["avg_fan_speed_rpm"] is None
+
+
+# ==========================================================================
+# VRAM pre-flight check
+# ==========================================================================
+
+
+def _make_gguf_model(tmp_path: Path, name: str = "model.gguf") -> Path:
+    """Create a synthetic GGUF file that the VRAM estimator can read."""
+    p = tmp_path / name
+    write_synthetic_gguf(
+        p,
+        [
+            ("general.architecture", _T_STRING, "llama"),
+            ("general.size_label", _T_STRING, "2B"),
+            ("llama.context_length", _T_UINT64, 8192),
+            ("llama.embedding_length", _T_UINT64, 2048),
+            ("llama.block_count", _T_UINT64, 24),
+            ("llama.attention.head_count", _T_UINT64, 16),
+            ("llama.attention.head_count_kv", _T_UINT64, 4),
+        ],
+    )
+    return p
+
+
+class TestPreflightVramCheck:
+    """Tests for _preflight_vram_check and helpers."""
+
+    def test_no_warnings_when_vram_sufficient(self, tmp_path: Path) -> None:
+        from ppb import SweepConfig, _preflight_vram_check
+
+        model = _make_gguf_model(tmp_path)
+        cfg = SweepConfig(
+            runner_type="fake",
+            repo_id="test/repo",
+            filename="*.gguf",
+            n_ctx=[512],
+            n_batch=[256],
+            concurrent_users=[1],
+            resolved_models=[(model, "test/repo/model.gguf")],
+        )
+        # 100 GB of VRAM — plenty for a tiny model
+        warnings = _preflight_vram_check(
+            cfg.resolved_models, cfg, gpu_vram_bytes=100 * 1024**3
+        )
+        assert warnings == []
+
+    def test_warns_when_vram_insufficient(self, tmp_path: Path) -> None:
+        from ppb import VramWarning, _preflight_vram_check, SweepConfig
+
+        model = _make_gguf_model(tmp_path)
+        cfg = SweepConfig(
+            runner_type="fake",
+            repo_id="test/repo",
+            filename="*.gguf",
+            n_ctx=[131072],
+            n_batch=[256],
+            concurrent_users=[32],
+            resolved_models=[(model, "test/repo/model.gguf")],
+        )
+        # Tiny VRAM to force a warning
+        warnings = _preflight_vram_check(
+            cfg.resolved_models, cfg, gpu_vram_bytes=1 * 1024**3
+        )
+        assert len(warnings) == 1
+        w = warnings[0]
+        assert isinstance(w, VramWarning)
+        assert w.model_path == model
+        assert w.worst_n_ctx == 131072
+        assert w.worst_users == 32
+        assert w.estimated_vram_bytes > w.available_vram_bytes
+
+    def test_suggests_smaller_ctx(self, tmp_path: Path) -> None:
+        from ppb import _preflight_vram_check, SweepConfig
+
+        model = _make_gguf_model(tmp_path)
+        cfg = SweepConfig(
+            runner_type="fake",
+            repo_id="test/repo",
+            filename="*.gguf",
+            n_ctx=[512, 8192, 131072],
+            n_batch=[256],
+            concurrent_users=[1],
+            resolved_models=[(model, "test/repo/model.gguf")],
+        )
+        # Give enough VRAM for 8192 but not 131072
+        from utils.gguf_metadata import estimate_total_vram_bytes, read_gguf_metadata
+
+        meta = read_gguf_metadata(model)
+        est_8k = estimate_total_vram_bytes(meta, n_ctx=8192, n_parallel=1)
+        # Provide VRAM so 8K fits inside the 90% safety factor but 128K doesn't.
+        # Need: est_8k <= vram * 0.9  ⟹  vram >= est_8k / 0.9
+        vram = int(est_8k / 0.9 * 1.05)
+
+        warnings = _preflight_vram_check(
+            cfg.resolved_models, cfg, gpu_vram_bytes=vram
+        )
+        assert len(warnings) == 1
+        assert warnings[0].suggested_max_ctx == 8192
+
+    def test_skips_invalid_gguf(self, tmp_path: Path) -> None:
+        from ppb import _preflight_vram_check, SweepConfig
+
+        model = tmp_path / "bad.gguf"
+        model.write_bytes(b"\x00" * 64)
+        cfg = SweepConfig(
+            runner_type="fake",
+            repo_id="test/repo",
+            filename="*.gguf",
+            n_ctx=[131072],
+            n_batch=[256],
+            concurrent_users=[32],
+            resolved_models=[(model, "test/repo/bad.gguf")],
+        )
+        # Should not crash, just returns empty
+        warnings = _preflight_vram_check(
+            cfg.resolved_models, cfg, gpu_vram_bytes=1 * 1024**3
+        )
+        assert warnings == []
+
+    def test_skips_when_no_vram_info(self, tmp_path: Path) -> None:
+        from ppb import _preflight_vram_check, SweepConfig
+
+        model = _make_gguf_model(tmp_path)
+        cfg = SweepConfig(
+            runner_type="fake",
+            repo_id="test/repo",
+            filename="*.gguf",
+            n_ctx=[131072],
+            n_batch=[256],
+            concurrent_users=[32],
+            resolved_models=[(model, "test/repo/model.gguf")],
+        )
+        warnings = _preflight_vram_check(
+            cfg.resolved_models, cfg, gpu_vram_bytes=None
+        )
+        assert warnings == []
+
+    def test_apply_vram_caps(self, tmp_path: Path) -> None:
+        from ppb import VramWarning, _apply_vram_caps
+
+        model = tmp_path / "model.gguf"
+        w = VramWarning(
+            model_path=model,
+            model_name="model.gguf",
+            file_size_bytes=1_000_000,
+            worst_n_ctx=131072,
+            worst_users=32,
+            estimated_vram_bytes=50 * 1024**3,
+            available_vram_bytes=24 * 1024**3,
+            suggested_max_ctx=8192,
+        )
+        caps = _apply_vram_caps([w])
+        assert caps == {model: 8192}
+
+    def test_apply_vram_caps_zero_when_nothing_fits(self, tmp_path: Path) -> None:
+        from ppb import VramWarning, _apply_vram_caps
+
+        model = tmp_path / "model.gguf"
+        w = VramWarning(
+            model_path=model,
+            model_name="model.gguf",
+            file_size_bytes=1_000_000,
+            worst_n_ctx=131072,
+            worst_users=32,
+            estimated_vram_bytes=50 * 1024**3,
+            available_vram_bytes=1 * 1024**3,
+            suggested_max_ctx=None,
+        )
+        caps = _apply_vram_caps([w])
+        assert caps == {model: 0}
+
+    def test_sweep_with_autocap(self, tmp_path: Path) -> None:
+        """Full integration: sweep with preflight auto-cap via 'a' choice."""
+        from ppb import execute_sweep
+
+        model = _make_gguf_model(tmp_path)
+        cfg_file = tmp_path / "sweep.toml"
+        cfg_file.write_text(textwrap.dedent(f"""\
+            [sweep]
+            runner_type = "fake"
+            repo_id = "test-org/test-repo"
+            filename = "{model.name}"
+            models_dir = "{model.parent}"
+            n_ctx = [512, 131072]
+            n_batch = [256]
+            concurrent_users = [1]
+        """))
+
+        results = tmp_path / "results.jsonl"
+        with (
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(model)),
+            patch("ppb._detect_total_gpu_vram", return_value=1 * 1024**3),
+            patch("ppb.Prompt.ask", return_value="a"),
+        ):
+            execute_sweep(results_file=results, config_path=cfg_file)
+
+        # With auto-cap, the 131072 combo should be skipped.
+        lines = results.read_text().strip().splitlines()
+        ctxs = [json.loads(l)["n_ctx"] for l in lines]
+        assert 131072 not in ctxs
+        assert 512 in ctxs
+
+    def test_sweep_with_quit(self, tmp_path: Path) -> None:
+        """Preflight quit aborts before any benchmarks run."""
+        from click.exceptions import Exit as ClickExit
+
+        from ppb import execute_sweep
+
+        model = _make_gguf_model(tmp_path)
+        cfg_file = tmp_path / "sweep.toml"
+        cfg_file.write_text(textwrap.dedent(f"""\
+            [sweep]
+            runner_type = "fake"
+            repo_id = "test-org/test-repo"
+            filename = "{model.name}"
+            models_dir = "{model.parent}"
+            n_ctx = [131072]
+            n_batch = [256]
+            concurrent_users = [32]
+        """))
+
+        results = tmp_path / "results.jsonl"
+        with (
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(model)),
+            patch("ppb._detect_total_gpu_vram", return_value=1 * 1024**3),
+            patch("ppb.Prompt.ask", return_value="q"),
+            pytest.raises(ClickExit),
+        ):
+            execute_sweep(results_file=results, config_path=cfg_file)
+
+        # Nothing should have been written
+        assert not results.exists()
+
+    def test_sweep_proceeds_without_warning(self, tmp_path: Path) -> None:
+        """When VRAM is sufficient, no prompt is shown and sweep runs."""
+        from ppb import execute_sweep
+
+        model = _make_gguf_model(tmp_path)
+        cfg_file = tmp_path / "sweep.toml"
+        cfg_file.write_text(textwrap.dedent(f"""\
+            [sweep]
+            runner_type = "fake"
+            repo_id = "test-org/test-repo"
+            filename = "{model.name}"
+            models_dir = "{model.parent}"
+            n_ctx = [512]
+            n_batch = [256]
+            concurrent_users = [1]
+        """))
+
+        results = tmp_path / "results.jsonl"
+        with (
+            patch("ppb._ensure_models", side_effect=_mock_ensure_models(model)),
+            patch("ppb._detect_total_gpu_vram", return_value=100 * 1024**3),
+        ):
+            execute_sweep(results_file=results, config_path=cfg_file)
+
+        lines = results.read_text().strip().splitlines()
+        assert len(lines) == 1

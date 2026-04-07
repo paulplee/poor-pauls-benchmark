@@ -48,6 +48,7 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
+from rich.prompt import Prompt
 from rich.theme import Theme
 
 from datasets import download_dataset
@@ -55,6 +56,11 @@ from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
 from runners._server_mixin import ServerMixin
 from utils.flattener import compute_file_sha256, flatten_benchmark_row
+from utils.gguf_metadata import (
+    estimate_kv_cache_bytes,
+    estimate_total_vram_bytes,
+    read_gguf_metadata,
+)
 from utils.publisher import check_hf_token, publish_to_hf
 
 # ---------------------------------------------------------------------------
@@ -2278,6 +2284,21 @@ def _write_result(record: dict, results_file: Path) -> None:
 _load_time_cache: dict[Path, float] = {}
 
 
+def _get_llamacpp_version() -> str:
+    """Return the llama.cpp build number, or '?' if unavailable."""
+    try:
+        proc = subprocess.run(
+            ["llama-server", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in proc.stdout.splitlines() + proc.stderr.splitlines():
+            if "version:" in line.lower():
+                return line.split("version:")[-1].strip().split()[0]
+    except Exception:  # noqa: BLE001
+        pass
+    return "?"
+
+
 def _estimate_model_load_time(model_path: Path, init_overhead_s: float = 30.0) -> float:
     """Estimate how long it takes to load *model_path* into GPU memory.
 
@@ -2397,6 +2418,63 @@ def execute_vram_cliff(
     iteration = 0
 
     model_name = model_path.name
+
+    # --- Early sanity check: can the model load at all? ---
+    # Probe at min_ctx before entering the binary search.  If even the
+    # minimum context fails, the model can't be loaded — report the real
+    # error instead of fruitlessly binary-searching down.
+    console.print(f"\n  Sanity check: probing {model_name} at n_ctx={min_ctx:,} …")
+    t0 = time.monotonic()
+    try:
+        sanity_ok = runner.probe_ctx(model_path, min_ctx)
+    except TimeoutError:
+        sanity_ok = False
+    sanity_elapsed = time.monotonic() - t0
+
+    if not sanity_ok:
+        error_hint = getattr(runner, "last_probe_error", "") or ""
+        # Look for well-known non-OOM errors in the server message.
+        error_lower = error_hint.lower()
+        if "unknown model architecture" in error_lower:
+            arch_match = error_lower.split("unknown model architecture:")
+            arch_name = arch_match[-1].strip().strip("'\"") if len(arch_match) > 1 else "?"
+            console.print(
+                f"  [bold red]✗ Model architecture {arch_name!r} is not supported "
+                f"by the installed llama.cpp (build {_get_llamacpp_version()}).[/bold red]\n"
+                f"  Upgrade llama.cpp to a version that supports this architecture.\n"
+            )
+        elif sanity_elapsed < 3.0:
+            # Crash in < 3s is almost certainly not OOM — it's a load failure.
+            console.print(
+                f"  [bold red]✗ Model failed to load at minimum context "
+                f"(n_ctx={min_ctx:,}) in {sanity_elapsed:.1f}s — "
+                f"this is not OOM.[/bold red]"
+            )
+            if error_hint:
+                # Print first 3 meaningful lines of stderr.
+                lines = [l.strip() for l in error_hint.splitlines() if l.strip()]
+                for line in lines[:5]:
+                    console.print(f"    {line}")
+            console.print()
+        else:
+            console.print(
+                f"  [bold red]✗ Cannot load model at minimum context "
+                f"(n_ctx={min_ctx:,}).[/bold red]"
+            )
+            if error_hint:
+                lines = [l.strip() for l in error_hint.splitlines() if l.strip()]
+                for line in lines[:5]:
+                    console.print(f"    {line}")
+            console.print()
+
+        if srv is not None:
+            srv._health_timeout = original_timeout
+        runner.teardown()
+        return 0
+
+    console.print(f"  [success]✓ Model loads OK at n_ctx={min_ctx:,}[/success]")
+    last_good = min_ctx
+    lo = min_ctx + 1  # min_ctx already known good — start search above it
     console.print()
 
     with Progress(
@@ -2490,6 +2568,165 @@ def _read_lines_from(path: Path, start: int) -> list[str]:
             if i >= start:
                 lines.append(line)
     return lines
+
+
+# ---------------------------------------------------------------------------
+# VRAM pre-flight check
+# ---------------------------------------------------------------------------
+
+_VRAM_SAFETY_FACTOR = 0.90  # flag when estimate > 90% of total VRAM
+
+
+@dataclass
+class VramWarning:
+    """One per model that may exceed available VRAM."""
+
+    model_path: Path
+    model_name: str
+    file_size_bytes: int
+    worst_n_ctx: int
+    worst_users: int
+    estimated_vram_bytes: int
+    available_vram_bytes: int
+    suggested_max_ctx: int | None  # largest n_ctx that fits, or None
+
+
+def _preflight_vram_check(
+    resolved_models: list[tuple[Path, str]],
+    cfg: "SweepConfig",
+    gpu_vram_bytes: int | None = None,
+) -> list[VramWarning]:
+    """Check whether the sweep config risks OOM for any model.
+
+    Reads GGUF metadata from each model file to estimate VRAM needs at
+    the most aggressive combo (max n_ctx × max concurrent_users).
+    Compares against available GPU VRAM.
+
+    Parameters
+    ----------
+    resolved_models:
+        List of ``(local_path, hf_id)`` pairs.
+    cfg:
+        The sweep configuration (used for n_ctx, concurrent_users).
+    gpu_vram_bytes:
+        Total GPU VRAM in bytes.  When *None*, attempts auto-detection
+        via NVML.
+
+    Returns
+    -------
+    list[VramWarning]
+        One entry per model that is likely to exceed available VRAM.
+        Empty list means all models should fit.
+    """
+    if gpu_vram_bytes is None:
+        gpu_vram_bytes = _detect_total_gpu_vram()
+    if gpu_vram_bytes is None or gpu_vram_bytes == 0:
+        return []  # can't check without VRAM info
+
+    max_ctx = max(cfg.n_ctx)
+    max_users = max(cfg.concurrent_users)
+
+    warnings: list[VramWarning] = []
+    for model_path, hf_id in resolved_models:
+        if not model_path.exists():
+            continue
+        try:
+            meta = read_gguf_metadata(model_path)
+        except (ValueError, EOFError, OSError):
+            continue  # skip unreadable / non-GGUF files silently
+
+        estimated = estimate_total_vram_bytes(meta, n_ctx=max_ctx, n_parallel=max_users)
+        if estimated is None:
+            continue
+
+        if estimated > gpu_vram_bytes * _VRAM_SAFETY_FACTOR:
+            # Find the largest n_ctx from the sweep list that fits.
+            suggested: int | None = None
+            for ctx in sorted(cfg.n_ctx, reverse=True):
+                est = estimate_total_vram_bytes(meta, n_ctx=ctx, n_parallel=max_users)
+                if est is not None and est <= gpu_vram_bytes * _VRAM_SAFETY_FACTOR:
+                    suggested = ctx
+                    break
+
+            warnings.append(
+                VramWarning(
+                    model_path=model_path,
+                    model_name=Path(hf_id).name if "/" in hf_id else hf_id,
+                    file_size_bytes=meta.file_size_bytes,
+                    worst_n_ctx=max_ctx,
+                    worst_users=max_users,
+                    estimated_vram_bytes=estimated,
+                    available_vram_bytes=gpu_vram_bytes,
+                    suggested_max_ctx=suggested,
+                ),
+            )
+
+    return warnings
+
+
+def _detect_total_gpu_vram() -> int | None:
+    """Return total VRAM across all GPUs, in bytes, or None if unavailable."""
+    try:
+        import pynvml  # type: ignore[import-untyped]
+
+        pynvml.nvmlInit()
+        total = 0
+        for i in range(pynvml.nvmlDeviceGetCount()):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            total += pynvml.nvmlDeviceGetMemoryInfo(handle).total
+        pynvml.nvmlShutdown()
+        return total if total > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _print_vram_warnings(warnings: list[VramWarning]) -> None:
+    """Print a Rich table summarising VRAM warnings."""
+    from rich.table import Table
+
+    table = Table(
+        title="⚠  VRAM Pre-Flight Check",
+        show_header=True,
+        header_style="bold yellow",
+    )
+    table.add_column("Model", style="bold")
+    table.add_column("File Size", justify="right")
+    table.add_column("Est. VRAM\n(worst combo)", justify="right")
+    table.add_column("Available", justify="right")
+    table.add_column("Status")
+    table.add_column("Suggested\nmax n_ctx", justify="right")
+
+    for w in warnings:
+        file_gb = w.file_size_bytes / (1024**3)
+        est_gb = w.estimated_vram_bytes / (1024**3)
+        avail_gb = w.available_vram_bytes / (1024**3)
+        suggested = f"{w.suggested_max_ctx:,}" if w.suggested_max_ctx else "—"
+        table.add_row(
+            w.model_name,
+            f"{file_gb:.1f} GB",
+            f"{est_gb:.1f} GB",
+            f"{avail_gb:.1f} GB",
+            "[bold red]OOM likely[/bold red]",
+            suggested,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def _apply_vram_caps(
+    warnings: list[VramWarning],
+) -> dict[Path, int]:
+    """Build ``max_ctx_caps`` from preflight warnings."""
+    caps: dict[Path, int] = {}
+    for w in warnings:
+        if w.suggested_max_ctx is not None:
+            caps[w.model_path] = w.suggested_max_ctx
+        else:
+            # No safe n_ctx found — cap at 0 to skip the model entirely.
+            caps[w.model_path] = 0
+    return caps
 
 
 def execute_sweep(
@@ -2590,6 +2827,32 @@ def execute_sweep(
                 "[error]All models were excluded — nothing to benchmark.[/error]"
             )
             raise typer.Exit(code=1)
+
+    # --- VRAM pre-flight check -------------------------------------------
+    vram_warnings = _preflight_vram_check(cfg.resolved_models, cfg)
+    if vram_warnings:
+        _print_vram_warnings(vram_warnings)
+        choice = Prompt.ask(
+            "[bold yellow]Action?[/bold yellow]  "
+            "[bold]a[/bold]uto-cap n_ctx  |  "
+            "[bold]p[/bold]roceed anyway  |  "
+            "[bold]q[/bold]uit",
+            choices=["a", "p", "q"],
+            default="a",
+        )
+        if choice == "q":
+            raise typer.Exit(code=0)
+        if choice == "a":
+            auto_caps = _apply_vram_caps(vram_warnings)
+            if max_ctx_caps is None:
+                max_ctx_caps = auto_caps
+            else:
+                # Merge: keep the tighter cap for each model.
+                for path, cap in auto_caps.items():
+                    if path in max_ctx_caps:
+                        max_ctx_caps[path] = min(max_ctx_caps[path], cap)
+                    else:
+                        max_ctx_caps[path] = cap
 
     combos = cfg.combos()
 

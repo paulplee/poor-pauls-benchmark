@@ -203,11 +203,13 @@ class LlamaBenchRunner(BaseRunner):
 
         if proc.returncode != 0:
             log.debug("probe_ctx n_ctx=%d — exit %d", n_ctx, proc.returncode)
+            self.last_probe_error = (proc.stderr or proc.stdout or "")[:500]
             return False
 
         combined = (proc.stdout + proc.stderr).lower()
         if any(marker in combined for marker in self.OOM_MARKERS):
             log.debug("probe_ctx n_ctx=%d — OOM marker found in output", n_ctx)
+            self.last_probe_error = "OOM marker in output"
             return False
 
         return True

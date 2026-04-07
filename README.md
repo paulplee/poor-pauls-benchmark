@@ -46,6 +46,7 @@ runners/
 utils/
   __init__.py          # Package init
   flattener.py         # Normalize nested JSONL → flat, Arrow-friendly dicts
+  gguf_metadata.py     # Read GGUF header metadata for VRAM pre-flight checks
   publisher.py         # Upload flattened results to HF leaderboard repo
 datasets/
   __init__.py          # Dataset download & loading helpers
@@ -56,12 +57,15 @@ tests/
   test_runners.py      # Runner ABC, registry, and LlamaBenchRunner tests
   test_llama_server.py # LlamaServerRunner, SSE parsing, dataset tests
   test_config.py       # SweepConfig, BenchCombo, _write_result tests
-  test_orchestration.py # Sweep & vram-cliff integration tests
+  test_orchestration.py # Sweep, vram-cliff, & VRAM preflight tests
+  test_gguf_metadata.py # GGUF header parser & VRAM estimation tests
 suites/
   suite.example.toml   # Starter benchmark suite (copy → suites/my_gpu.toml)
   .gitignore           # Ignores user suite files, keeps examples
 results/               # Benchmark output directory (gitignored)
   results.jsonl        # ← files land here automatically
+docs/
+  building-llama-cpp.md # How to build and upgrade llama.cpp
 ```
 
 ## Installation
@@ -84,7 +88,9 @@ uv sync
 
 > **NVIDIA GPU detection:** `pynvml` is included in the dependencies and will be installed automatically. If no NVIDIA hardware is present it is simply unused. On systems without `pynvml`, PPB falls back to parsing `nvidia-smi` output.
 
-You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`).
+You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`). See **[Building and Upgrading llama.cpp](docs/building-llama-cpp.md)** for step-by-step instructions.
+
+> **llama.cpp version:** Build **b8688+** is recommended. Older builds may lack support for newer model architectures (e.g. Gemma 4 requires ≥ b8688). PPB will detect unsupported architectures and report a clear error instead of silently failing.
 
 > **Conversational dataset:** The `llama-server` runner uses real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) (~700 MB) by default. It is downloaded automatically on the first `llama-server` run, or you can pre-fetch it with `python ppb.py download-dataset`. You can also point to any HF-hosted dataset with `--repo` and `--filename` — see [§2](#2-run-a-parameter-sweep) for details.
 
@@ -137,11 +143,12 @@ When driven by a TOML file, CLI flags override TOML values.
 #### How it works
 
 1. Instantiates the requested runner via the registry.
-2. Sets `lo = min_ctx`, `hi = max_ctx`.
-3. Probes the midpoint `mid = (lo + hi) / 2` by calling `runner.probe_ctx()` (for llama-bench this runs with `-n 0`, allocation-only).
-4. **Pass** (no OOM) → `lo = mid + 1`, records `mid` as the last known-good value.
-5. **Fail** (non-zero exit code, or output contains `"out of memory"` / `"bad alloc"` / etc.) → `hi = mid - 1`.
-6. Stops when `hi - lo < tolerance` and prints the largest safe context size.
+2. **Sanity check:** Probes `min_ctx` first. If even the minimum context fails, PPB aborts immediately with the real error (e.g. "unknown model architecture") instead of binary-searching down to nothing.
+3. Sets `lo = min_ctx`, `hi = max_ctx`.
+4. Probes the midpoint `mid = (lo + hi) / 2` by calling `runner.probe_ctx()` (for llama-bench this runs with `-n 0`, allocation-only).
+5. **Pass** (no OOM) → `lo = mid + 1`, records `mid` as the last known-good value.
+6. **Fail** (non-zero exit code, or output contains `"out of memory"` / `"bad alloc"` / etc.) → `hi = mid - 1`.
+7. Stops when `hi - lo < tolerance` and prints the largest safe context size.
 
 Sample output (each iteration shows per-probe duration):
 
@@ -473,8 +480,9 @@ The `--results` CLI flag always takes priority over the TOML value.
 The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish** into a single invocation:
 
 1. **Phase 1 — vram-cliff:** Discovers the max safe context window for each model.
-2. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1.
-3. **Phase 3 — publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
+2. **Phase 1.5 — VRAM pre-flight check:** Before sweeping, PPB reads GGUF metadata from each model and estimates worst-case VRAM usage (max `n_ctx` × max `concurrent_users`). If any model is likely to OOM, a warning table is shown and you can choose to **a**uto-cap `n_ctx`, **p**roceed anyway, or **q**uit.
+3. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1 (or the auto-cap from Phase 1.5).
+4. **Phase 3 — publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
 
 ```bash
 python ppb.py all suites/my_gpu.toml
@@ -819,7 +827,7 @@ custom_option = "value"
 | `setup(runner_params)`                | ✅       | Called once before the sweep. Receives `[sweep.runner_params]` from TOML.                                                                                                |
 | `run(config) → dict \| None`          | ✅       | Execute one benchmark. `config` always has `"model_path"`. Return `{"results": ...}` or `None` on failure. Must NOT write files — the orchestrator handles JSONL output. |
 | `teardown()`                          | ✅       | Called once after the sweep (guaranteed via `try/finally`).                                                                                                              |
-| `probe_ctx(model_path, n_ctx) → bool` | Optional | Override to support `vram-cliff`. Default raises `NotImplementedError`.                                                                                                  |
+| `probe_ctx(model_path, n_ctx) → bool` | Optional | Override to support `vram-cliff`. Default raises `NotImplementedError`. When returning `False`, set `self.last_probe_error` to the stderr/error message for diagnostics. |
 
 ## Contributing to the Leaderboard
 

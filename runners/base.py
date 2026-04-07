@@ -77,12 +77,21 @@ class BaseRunner(ABC):
         """
         return {"llm_engine_name": "unknown", "llm_engine_version": None}
 
+    # Populated by probe_ctx when it returns False — contains the
+    # server stderr or error message from the failed probe, if available.
+    last_probe_error: str = ""
+
     def probe_ctx(self, model_path: Path, n_ctx: int) -> bool:
         """Return *True* if *model_path* can allocate a KV cache of *n_ctx*.
 
         Override this in runners that support OOM probing.  The default
         implementation raises :exc:`NotImplementedError` so callers get a
         clear message when a runner does not support ``vram-cliff``.
+
+        When returning *False*, implementations should set
+        :attr:`last_probe_error` to the stderr / error message from the
+        failed attempt so callers (e.g. ``execute_vram_cliff``) can
+        report the real cause.
         """
         raise NotImplementedError(
             f"Runner {self.runner_type!r} does not support context-size probing."

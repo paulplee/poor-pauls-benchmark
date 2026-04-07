@@ -309,7 +309,8 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         """Delegate to standard server start/stop probe."""
         try:
             proc = self.start_server(model_path, n_ctx)
-        except (TimeoutError, OSError):
+        except (TimeoutError, OSError) as exc:
+            self.last_probe_error = str(exc)
             return False
         else:
             self.stop_server(proc)

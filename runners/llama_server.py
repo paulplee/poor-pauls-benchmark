@@ -736,7 +736,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             proc = self.start_server(model_path, n_ctx)
         except TimeoutError:
             raise  # server alive but not healthy — let caller decide
-        except OSError:
+        except OSError as exc:
+            self.last_probe_error = str(exc)
             return False  # genuine crash (OOM or bad model)
         else:
             self.stop_server(proc)
