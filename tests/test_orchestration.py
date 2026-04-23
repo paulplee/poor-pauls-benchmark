@@ -78,10 +78,12 @@ def _mock_ensure_models(tmp_model: Path):
 def _mock_resolve_models(tmp_model: Path):
     """Return a mock side_effect for ``ppb._resolve_models``.
 
-    Returns 3-tuples ``(path, hf_id, needs_download)`` where the model
-    is already cached (``needs_download=False``).
+    Returns 4-tuples ``(path, hf_id, needs_download, expected_size)`` where
+    the model is already cached (``needs_download=False``).
     """
-    return lambda *a, **kw: [(tmp_model, f"test-org/test-repo/{tmp_model.name}", False)]
+    return lambda *a, **kw: [
+        (tmp_model, f"test-org/test-repo/{tmp_model.name}", False, None)
+    ]
 
 
 # ==========================================================================

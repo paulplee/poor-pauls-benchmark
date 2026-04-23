@@ -1741,11 +1741,13 @@ def _resolve_models(
     filename_pattern: str | list[str],
     models_dir: str | Path = "./models",
     token: str | None = None,
-) -> list[tuple[Path, str, bool]]:
+) -> list[tuple[Path, str, bool, int | None]]:
     """Resolve model files without downloading.
 
-    Returns ``(local_path, hf_id, needs_download)`` for each matched file.
-    Files already present with correct size are marked as cached.
+    Returns ``(local_path, hf_id, needs_download, expected_size)`` for each
+    matched file.  Files already present with correct size are marked as
+    cached.  ``expected_size`` is the byte size reported by the Hugging Face
+    repo metadata (``None`` if unknown).
     """
     dest = Path(models_dir).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
@@ -1786,7 +1788,7 @@ def _resolve_models(
             f"Available files: {list(repo_files_by_name.keys())}"
         )
 
-    result: list[tuple[Path, str, bool]] = []
+    result: list[tuple[Path, str, bool, int | None]] = []
     for fname in matches:
         local_path = (dest / fname).resolve()
         hf_id = f"{repo_id}/{Path(fname).name}"
@@ -1796,7 +1798,7 @@ def _resolve_models(
             and expected_size is not None
             and local_path.stat().st_size == expected_size
         )
-        result.append((local_path, hf_id, not cached))
+        result.append((local_path, hf_id, not cached, expected_size))
 
     return result
 
@@ -1839,10 +1841,20 @@ class _BackgroundDownloader:
         path = dl.wait()  # blocks until the prefetch completes
     """
 
+    # Conservative floor for sizing the wait() timeout: we assume the link
+    # can sustain at least this many bytes per second over the lifetime of
+    # the download.  Real links are usually 10x+ faster, but a slow CDN edge
+    # combined with HF's infinite-retry-on-trickle behaviour has hung runs
+    # for hours, so we want a generous-but-finite ceiling.
+    _MIN_DOWNLOAD_BYTES_PER_S = 1_000_000  # 1 MB/s
+    _MIN_TIMEOUT_S = 600  # 10 min floor for small files
+
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
         self._result: Path | None = None
         self._error: Exception | None = None
+        self._expected_path: Path | None = None
+        self._expected_size: int | None = None
 
     def prefetch(
         self,
@@ -1850,10 +1862,31 @@ class _BackgroundDownloader:
         filename: str,
         models_dir: Path,
         token: str | None = None,
+        expected_size: int | None = None,
     ) -> None:
-        """Start downloading *filename* in a background thread."""
+        """Start downloading *filename* in a background thread.
+
+        If *expected_size* is provided and a file at the destination already
+        matches it, the worker short-circuits without contacting HF — this
+        avoids re-entering ``hf_hub_download`` for files that are already
+        complete on disk (a common cause of indefinite prefetch hangs when
+        a stale CDN connection is left in CLOSE-WAIT).
+        """
         self._result = None
         self._error = None
+        self._expected_path = (Path(models_dir).expanduser() / filename).resolve()
+        self._expected_size = expected_size
+
+        local_path = self._expected_path
+        if (
+            expected_size is not None
+            and local_path.is_file()
+            and local_path.stat().st_size == expected_size
+        ):
+            # File is already complete — no thread needed.
+            self._result = local_path
+            self._thread = None
+            return
 
         def _worker() -> None:
             try:
@@ -1866,18 +1899,59 @@ class _BackgroundDownloader:
         self._thread = threading.Thread(target=_worker, daemon=True)
         self._thread.start()
 
-    def wait(self) -> Path:
+    def wait(self, timeout: float | None = None) -> Path:
         """Block until the background download completes and return the path.
 
-        Raises whatever exception the download thread encountered.
-        State is always cleared so a subsequent ``wait()`` without a new
+        ``timeout`` (seconds): bound the wait so a wedged HF connection
+        cannot hang the whole benchmark indefinitely.  When ``None`` (the
+        default), a timeout is computed from the expected file size using
+        :attr:`_MIN_DOWNLOAD_BYTES_PER_S` as the assumed minimum throughput.
+
+        On timeout, if the local file is already present at the expected
+        size, the worker thread is abandoned (it is a daemon and will be
+        cleaned up at process exit) and the cached path is returned.
+        Otherwise :class:`TimeoutError` is raised.
+
+        Raises whatever exception the download thread encountered.  State
+        is always cleared so a subsequent ``wait()`` without a new
         ``prefetch()`` raises instead of returning stale results.
         """
         if self._thread is not None:
-            self._thread.join()
+            effective_timeout = timeout
+            if effective_timeout is None and self._expected_size is not None:
+                effective_timeout = max(
+                    self._MIN_TIMEOUT_S,
+                    self._expected_size / self._MIN_DOWNLOAD_BYTES_PER_S,
+                )
+            self._thread.join(timeout=effective_timeout)
+            if self._thread.is_alive():
+                # Worker is wedged.  Try the disk-cache fallback before
+                # giving up so a successful-but-stuck-in-cleanup download
+                # is still usable.
+                expected_path = self._expected_path
+                expected_size = self._expected_size
+                self._thread = None  # abandon (daemon thread)
+                self._result = None
+                self._error = None
+                self._expected_path = None
+                self._expected_size = None
+                if (
+                    expected_path is not None
+                    and expected_size is not None
+                    and expected_path.is_file()
+                    and expected_path.stat().st_size == expected_size
+                ):
+                    return expected_path
+                raise TimeoutError(
+                    f"Background download did not finish within "
+                    f"{effective_timeout:.0f}s"
+                    + (f" for {expected_path}" if expected_path else "")
+                )
             self._thread = None
         error, self._error = self._error, None
         result, self._result = self._result, None
+        self._expected_path = None
+        self._expected_size = None
         if error is not None:
             raise error
         if result is None:
@@ -3745,19 +3819,19 @@ def run_all(
     )
     if raw_exclude:
         excluded = [
-            (p, hf_id, nd)
-            for p, hf_id, nd in model_manifest
+            (p, hf_id, nd, es)
+            for p, hf_id, nd, es in model_manifest
             if any(fnmatch.fnmatch(p.name, pat) for pat in raw_exclude)
         ]
         if excluded:
-            for _, hf_id, _ in excluded:
+            for _, hf_id, _, _ in excluded:
                 console.print(
                     f"  [info]Excluding[/info] [hw]{hf_id}[/hw] "
                     f"(matched exclude_filename)"
                 )
         model_manifest = [
-            (p, hf_id, nd)
-            for p, hf_id, nd in model_manifest
+            (p, hf_id, nd, es)
+            for p, hf_id, nd, es in model_manifest
             if not any(fnmatch.fnmatch(p.name, pat) for pat in raw_exclude)
         ]
         if not model_manifest:
@@ -3767,8 +3841,8 @@ def run_all(
             raise typer.Exit(code=1)
 
     # Report cached vs needs-download
-    cached = [(p, hf_id) for p, hf_id, nd in model_manifest if not nd]
-    need_dl = [(p, hf_id) for p, hf_id, nd in model_manifest if nd]
+    cached = [(p, hf_id) for p, hf_id, nd, _es in model_manifest if not nd]
+    need_dl = [(p, hf_id) for p, hf_id, nd, _es in model_manifest if nd]
     for _, hf_id in cached:
         console.print(f"  [success]✓[/success] {hf_id} [dim](cached)[/dim]")
     if need_dl:
@@ -3829,8 +3903,8 @@ def run_all(
     # -- Resume detection (needs sweep_cfg) ---------------------------------
     # Build a temporary resolved_models list for resume detection from
     # already-cached models.  Full list will be built per-model below.
-    cached_models = [(p, hf_id) for p, hf_id, nd in model_manifest if not nd]
-    all_models_for_resume = [(p, hf_id) for p, hf_id, _nd in model_manifest]
+    cached_models = [(p, hf_id) for p, hf_id, nd, _es in model_manifest if not nd]
+    all_models_for_resume = [(p, hf_id) for p, hf_id, _nd, _es in model_manifest]
 
     if resume_path is not None:
         completed_models, existing_run_id = _detect_completed_models(
@@ -3920,16 +3994,18 @@ def run_all(
 
     # Kick off pre-fetch of the first model that needs downloading.
     first_dl_idx: int | None = None
-    for idx, (_, _, needs_dl) in enumerate(model_manifest):
+    for idx, (_, _, needs_dl, _es) in enumerate(model_manifest):
         if needs_dl:
             first_dl_idx = idx
-            p, hf_id, _ = model_manifest[idx]
+            p, hf_id, _, expected_size = model_manifest[idx]
             fname = Path(hf_id).name
             console.print(f"  [info]⬇ Downloading[/info] [hw]{hf_id}[/hw] …")
-            bg_downloader.prefetch(r_id, fname, models_dir)
+            bg_downloader.prefetch(
+                r_id, fname, models_dir, expected_size=expected_size
+            )
             break
 
-    for model_idx, (mp, hf_id, needs_dl) in enumerate(model_manifest):
+    for model_idx, (mp, hf_id, needs_dl, _es) in enumerate(model_manifest):
         # -- Skip already-completed models (resume) -----------------------
         if completed_models and hf_id in completed_models:
             all_resolved.append((mp, hf_id))
@@ -3943,6 +4019,27 @@ def run_all(
             console.print(f"  [info]Waiting for download of[/info] [hw]{hf_id}[/hw] …")
             try:
                 mp = bg_downloader.wait()
+            except TimeoutError as exc:
+                console.print(
+                    f"  [warning]⚠ Background download stalled:[/warning] {exc}\n"
+                    f"  [info]Retrying download of[/info] [hw]{hf_id}[/hw] "
+                    f"in the foreground …"
+                )
+                try:
+                    mp = _download_single_model(r_id, Path(hf_id).name, models_dir)
+                except Exception as exc2:
+                    console.print(f"[error]Download failed for {hf_id}:[/error] {exc2}")
+                    for next_idx in range(model_idx + 1, len(model_manifest)):
+                        _np, _nhf, _nnd, _nes = model_manifest[next_idx]
+                        if _nnd and not (completed_models and _nhf in completed_models):
+                            bg_downloader.prefetch(
+                                r_id,
+                                Path(_nhf).name,
+                                models_dir,
+                                expected_size=_nes,
+                            )
+                            break
+                    continue
             except Exception:
                 # Prefetch failed or was never started — try a direct download.
                 try:
@@ -3951,9 +4048,14 @@ def run_all(
                     console.print(f"[error]Download failed for {hf_id}:[/error] {exc}")
                     # Still prefetch the next model before skipping.
                     for next_idx in range(model_idx + 1, len(model_manifest)):
-                        _np, _nhf, _nnd = model_manifest[next_idx]
+                        _np, _nhf, _nnd, _nes = model_manifest[next_idx]
                         if _nnd and not (completed_models and _nhf in completed_models):
-                            bg_downloader.prefetch(r_id, Path(_nhf).name, models_dir)
+                            bg_downloader.prefetch(
+                                r_id,
+                                Path(_nhf).name,
+                                models_dir,
+                                expected_size=_nes,
+                            )
                             break
                     continue
             console.print(f"  [success]✓[/success] {hf_id} downloaded")
@@ -3962,13 +4064,15 @@ def run_all(
 
         # -- Pre-fetch the NEXT model that needs downloading --------------
         for next_idx in range(model_idx + 1, len(model_manifest)):
-            _np, _nhf, _nnd = model_manifest[next_idx]
+            _np, _nhf, _nnd, _nes = model_manifest[next_idx]
             if _nnd and not (completed_models and _nhf in completed_models):
                 fname = Path(_nhf).name
                 console.print(
                     f"  [info]⬇ Pre-fetching[/info] [hw]{_nhf}[/hw] in background …"
                 )
-                bg_downloader.prefetch(r_id, fname, models_dir)
+                bg_downloader.prefetch(
+                    r_id, fname, models_dir, expected_size=_nes
+                )
                 break
 
         # -- vram-cliff for this model ------------------------------------
