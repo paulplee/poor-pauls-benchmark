@@ -12,7 +12,6 @@ that the orchestrator correctly:
 from __future__ import annotations
 
 import json
-import struct
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -1700,9 +1699,7 @@ class TestPreflightVramCheck:
         # Need: est_8k <= vram * 0.9  ⟹  vram >= est_8k / 0.9
         vram = int(est_8k / 0.9 * 1.05)
 
-        warnings = _preflight_vram_check(
-            cfg.resolved_models, cfg, gpu_vram_bytes=vram
-        )
+        warnings = _preflight_vram_check(cfg.resolved_models, cfg, gpu_vram_bytes=vram)
         assert len(warnings) == 1
         assert warnings[0].suggested_max_ctx == 8192
 
@@ -1739,9 +1736,7 @@ class TestPreflightVramCheck:
             concurrent_users=[32],
             resolved_models=[(model, "test/repo/model.gguf")],
         )
-        warnings = _preflight_vram_check(
-            cfg.resolved_models, cfg, gpu_vram_bytes=None
-        )
+        warnings = _preflight_vram_check(cfg.resolved_models, cfg, gpu_vram_bytes=None)
         assert warnings == []
 
     def test_apply_vram_caps(self, tmp_path: Path) -> None:
@@ -1784,7 +1779,8 @@ class TestPreflightVramCheck:
 
         model = _make_gguf_model(tmp_path)
         cfg_file = tmp_path / "sweep.toml"
-        cfg_file.write_text(textwrap.dedent(f"""\
+        cfg_file.write_text(
+            textwrap.dedent(f"""\
             [sweep]
             runner_type = "fake"
             repo_id = "test-org/test-repo"
@@ -1793,7 +1789,8 @@ class TestPreflightVramCheck:
             n_ctx = [512, 131072]
             n_batch = [256]
             concurrent_users = [1]
-        """))
+        """)
+        )
 
         results = tmp_path / "results.jsonl"
         with (
@@ -1817,7 +1814,8 @@ class TestPreflightVramCheck:
 
         model = _make_gguf_model(tmp_path)
         cfg_file = tmp_path / "sweep.toml"
-        cfg_file.write_text(textwrap.dedent(f"""\
+        cfg_file.write_text(
+            textwrap.dedent(f"""\
             [sweep]
             runner_type = "fake"
             repo_id = "test-org/test-repo"
@@ -1826,7 +1824,8 @@ class TestPreflightVramCheck:
             n_ctx = [131072]
             n_batch = [256]
             concurrent_users = [32]
-        """))
+        """)
+        )
 
         results = tmp_path / "results.jsonl"
         with (
@@ -1846,7 +1845,8 @@ class TestPreflightVramCheck:
 
         model = _make_gguf_model(tmp_path)
         cfg_file = tmp_path / "sweep.toml"
-        cfg_file.write_text(textwrap.dedent(f"""\
+        cfg_file.write_text(
+            textwrap.dedent(f"""\
             [sweep]
             runner_type = "fake"
             repo_id = "test-org/test-repo"
@@ -1855,7 +1855,8 @@ class TestPreflightVramCheck:
             n_ctx = [512]
             n_batch = [256]
             concurrent_users = [1]
-        """))
+        """)
+        )
 
         results = tmp_path / "results.jsonl"
         with (

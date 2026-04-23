@@ -518,6 +518,43 @@ submitter = "Your Name"
 When the filename glob matches multiple models, Phase 1 probes each one independently.
 The per-model caps are then passed to Phase 2, which skips combos that exceed each model's limit — no manual editing required.
 
+#### Resuming an interrupted run
+
+Long benchmark suites (lots of quants × concurrency levels × context sizes) can take many hours.  If a run is interrupted — Ctrl-C, a crash, a power cut, a wedged HF download — you don't have to start over.
+
+**Auto-resume (default).** When you re-run `ppb all` on the same suite, PPB scans `results/` for the most recent file matching `<config_stem>_*.jsonl` and **appends to it**, skipping every model that already has a complete set of rows:
+
+```bash
+uv run ppb.py all suites/my_gpu.toml
+```
+
+You'll see a banner like:
+
+```text
+🔄 RESUMING previous run from my_gpu_20260421_1543.jsonl
+   19 of 22 model(s) already done — 3 remaining
+   ⏭  Skipping unsloth/.../Qwen3.6-35B-A3B-MXFP4_MOE.gguf — already completed
+   ...
+```
+
+**Resume from a specific file.** Pass `--results` (a.k.a. `-r`) to point at any prior JSONL:
+
+```bash
+uv run ppb.py all suites/my_gpu.toml -r results/my_gpu_20260421_1543.jsonl
+```
+
+The `--results` flag always wins over auto-detection.
+
+**Force a fresh run.** Pass `--no-resume` to ignore prior results files and start a new timestamped JSONL:
+
+```bash
+uv run ppb.py all suites/my_gpu.toml --no-resume
+```
+
+**How "completed" is determined.** A model is considered done when the JSONL contains all `len(n_ctx) × len(n_batch) × len(concurrent_users)` expected rows for it (after applying any per-model `vram-cliff` cap).  Resume granularity is **per model**, not per combo — a model that was interrupted mid-sweep will be re-run from its first combo, so a few duplicate rows for that one model can appear.  The `suite_run_id` is preserved from the original file so the publish step keeps a single submission id across the resumed run.
+
+> **Caveat:** auto-resume keys on the HF id (`repo_id/filename.gguf`) and the expected combo count from your current TOML.  If you change `n_ctx`, `n_batch`, `concurrent_users`, `repo_id`, or `filename` between runs, models previously marked complete may no longer match and will be re-benchmarked.
+
 ### 4. View Your Hardware Profile
 
 Quickly check what PPB detects about your system:

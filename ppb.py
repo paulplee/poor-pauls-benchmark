@@ -57,7 +57,6 @@ from runners import get_runner
 from runners._server_mixin import ServerMixin
 from utils.flattener import compute_file_sha256, flatten_benchmark_row
 from utils.gguf_metadata import (
-    estimate_kv_cache_bytes,
     estimate_total_vram_bytes,
     read_gguf_metadata,
 )
@@ -2363,7 +2362,9 @@ def _get_llamacpp_version() -> str:
     try:
         proc = subprocess.run(
             ["llama-server", "--version"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in proc.stdout.splitlines() + proc.stderr.splitlines():
             if "version:" in line.lower():
@@ -2511,7 +2512,9 @@ def execute_vram_cliff(
         error_lower = error_hint.lower()
         if "unknown model architecture" in error_lower:
             arch_match = error_lower.split("unknown model architecture:")
-            arch_name = arch_match[-1].strip().strip("'\"") if len(arch_match) > 1 else "?"
+            arch_name = (
+                arch_match[-1].strip().strip("'\"") if len(arch_match) > 1 else "?"
+            )
             console.print(
                 f"  [bold red]✗ Model architecture {arch_name!r} is not supported "
                 f"by the installed llama.cpp (build {_get_llamacpp_version()}).[/bold red]\n"
@@ -3744,7 +3747,19 @@ def run_all(
         None,
         "--results",
         "-r",
-        help="JSONL results file (default: auto-generated from config name + timestamp)",
+        help=(
+            "JSONL results file (default: auto-detect the most recent matching "
+            "file under results/ to resume from, otherwise auto-generate from "
+            "config name + timestamp)"
+        ),
+    ),
+    no_resume: bool = typer.Option(
+        False,
+        "--no-resume",
+        help=(
+            "Disable auto-resume: always start a fresh timestamped results "
+            "file even if a prior matching run exists."
+        ),
     ),
 ) -> None:
     """Run the full benchmark suite: vram-cliff → sweep → publish.
@@ -3766,11 +3781,19 @@ def run_all(
     being benchmarked, overlapping network I/O with GPU work.
 
     **Auto-resume:** if a previous run for the same suite was interrupted,
-    PPB detects the existing results file and automatically skips models
-    that have already been fully benchmarked.
+    PPB detects the most recent matching results file under ``results/``
+    and automatically appends to it, skipping models that have already
+    been fully benchmarked.  Pass ``--no-resume`` to force a fresh run,
+    or ``--results PATH`` to resume from a specific file.
     """
     raw, default_results = load_suite_config(config)
-    resolved_results = results_file if results_file is not None else default_results
+    if results_file is not None:
+        resolved_results = results_file
+    elif not no_resume:
+        prior = _find_resumable_results(config)
+        resolved_results = prior if prior is not None else default_results
+    else:
+        resolved_results = default_results
 
     console.print(
         f"[info]Full benchmark suite[/info] from [bold]{config}[/bold]\n"
@@ -4000,9 +4023,7 @@ def run_all(
             p, hf_id, _, expected_size = model_manifest[idx]
             fname = Path(hf_id).name
             console.print(f"  [info]⬇ Downloading[/info] [hw]{hf_id}[/hw] …")
-            bg_downloader.prefetch(
-                r_id, fname, models_dir, expected_size=expected_size
-            )
+            bg_downloader.prefetch(r_id, fname, models_dir, expected_size=expected_size)
             break
 
     for model_idx, (mp, hf_id, needs_dl, _es) in enumerate(model_manifest):
@@ -4070,9 +4091,7 @@ def run_all(
                 console.print(
                     f"  [info]⬇ Pre-fetching[/info] [hw]{_nhf}[/hw] in background …"
                 )
-                bg_downloader.prefetch(
-                    r_id, fname, models_dir, expected_size=_nes
-                )
+                bg_downloader.prefetch(r_id, fname, models_dir, expected_size=_nes)
                 break
 
         # -- vram-cliff for this model ------------------------------------
