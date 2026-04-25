@@ -986,13 +986,16 @@ class TestDownloadDatasetCommand:
 
     def test_help_text(self) -> None:
         """--help should mention dataset and llama-server."""
+        import re
         from typer.testing import CliRunner
         from ppb import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["download-dataset", "--help"])
+        result = runner.invoke(app, ["download-dataset", "--help"], env={"NO_COLOR": "1"})
 
         assert result.exit_code == 0
-        assert "llama-server" in result.output
-        assert "--repo" in result.output
-        assert "--filename" in result.output
+        # Strip any residual ANSI escape sequences before checking option names
+        clean = re.sub(r"\x1b\[[0-9;]*[mK]", "", result.output)
+        assert "llama-server" in clean
+        assert "--repo" in clean
+        assert "--filename" in clean
