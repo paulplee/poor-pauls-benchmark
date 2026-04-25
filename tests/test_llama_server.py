@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, Mock, call, patch, PropertyMock
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
@@ -216,18 +214,19 @@ class TestLlamaServerSetup:
         mock_download: Mock,
     ) -> None:
         """Custom dataset repo/filename and shuffle/seed are forwarded."""
-        from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 
         mock_download.return_value = Path("/fake/custom.json")
         mock_load.return_value = ["a"]
 
         r = LlamaServerRunner()
-        r.setup({
-            "dataset_repo": "my-org/my-dataset",
-            "dataset_filename": "custom.json",
-            "shuffle": True,
-            "seed": 42,
-        })
+        r.setup(
+            {
+                "dataset_repo": "my-org/my-dataset",
+                "dataset_filename": "custom.json",
+                "shuffle": True,
+                "seed": 42,
+            }
+        )
 
         mock_download.assert_called_once_with(
             repo_id="my-org/my-dataset",
@@ -251,8 +250,8 @@ def _make_sse_response(tokens: list[str]) -> str:
     """Build a fake SSE response body from a list of token strings."""
     lines = []
     for tok in tokens:
-        lines.append(f'data: {json.dumps({"content": tok, "stop": False})}')
-    lines.append(f'data: {json.dumps({"content": "", "stop": True})}')
+        lines.append(f"data: {json.dumps({'content': tok, 'stop': False})}")
+    lines.append(f"data: {json.dumps({'content': '', 'stop': True})}")
     return "\n".join(lines)
 
 
@@ -731,8 +730,11 @@ class TestAggregateMetrics:
     def test_zero_successful_returns_none(self) -> None:
         r = self._make_runner()
         result = r._aggregate_metrics(
-            all_ttft=[], all_itl=[], total_tokens=0,
-            successful_prompts=0, total_duration=1.0,
+            all_ttft=[],
+            all_itl=[],
+            total_tokens=0,
+            successful_prompts=0,
+            total_duration=1.0,
             concurrent_users=1,
         )
         assert result is None
@@ -750,7 +752,10 @@ class TestRunRouting:
     @patch("runners.llama_server.httpx.get")
     @patch("subprocess.Popen")
     def test_serial_path(
-        self, mock_popen: Mock, mock_get: Mock, mock_port: Mock,
+        self,
+        mock_popen: Mock,
+        mock_get: Mock,
+        mock_port: Mock,
     ) -> None:
         """concurrent_users=1 → _run_serial."""
         proc = MagicMock()
@@ -765,8 +770,10 @@ class TestRunRouting:
         r._n_predict = 64
         r._health_timeout = 5.0
 
-        with patch.object(r, "_run_serial", return_value={"results": {}}) as mock_serial, \
-             patch.object(r, "_run_concurrent") as mock_conc:
+        with (
+            patch.object(r, "_run_serial", return_value={"results": {}}) as mock_serial,
+            patch.object(r, "_run_concurrent") as mock_conc,
+        ):
             r.run({"model_path": "/f.gguf", "n_ctx": 4096, "concurrent_users": 1})
 
         mock_serial.assert_called_once()
@@ -776,7 +783,10 @@ class TestRunRouting:
     @patch("runners.llama_server.httpx.get")
     @patch("subprocess.Popen")
     def test_concurrent_path(
-        self, mock_popen: Mock, mock_get: Mock, mock_port: Mock,
+        self,
+        mock_popen: Mock,
+        mock_get: Mock,
+        mock_port: Mock,
     ) -> None:
         """concurrent_users > 1 → _run_concurrent."""
         proc = MagicMock()
@@ -791,8 +801,12 @@ class TestRunRouting:
         r._n_predict = 64
         r._health_timeout = 5.0
 
-        with patch.object(r, "_run_concurrent", return_value={"results": {}}) as mock_conc, \
-             patch.object(r, "_run_serial") as mock_serial:
+        with (
+            patch.object(
+                r, "_run_concurrent", return_value={"results": {}}
+            ) as mock_conc,
+            patch.object(r, "_run_serial") as mock_serial,
+        ):
             r.run({"model_path": "/f.gguf", "n_ctx": 4096, "concurrent_users": 4})
 
         mock_conc.assert_called_once()
@@ -813,7 +827,14 @@ class TestShareGPTDataset:
 
         data = [
             {"conversations": [{"from": "human", "value": "Hi"}]},  # too short
-            {"conversations": [{"from": "human", "value": "Tell me about quantum computing in detail please"}]},
+            {
+                "conversations": [
+                    {
+                        "from": "human",
+                        "value": "Tell me about quantum computing in detail please",
+                    }
+                ]
+            },
         ]
         f = tmp_path / "data.json"
         f.write_text(json.dumps(data))
@@ -827,7 +848,14 @@ class TestShareGPTDataset:
         from datasets.sharegpt import load_sharegpt_prompts
 
         data = [
-            {"conversations": [{"from": "human", "value": f"Prompt number {i} with enough length to be valid"}]}
+            {
+                "conversations": [
+                    {
+                        "from": "human",
+                        "value": f"Prompt number {i} with enough length to be valid",
+                    }
+                ]
+            }
             for i in range(20)
         ]
         f = tmp_path / "data.json"
@@ -841,7 +869,14 @@ class TestShareGPTDataset:
         from datasets.sharegpt import load_sharegpt_prompts
 
         data = [
-            {"conversations": [{"from": "gpt", "value": "I am a bot response only, no human turn here."}]},
+            {
+                "conversations": [
+                    {
+                        "from": "gpt",
+                        "value": "I am a bot response only, no human turn here.",
+                    }
+                ]
+            },
         ]
         f = tmp_path / "data.json"
         f.write_text(json.dumps(data))
@@ -885,7 +920,14 @@ class TestShareGPTDataset:
         from datasets.sharegpt import load_sharegpt_prompts
 
         data = [
-            {"conversations": [{"from": "human", "value": f"Prompt number {i} with enough length to be valid"}]}
+            {
+                "conversations": [
+                    {
+                        "from": "human",
+                        "value": f"Prompt number {i} with enough length to be valid",
+                    }
+                ]
+            }
             for i in range(50)
         ]
         f = tmp_path / "data.json"
@@ -958,8 +1000,10 @@ class TestDownloadDatasetCommand:
                 app,
                 [
                     "download-dataset",
-                    "--repo", "my-org/my-dataset",
-                    "--filename", "convos.json",
+                    "--repo",
+                    "my-org/my-dataset",
+                    "--filename",
+                    "convos.json",
                 ],
             )
 
@@ -991,7 +1035,9 @@ class TestDownloadDatasetCommand:
         from ppb import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["download-dataset", "--help"], env={"NO_COLOR": "1"})
+        result = runner.invoke(
+            app, ["download-dataset", "--help"], env={"NO_COLOR": "1"}
+        )
 
         assert result.exit_code == 0
         # Strip any residual ANSI escape sequences before checking option names
