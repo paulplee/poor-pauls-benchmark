@@ -3,7 +3,13 @@ name = "poor-pauls-benchmark"
 version = "0.1.0"
 description = "Automated evaluation framework for local LLM inference using llama.cpp"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
@@ -18,4 +24,4 @@ dependencies = [
 ppb = "ppb:app"
 
 [dependency-groups]
-dev = ["pytest>=8.0.0"]
+dev = ["pytest>=8.0.0", "ruff>=0.5"]

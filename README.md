@@ -8,6 +8,24 @@ Poor Paul's Benchmark is an automated evaluation framework for local LLM inferen
 
 My goal is to build the definitive public leaderboard for cost-effective AI setups, helping homelabbers (me), prosumers (me), and small businesses (and me) answer the question: _What is the most efficient hardware / model / settings for my AI workload?_
 
+## The PPB Ecosystem
+
+PPB is one part of a three-component platform:
+
+| Component                                                                        | What it does                                        |
+| -------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **poor-pauls-benchmark** _(this repo)_                                           | Runs benchmarks on your hardware; publishes results |
+| **[paulplee/ppb-results](https://huggingface.co/datasets/paulplee/ppb-results)** | Public HuggingFace dataset of community results     |
+| **[ppb-mcp](https://github.com/paulplee/ppb-mcp)**                               | MCP server — lets LLMs query the dataset directly   |
+| **[poorpaul.dev](https://poorpaul.dev)**                                         | Visual analytics and leaderboard                    |
+
+Once you submit results, any MCP-compatible LLM client (Claude Desktop, Cursor,
+Windsurf, etc.) can answer questions like:
+
+> _"What's the best quantization for my RTX 4090 running 4 concurrent users?"_
+
+using your real benchmark data, via `https://mcp.poorpaul.dev`.
+
 ## The Problem
 
 Evaluating local LLM performance across heterogeneous hardware (Apple Silicon, discrete consumer Nvidia GPUs, mixed rigs) is tedious. Finding the exact maximum context window (`n_ctx`) before your system hits the "VRAM Cliff" (crashing with an Out-of-Memory error or degrading into system swap) usually requires hours of manual trial and error. Furthermore, self-reported benchmarks on forums often lack crucial hardware context (driver versions, background tasks, exact quantization).
@@ -72,7 +90,7 @@ docs/
 
 > **Note:** PPB is currently in active development.
 
-Requires **Python ≥ 3.13**.
+Requires **Python ≥ 3.11**.
 
 ```bash
 git clone https://github.com/paulplee/poor-pauls-benchmark.git
@@ -100,6 +118,48 @@ You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://
 pip install pytest   # or: uv sync --group dev
 python -m pytest tests/ -v
 ```
+
+## Share Your Results
+
+PPB is a **community leaderboard**. Every result you submit makes the dataset
+more useful for everyone — including LLM clients querying [ppb-mcp](https://github.com/paulplee/ppb-mcp).
+
+### 1. Get a Hugging Face token
+
+Log in at [huggingface.co](https://huggingface.co) → Settings → Access Tokens →
+create a token with **Write** access to `paulplee/ppb-results`.
+
+```bash
+export HF_TOKEN=hf_your_token_here
+# Or add it to your .env file (see .env.example)
+```
+
+### 2. Run your benchmark
+
+```bash
+# Run a full sweep (vram-cliff → parameter sweep → publish)
+uv run ppb.py all suites/my_gpu.toml
+
+# Or run a sweep only and publish manually afterward
+uv run ppb.py sweep suites/my_gpu.toml
+```
+
+### 3. Publish your results
+
+```bash
+uv run ppb.py publish --results results/my_results.jsonl
+```
+
+Results appear in the [public dataset](https://huggingface.co/datasets/paulplee/ppb-results)
+and on [poorpaul.dev/insights](https://poorpaul.dev/insights) within minutes.
+
+> **Incremental publishing:** When using `ppb all` with a `[publish]` section in your
+> suite file, results are published after _each model_ completes — so a long run is
+> never lost to a late crash. See `suites/suite.example.toml` for the `[publish]`
+> configuration block.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide including hardware metadata
+best practices and the result schema.
 
 ## Usage Guide
 
@@ -418,7 +478,13 @@ Each line written to the JSONL file is a self-contained record with a **stable e
   "task_type": "text-generation",
   "prompt_dataset": null,
   "hardware": {
-    "os": { "system": "Linux", "release": "6.8.0", "machine": "x86_64", "distro": "Ubuntu", "distro_version": "24.04" },
+    "os": {
+      "system": "Linux",
+      "release": "6.8.0",
+      "machine": "x86_64",
+      "distro": "Ubuntu",
+      "distro_version": "24.04"
+    },
     "cpu": { "model": "AMD Ryzen 9 7950X", "cores": "32" },
     "ram": { "total_gb": 63.9 },
     "gpus": [
@@ -520,7 +586,7 @@ The per-model caps are then passed to Phase 2, which skips combos that exceed ea
 
 #### Resuming an interrupted run
 
-Long benchmark suites (lots of quants × concurrency levels × context sizes) can take many hours.  If a run is interrupted — Ctrl-C, a crash, a power cut, a wedged HF download — you don't have to start over.
+Long benchmark suites (lots of quants × concurrency levels × context sizes) can take many hours. If a run is interrupted — Ctrl-C, a crash, a power cut, a wedged HF download — you don't have to start over.
 
 **Auto-resume (default).** When you re-run `ppb all` on the same suite, PPB scans `results/` for the most recent file matching `<config_stem>_*.jsonl` and **appends to it**, skipping every model that already has a complete set of rows:
 
@@ -551,9 +617,9 @@ The `--results` flag always wins over auto-detection.
 uv run ppb.py all suites/my_gpu.toml --no-resume
 ```
 
-**How "completed" is determined.** A model is considered done when the JSONL contains all `len(n_ctx) × len(n_batch) × len(concurrent_users)` expected rows for it (after applying any per-model `vram-cliff` cap).  Resume granularity is **per model**, not per combo — a model that was interrupted mid-sweep will be re-run from its first combo, so a few duplicate rows for that one model can appear.  The `suite_run_id` is preserved from the original file so the publish step keeps a single submission id across the resumed run.
+**How "completed" is determined.** A model is considered done when the JSONL contains all `len(n_ctx) × len(n_batch) × len(concurrent_users)` expected rows for it (after applying any per-model `vram-cliff` cap). Resume granularity is **per model**, not per combo — a model that was interrupted mid-sweep will be re-run from its first combo, so a few duplicate rows for that one model can appear. The `suite_run_id` is preserved from the original file so the publish step keeps a single submission id across the resumed run.
 
-> **Caveat:** auto-resume keys on the HF id (`repo_id/filename.gguf`) and the expected combo count from your current TOML.  If you change `n_ctx`, `n_batch`, `concurrent_users`, `repo_id`, or `filename` between runs, models previously marked complete may no longer match and will be re-benchmarked.
+> **Caveat:** auto-resume keys on the HF id (`repo_id/filename.gguf`) and the expected combo count from your current TOML. If you change `n_ctx`, `n_batch`, `concurrent_users`, `repo_id`, or `filename` between runs, models previously marked complete may no longer match and will be re-benchmarked.
 
 ### 4. View Your Hardware Profile
 
@@ -658,8 +724,8 @@ PPB extended its result schema to add **model provenance**, **multi-GPU**, **LLM
 | `os_distro_version`  | Distribution version string (e.g. `24.04`, `15.5`)                              |
 | `task_type`          | Workload category, e.g. `text-generation` (backfilled for legacy runs)          |
 | `prompt_dataset`     | Dataset identifier, e.g. `sharegpt-v3` (server runners) or `null` (bench)       |
-| `num_prompts`        | Number of prompts sent per run (`null` for `llama-bench`)                        |
-| `n_predict`          | Max tokens per prompt (`null` for `llama-bench`)                                 |
+| `num_prompts`        | Number of prompts sent per run (`null` for `llama-bench`)                       |
+| `n_predict`          | Max tokens per prompt (`null` for `llama-bench`)                                |
 | `quality_score`      | Output quality metric — reserved for future use, defaults to `null`             |
 | `tags`               | Free-form JSON string for arbitrary metadata (e.g. `{"env": "ci"}`)             |
 
@@ -724,11 +790,11 @@ PPB batches all matching files into a single upload session.
 
 ##### `download_hf_dataset.py` options
 
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--repo-id` | `paulplee/ppb-results` | HF dataset repo to download |
-| `--local-dir` | `results/hf-backup` | Local destination directory |
-| `--token` | _(env / cached)_ | HF API token (falls back to `HF_TOKEN` env var or cached `huggingface-cli login`) |
+| Flag          | Default                | Description                                                                       |
+| ------------- | ---------------------- | --------------------------------------------------------------------------------- |
+| `--repo-id`   | `paulplee/ppb-results` | HF dataset repo to download                                                       |
+| `--local-dir` | `results/hf-backup`    | Local destination directory                                                       |
+| `--token`     | _(env / cached)_       | HF API token (falls back to `HF_TOKEN` env var or cached `huggingface-cli login`) |
 
 #### Cleanup
 

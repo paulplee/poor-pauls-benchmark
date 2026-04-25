@@ -1,0 +1,45 @@
+# Poor Paul's Benchmark (PPB)
+# https://github.com/paulplee/poor-pauls-benchmark
+
+## What This Is
+
+Poor Paul's Benchmark is an automated local LLM inference benchmarking tool.
+It measures GPU performance across models, quantizations, and context sizes,
+then publishes results to a public HuggingFace dataset.
+
+## What It Produces
+
+Every benchmark run outputs a JSONL record containing:
+- GPU hardware profile (name, VRAM, driver version)
+- Model identity (HuggingFace repo, filename, quantization label)
+- Benchmark parameters (context size, batch size, concurrent users)
+- Performance metrics (throughput tokens/sec, TTFT ms, ITL ms)
+- System metadata (OS, CPU, RAM, LLM engine version)
+
+The full schema is documented at: docs/schema.md
+
+## Where Results Go
+
+Results are published to:
+  Dataset:    https://huggingface.co/datasets/paulplee/ppb-results
+  Analytics:  https://poorpaul.dev/insights
+  MCP server: https://mcp.poorpaul.dev (queryable by LLM clients)
+
+## Key Commands
+
+  ppb hw-info                        # show hardware profile
+  ppb vram-cliff suites/my_gpu.toml  # find max safe context window
+  ppb sweep      suites/my_gpu.toml  # run parameter sweep
+  ppb publish    --results r.jsonl   # publish to HuggingFace
+  ppb all        suites/my_gpu.toml  # vram-cliff + sweep + publish
+
+## Suite Configuration
+
+Benchmarks are configured in TOML files (see suites/suite.example.toml).
+Key parameters: repo_id, filename, runner_type, n_ctx, n_batch, concurrent_users.
+
+## Related Projects
+
+  ppb-mcp:   https://github.com/paulplee/ppb-mcp
+  Dataset:   https://huggingface.co/datasets/paulplee/ppb-results
+  Website:   https://poorpaul.dev
