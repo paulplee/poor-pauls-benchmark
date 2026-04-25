@@ -27,5 +27,9 @@ dependencies = [
 [project.scripts]
 ppb = "ppb:app"
 
+[tool.hatch.build.targets.wheel]
+packages = ["runners", "utils", "datasets"]
+include = ["ppb.py"]
+
 [dependency-groups]
 dev = ["pytest>=8.0.0", "ruff>=0.5", "hatchling"]
