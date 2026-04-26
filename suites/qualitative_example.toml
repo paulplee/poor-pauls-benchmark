@@ -122,6 +122,49 @@ tool_accuracy_enabled = true
 # answer_quality_judge_n_ctx = 4096
 
 
+# -- Multi-Turn Conversational Memory & Coherence (Phase 7) -----------------
+# Two evaluation modes:
+#
+#   * longmemeval_s (default) — uses the longmemeval_s split of
+#     xiaowu0162/longmemeval-cleaned.  Each case has a long multi-turn
+#     session_history followed by a follow-up question whose ground-truth
+#     answer is recorded.  Cases whose rendered prompt exceeds the model's
+#     measured VRAM cliff (looked up from the latest published
+#     quantitative row, or from this run's vram-cliff phase) are skipped
+#     and counted under cases_skipped_context.
+#
+#   * quick — runs the 80 two-turn questions from
+#     lmsys/mt_bench_human_judgments.  Required: judge_model_path.  The
+#     judge rates each final response on a 1–10 scale; the mean is
+#     published as mt_bench_score.
+#
+# Set multiturn_enabled = true to activate this phase.
+# multiturn_enabled = false
+
+# Mode: "longmemeval_s" or "quick".  Default: "longmemeval_s".
+# multiturn_mode = "longmemeval_s"
+
+# Cap on the number of LongMemEval cases evaluated (ignored in quick
+# mode where the 80 MT-Bench questions are fixed).  Default: 50.
+# multiturn_sample_size = 50
+
+# Generator context window.  Default: max(vram_cliff_tokens, 8192).
+# Set this large enough to fit the longest LongMemEval session history
+# you intend to evaluate; cases that still exceed the VRAM cliff are
+# skipped automatically.
+# multiturn_n_ctx = 32768
+
+# Judge context window / GPU offload (judge is reused from
+# answer_quality when both phases run together in `ppb all`).
+# multiturn_judge_n_ctx = 4096
+# multiturn_judge_n_gpu_layers = -1
+
+# judge_model_path is inherited from the answer_quality block above when
+# both phases are configured.  Set it here only if you want to use a
+# DIFFERENT judge for multiturn than for answer_quality.
+# judge_model_path = "./models/Qwen3.5-4B-Q4_K_M.gguf"
+
+
 # ── Publishing (optional) ─────────────────────────────────────────────────────
 # Uncomment to publish results to the PPB leaderboard after each model.
 # [publish]

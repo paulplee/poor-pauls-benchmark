@@ -57,6 +57,7 @@ ppb.py                 # CLI entry point (Typer app)
 ppb_context_rot.py     # context-rot / NIAH qualitative evaluation
 ppb_tool_accuracy.py   # tool-call accuracy (BFCL + PPB-native)
 ppb_answer_quality.py  # answer faithfulness / quality (judge-model pipeline)
+ppb_multiturn.py       # multi-turn memory & coherence (LongMemEval / MT-Bench)
 ppb_quality_prompts_cache.json  # frozen 50-prompt evaluation set (auto-generated)
 runners/
   __init__.py          # Runner registry (register_runner / get_runner)
@@ -200,10 +201,17 @@ published HuggingFace dataset.
 # Quantitative only — vram-cliff + parameter sweep (throughput, TTFT, VRAM).
 uv run ppb.py quantitative suites/my_gpu.toml
 
-# Qualitative only — context-rot + tool-call accuracy.
+# Qualitative only — context-rot + tool-call accuracy + answer-quality + multi-turn.
+# Use this when the quantitative row already exists on Hugging Face and
+# you only want to (re)score qualitative metrics. The orchestrator looks
+# up the prior `vram_cliff_tokens` from the published row and uses it to
+# skip context-rot lengths and LongMemEval cases that would OOM.
 uv run ppb.py qualitative suites/qualitative_example.toml
 
 # Everything — quantitative followed by qualitative for the same models.
+# In `all` mode the judge `Llama` instance loaded for Phase 6 (answer
+# quality) is reused by Phase 7 (multi-turn) so the judge is only
+# loaded into VRAM once.
 uv run ppb.py all suites/my_gpu.toml
 ```
 
@@ -214,30 +222,56 @@ Every published row carries the four-field join key
 qualitative runs are independent: you can publish a quant sweep today and a
 qualitative pass next week, and downstream consumers (`ppb-mcp`,
 [poorpaul.dev](https://poorpaul.dev/insights)) will JOIN them into a single
-model profile by matching on this tuple.
+model profile by matching on this tuple. `ppb-mcp` performs an outer
+JOIN: rows with `run_type == "all"` already contain both blocks,
+while `"quantitative"` and `"qualitative"` rows are stitched together
+on the join tuple to produce the same merged profile.
 
 ### Qualitative block schema
 
 Every published row includes a nested `qualitative` JSON column. Phases that
-did not run for the row carry `null` for their respective keys.
+did not run for the row carry `null` for their respective keys. The schema
+below is the **canonical final shape** — do not add keys without a schema
+version bump.
 
-| Key                              | Owning phase                           | Type   |
-| -------------------------------- | -------------------------------------- | ------ |
-| `context_rot_score`              | Context-Rot (Semantic NIAH)            | float  |
-| `context_rot_accuracy_by_length` | Context-Rot (Semantic NIAH)            | object |
-| `context_rot_accuracy_by_depth`  | Context-Rot (Semantic NIAH)            | object |
-| `tool_selection_accuracy`        | Tool-Call Accuracy (BFCL + PPB-native) | float  |
-| `parameter_accuracy`             | Tool-Call Accuracy (BFCL + PPB-native) | float  |
-| `parameter_hallucination_rate`   | Tool-Call Accuracy (BFCL + PPB-native) | float  |
-| `parse_success_rate`             | Tool-Call Accuracy (BFCL + PPB-native) | float  |
-| `overall_tool_accuracy`          | Tool-Call Accuracy (BFCL + PPB-native) | float  |
-| `faithfulness_mean`              | Answer Quality (judge-model pipeline)  | float  |
-| `faithfulness_std`               | Answer Quality (judge-model pipeline)  | float  |
-| `answer_relevancy_mean`          | Answer Quality (judge-model pipeline)  | float  |
-| `coherence_mean`                 | Answer Quality (judge-model pipeline)  | float  |
-| `quality_composite_score`        | Answer Quality (judge-model pipeline)  | float  |
-| `memory_accuracy`                | Reserved (multi-turn memory, future)   | float  |
-| `mt_bench_score`                 | Reserved (MT-Bench, future)            | float  |
+| Key                              | Owning phase                          | Type   |
+| -------------------------------- | ------------------------------------- | ------ |
+| `context_rot_score`              | Phase 4 — Context-Rot (Semantic NIAH) | float  |
+| `context_rot_accuracy_by_length` | Phase 4 — Context-Rot (Semantic NIAH) | object |
+| `context_rot_accuracy_by_depth`  | Phase 4 — Context-Rot (Semantic NIAH) | object |
+| `tool_selection_accuracy`        | Phase 5 — Tool-Call Accuracy          | float  |
+| `parameter_accuracy`             | Phase 5 — Tool-Call Accuracy          | float  |
+| `parameter_hallucination_rate`   | Phase 5 — Tool-Call Accuracy          | float  |
+| `parse_success_rate`             | Phase 5 — Tool-Call Accuracy          | float  |
+| `overall_tool_accuracy`          | Phase 5 — Tool-Call Accuracy          | float  |
+| `faithfulness_mean`              | Phase 6 — Answer Quality              | float  |
+| `faithfulness_std`               | Phase 6 — Answer Quality              | float  |
+| `answer_relevancy_mean`          | Phase 6 — Answer Quality              | float  |
+| `coherence_mean`                 | Phase 6 — Answer Quality              | float  |
+| `quality_composite_score`        | Phase 6 — Answer Quality              | float  |
+| `memory_accuracy`                | Phase 7 — Multi-Turn (LongMemEval)    | float  |
+| `mt_bench_score`                 | Phase 7 — Multi-Turn (MT-Bench quick) | float  |
+| `cases_evaluated`                | Phase 7 — Multi-Turn                  | int    |
+| `cases_skipped_context`          | Phase 7 — Multi-Turn                  | int    |
+
+In each multi-turn run only one of `memory_accuracy` / `mt_bench_score`
+is populated — the other is `null` — according to which `multiturn_mode`
+was selected.
+
+### Setting up a judge model
+
+Phase 6 (answer quality) and Phase 7 (multi-turn) both use a separate,
+locally-loaded "judge" GGUF to grade responses. The judge **MUST** be a
+different model from the one under test — otherwise the model is
+grading itself, which produces self-enhancement bias and inflates
+leaderboard scores. PPB enforces this with a runtime check that
+compares resolved paths.
+
+Recommended judges: a small, well-aligned model in the 3–7B range such
+as `Qwen3.5-4B-Q4_K_M` or `Llama-3-8B-Instruct-Q4_K_M`. Set
+`judge_model_path` once in the `[qualitative]` block of your suite
+TOML; the same instance is shared between Phase 6 and Phase 7 in
+`ppb all` mode so the judge is only loaded into VRAM once.
 
 When `run_type == "qualitative"`, the sibling `quantitative` column is
 explicitly `null` so consumers don't conflate stale quant numbers with a

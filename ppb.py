@@ -4018,6 +4018,9 @@ def run_all(
         "n_no_claims",
         "quality_prompts_cache_hash",
     )
+    # ``run_multiturn()`` returns only the four canonical keys plus no
+    # diagnostics today, but reserve the tuple for forward-compat.
+    _MULTITURN_DIAGNOSTIC_KEYS: tuple[str, ...] = ()
 
     def _build_qualitative_block(model_hf_id: str) -> dict[str, Any]:
         """Assemble the canonical ``qualitative`` block for a model.
@@ -4030,6 +4033,7 @@ def run_all(
         cr = state.get("context_rot") or None
         ta_full = state.get("tool_accuracy") or None
         aq_full = state.get("answer_quality") or None
+        mt_full = state.get("multiturn") or None
         # Strip diagnostic-only keys before publish (Fix 6).
         ta = (
             {
@@ -4047,6 +4051,11 @@ def run_all(
                 if k not in _ANSWER_QUALITY_DIAGNOSTIC_KEYS
             }
             if aq_full
+            else None
+        )
+        mt = (
+            {k: v for k, v in mt_full.items() if k not in _MULTITURN_DIAGNOSTIC_KEYS}
+            if mt_full
             else None
         )
         return {
@@ -4072,12 +4081,11 @@ def run_all(
             "answer_relevancy_mean": (aq or {}).get("answer_relevancy_mean"),
             "coherence_mean": (aq or {}).get("coherence_mean"),
             "quality_composite_score": (aq or {}).get("quality_composite_score"),
-            "memory_accuracy": None,
-            "mt_bench_score": None,
-            # Reserved for Phase 7 (multiturn/LongMemEval) — populated by
-            # ppb_multiturn.py.
-            "cases_evaluated": None,
-            "cases_skipped_context": None,
+            # Multi-turn (LongMemEval / MT-Bench) — Phase 7.
+            "memory_accuracy": (mt or {}).get("memory_accuracy"),
+            "mt_bench_score": (mt or {}).get("mt_bench_score"),
+            "cases_evaluated": (mt or {}).get("cases_evaluated"),
+            "cases_skipped_context": (mt or {}).get("cases_skipped_context"),
         }
 
     def _build_meta_block(model_hf_id: str) -> dict[str, Any]:
@@ -4544,6 +4552,124 @@ def run_all(
                 console.print(
                     f"  [error]answer-quality failed for {hf_id}:[/error] {exc}"
                 )
+
+        # -- qualitative / multi-turn (LongMemEval / MT-Bench) ------------
+        # Run last: Phase 7 sits at the end of the qualitative chain so
+        # downstream consumers can rely on every other qualitative key
+        # being already populated when this row is published.
+        if _phase_qual and qual_cfg.get("multiturn_enabled"):
+            mt_mode = str(qual_cfg.get("multiturn_mode") or "longmemeval_s").strip()
+            mt_judge_path_cfg = qual_cfg.get("judge_model_path")
+            if mt_mode == "quick" and not mt_judge_path_cfg:
+                raise ValueError(
+                    "MT-Bench quick mode requires judge_model_path in suite TOML."
+                )
+
+            console.print(f"\n[info]multiturn[/info] [hw]{hf_id}[/hw]")
+            _line_offset_before_mt = _count_lines(resolved_results)
+            try:
+                from ppb_multiturn import run_multiturn_for_model
+
+                # Look up the VRAM cliff for this config so LongMemEval can
+                # skip cases whose history exceeds it.
+                mt_cap: int | None = max_ctx_caps.get(mp)
+                if mt_cap is None:
+                    try:
+                        from utils.publisher import (
+                            fetch_existing_quantitative_for,
+                        )
+
+                        pub_token_m = (raw.get("publish") or {}).get("token") or None
+                        prior_q = fetch_existing_quantitative_for(
+                            hf_id=hf_id,
+                            hardware=_hw_sniffer.snapshot(),
+                            token=pub_token_m,
+                        )
+                        if prior_q and prior_q.get("vram_cliff_tokens"):
+                            mt_cap = int(prior_q["vram_cliff_tokens"])
+                            console.print(
+                                f"  [info]ℹ Using existing quantitative result: "
+                                f"vram_cliff_tokens={mt_cap}[/info]"
+                            )
+                        else:
+                            console.print(
+                                "  [warning]⚠ No existing quantitative result "
+                                "found for this config. multiturn will not "
+                                "skip cases based on VRAM cliff.[/warning]"
+                            )
+                    except Exception:
+                        pass
+
+                mt_n_ctx = int(qual_cfg.get("multiturn_n_ctx", mt_cap or 8192))
+                mt_results = run_multiturn_for_model(
+                    mp,
+                    mt_judge_path_cfg,
+                    suite_config=qual_cfg,
+                    model_config={"vram_cliff_tokens": mt_cap},
+                    n_ctx=mt_n_ctx,
+                    n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
+                    verbose=False,
+                )
+                from utils.flattener import _parse_model_filename as _pmf4
+
+                _hw_snap4 = _hw_sniffer.snapshot()
+                _gpus4 = _hw_snap4.get("gpus") or []
+                _gpu_name4 = (_gpus4[0].get("name") if _gpus4 else "") or ""
+                _model_base4, _quant4 = _pmf4(mp.name)
+                mt_record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "runner_type": "multiturn",
+                    "model": hf_id,
+                    "gpu_name": _gpu_name4,
+                    "model_name": _model_base4 or "",
+                    "quant": _quant4 or "",
+                    "n_ctx": mt_n_ctx,
+                    "n_batch": None,
+                    "concurrent_users": None,
+                    "hardware": _hw_snap4,
+                    "suite_run_id": suite_run_id,
+                    "task_type": "multiturn-"
+                    + (
+                        mt_mode
+                        if mt_mode in ("longmemeval_s", "quick")
+                        else "longmemeval_s"
+                    ),
+                    "prompt_dataset": (
+                        "longmemeval-cleaned"
+                        if mt_mode == "longmemeval_s"
+                        else "mt_bench_human_judgments"
+                    ),
+                    "llm_engine_name": "llama-cpp-python",
+                    "llm_engine_version": None,
+                    "run_type": mode,
+                    "results": mt_results,
+                    "judge_model_path": (
+                        str(mt_judge_path_cfg) if mt_judge_path_cfg else None
+                    ),
+                }
+                _write_result(mt_record, resolved_results)
+                _qual_state.setdefault(hf_id, {})["multiturn"] = mt_results
+                _mem_acc = mt_results.get("memory_accuracy")
+                _mtb = mt_results.get("mt_bench_score")
+                if mt_mode == "quick":
+                    console.print(
+                        f"  [success]✓ mt_bench_score:[/success] "
+                        f"[bold green]"
+                        f"{('%.3f' % _mtb) if _mtb is not None else 'n/a'}"
+                        f"[/bold green]"
+                    )
+                else:
+                    console.print(
+                        f"  [success]✓ memory_accuracy:[/success] "
+                        f"[bold green]"
+                        f"{('%.3f' % _mem_acc) if _mem_acc is not None else 'n/a'}"
+                        f"[/bold green] "
+                        f"(evaluated={mt_results.get('cases_evaluated')}, "
+                        f"skipped={mt_results.get('cases_skipped_context')})"
+                    )
+                _on_model_done(hf_id, resolved_results, _line_offset_before_mt)
+            except Exception as exc:
+                console.print(f"  [error]multiturn failed for {hf_id}:[/error] {exc}")
 
     # -- Final summary -----------------------------------------------------
     if any_vram_cliff_failed and not any(v > 0 for v in max_ctx_caps.values()):

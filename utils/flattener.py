@@ -420,6 +420,15 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat["raw_payload"] = raw_payload
         _stamp_provenance(flat)
         rows = [flat]
+    elif runner_type == "multiturn" and isinstance(results, dict):
+        flat = _new_row()
+        flat.update(envelope)
+        flat.update(hw_fields)
+        flat["memory_accuracy"] = results.get("memory_accuracy")
+        flat["mt_bench_score"] = results.get("mt_bench_score")
+        flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
+        rows = [flat]
     else:
         # Unknown / unsupported runner — emit one row with Nones
         flat = _new_row()
@@ -461,7 +470,7 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         or (
             "qualitative"
             if row.get("runner_type")
-            in ("context-rot", "tool-accuracy", "answer-quality")
+            in ("context-rot", "tool-accuracy", "answer-quality", "multiturn")
             else "quantitative"
         ),
         "model": model,
