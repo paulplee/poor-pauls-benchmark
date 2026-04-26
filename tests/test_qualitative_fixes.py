@@ -122,7 +122,7 @@ def test_qualitative_publish_pipeline(monkeypatch, tmp_path) -> None:
       * ``quantitative is None``                                 (Fix 2a)
       * ``qualitative`` block populated from real phase results  (Fix 2b)
       * Diagnostic ``n_*`` keys are stripped                     (Fix 6)
-      * Future-phase placeholders (``faithfulness_mean`` etc.) are present
+      * Future-phase placeholders (``knowledge_accuracy_mean`` etc.) are present
         and ``None`` so consumers can rely on key existence.
 
     Phases that hit the GPU / network are mocked; ``_build_qualitative_block``
@@ -266,5 +266,5 @@ def test_qualitative_publish_pipeline(monkeypatch, tmp_path) -> None:
     )
 
     # Future-phase placeholders are present and null (not missing)
-    assert "faithfulness_mean" in qual and qual["faithfulness_mean"] is None
+    assert "knowledge_accuracy_mean" in qual and qual["knowledge_accuracy_mean"] is None
     assert "mt_bench_score" in qual and qual["mt_bench_score"] is None

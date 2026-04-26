@@ -55,8 +55,8 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 ```text
 ppb.py                 # CLI entry point (Typer app)
 ppb_context_rot.py     # context-rot / NIAH qualitative evaluation
-ppb_tool_accuracy.py   # tool-call accuracy (BFCL + PPB-native)
-ppb_answer_quality.py  # answer faithfulness / quality (judge-model pipeline)
+ppb_tool_accuracy.py   # tool-call accuracy (BFCL **v3** + PPB-native; see ppb_tool_accuracy.py re: v4 migration)
+ppb_answer_quality.py  # answer knowledge-accuracy / quality (judge-model pipeline)
 ppb_multiturn.py       # multi-turn memory & coherence (LongMemEval / MT-Bench)
 ppb_quality_prompts_cache.json  # frozen 50-prompt evaluation set (auto-generated)
 runners/
@@ -244,8 +244,8 @@ version bump.
 | `parameter_hallucination_rate`   | Phase 5 — Tool-Call Accuracy          | float        |
 | `parse_success_rate`             | Phase 5 — Tool-Call Accuracy          | float        |
 | `overall_tool_accuracy`          | Phase 5 — Tool-Call Accuracy          | float        |
-| `faithfulness_mean`              | Phase 6 — Answer Quality              | float        |
-| `faithfulness_std`               | Phase 6 — Answer Quality              | float        |
+| `knowledge_accuracy_mean`        | Phase 6 — Answer Quality              | float        |
+| `knowledge_accuracy_std`         | Phase 6 — Answer Quality              | float        |
 | `answer_relevancy_mean`          | Phase 6 — Answer Quality              | float        |
 | `coherence_mean`                 | Phase 6 — Answer Quality              | float        |
 | `quality_composite_score`        | Phase 6 — Answer Quality              | float        |

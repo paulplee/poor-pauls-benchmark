@@ -4076,8 +4076,8 @@ def run_all(
             "parse_success_rate": (ta or {}).get("parse_success_rate"),
             "overall_tool_accuracy": (ta or {}).get("overall_tool_accuracy"),
             # Reserved for future phases — always null for now.
-            "faithfulness_mean": (aq or {}).get("faithfulness_mean"),
-            "faithfulness_std": (aq or {}).get("faithfulness_std"),
+            "knowledge_accuracy_mean": (aq or {}).get("knowledge_accuracy_mean"),
+            "knowledge_accuracy_std": (aq or {}).get("knowledge_accuracy_std"),
             "answer_relevancy_mean": (aq or {}).get("answer_relevancy_mean"),
             "coherence_mean": (aq or {}).get("coherence_mean"),
             "quality_composite_score": (aq or {}).get("quality_composite_score"),

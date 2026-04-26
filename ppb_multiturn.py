@@ -71,6 +71,13 @@ DEFAULT_JUDGE_MAX_TOKENS = 16
 LONGMEMEVAL_REPO = "xiaowu0162/longmemeval-cleaned"
 LONGMEMEVAL_SPLIT = "longmemeval_s"
 MTBENCH_REPO = "lmsys/mt_bench_human_judgments"
+# Bundled copy of the canonical 80-question MT-Bench prompt set
+# (https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl).
+# Loading from disk avoids a runtime HuggingFace fetch for the deterministic prompts;
+# the lmsys/mt_bench_human_judgments dataset remains a fallback.
+MTBENCH_QUESTIONS_PATH = (
+    Path(__file__).resolve().parent / "ppb_datasets" / "data" / "mt_bench_questions.json"
+)
 
 VALID_MODES = ("longmemeval_s", "quick")
 
@@ -325,7 +332,40 @@ def _run_longmemeval(
 
 
 def _load_mtbench() -> list[dict[str, Any]]:
-    """Load 80 two-turn questions from MT-Bench, deduplicated by question_id."""
+    """Load 80 two-turn questions from MT-Bench, deduplicated by question_id.
+
+    Prefers the bundled JSON file at ``MTBENCH_QUESTIONS_PATH``. Falls back to
+    fetching from the HuggingFace ``lmsys/mt_bench_human_judgments`` dataset
+    if the bundle is missing.
+    """
+    if MTBENCH_QUESTIONS_PATH.exists():
+        import json
+
+        log.info("[multiturn] loading bundled MT-Bench questions from %s", MTBENCH_QUESTIONS_PATH)
+        with MTBENCH_QUESTIONS_PATH.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        cases: list[dict[str, Any]] = []
+        for row in raw:
+            turns = row.get("turns") or []
+            if not isinstance(turns, list) or len(turns) < 2:
+                continue
+            cases.append(
+                {
+                    "question_id": row.get("question_id"),
+                    "turn1": turns[0],
+                    "turn2": turns[1],
+                }
+            )
+            if len(cases) >= 80:
+                break
+        return cases
+
+    log.warning(
+        "[multiturn] bundled MT-Bench questions not found at %s; "
+        "falling back to HuggingFace download (%s)",
+        MTBENCH_QUESTIONS_PATH,
+        MTBENCH_REPO,
+    )
     try:
         from datasets import load_dataset  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover

@@ -1,3 +1,4 @@
-# Ignore downloaded dataset files — only track code and .gitignore
+# Ignore downloaded dataset files — only track code, .gitignore, and bundled prompts
 *
 !.gitignore
+!mt_bench_questions.json

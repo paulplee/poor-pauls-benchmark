@@ -32,7 +32,10 @@ packages = ["runners", "utils", "ppb_datasets"]
 include = ["ppb.py"]
 
 [project.optional-dependencies]
-# Optional: qualitative context-rot evaluation.
+# Optional: qualitative evaluation suite — covers all four phases
+# (context-rot, tool-call accuracy, answer knowledge-accuracy & quality,
+# and multi-turn memory). All four phases require llama-cpp-python for
+# local model inference.
 #
 # llama-cpp-python requires a C++ build step.  A plain `pip install`
 # will compile a CPU-only binary.  For GPU-accelerated inference (required

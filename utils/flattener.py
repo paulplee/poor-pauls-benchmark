@@ -99,8 +99,8 @@ COLUMN_ORDER: list[str] = [
     "parameter_hallucination_rate",
     "parse_success_rate",
     "overall_tool_accuracy",
-    "faithfulness_mean",
-    "faithfulness_std",
+    "knowledge_accuracy_mean",
+    "knowledge_accuracy_std",
     "answer_relevancy_mean",
     "coherence_mean",
     "quality_composite_score",
@@ -419,8 +419,8 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat = _new_row()
         flat.update(envelope)
         flat.update(hw_fields)
-        flat["faithfulness_mean"] = results.get("faithfulness_mean")
-        flat["faithfulness_std"] = results.get("faithfulness_std")
+        flat["knowledge_accuracy_mean"] = results.get("knowledge_accuracy_mean")
+        flat["knowledge_accuracy_std"] = results.get("knowledge_accuracy_std")
         flat["answer_relevancy_mean"] = results.get("answer_relevancy_mean")
         flat["coherence_mean"] = results.get("coherence_mean")
         flat["quality_composite_score"] = results.get("quality_composite_score")

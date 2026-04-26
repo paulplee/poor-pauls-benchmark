@@ -1,11 +1,15 @@
 """
-PPB — Answer Faithfulness & Quality (Phase 6).
+PPB — Answer Knowledge-Accuracy & Quality (Phase 6).
 
 Scores model answers on three orthogonal dimensions using a *two-model*
 pipeline so the model under test never grades itself:
 
-* **Faithfulness**     — fraction of factual claims in the response that
-  the judge model considers correct under common knowledge.
+* **Knowledge Accuracy** — fraction of factual claims in the response that
+  the judge model considers consistent with common knowledge.  NOTE:
+  this differs from RAGAS-style faithfulness, which grounds verification
+  against a reference context.  PPB has no ground-truth reference for
+  open-ended ShareGPT prompts, so the judge's parametric knowledge is
+  used instead.  See ``docs/qualitative-methodology.md``.
 * **Answer Relevancy** — how directly the response addresses the prompt
   (judge-rated 1–5, normalised to 0–1).
 * **Coherence**        — logical consistency of the response
@@ -242,6 +246,10 @@ _CLAIMS_PROMPT = (
     "Response:\n{response}\n\nJSON:"
 )
 
+# This prompt measures whether claims are consistent with the judge's
+# parametric knowledge (knowledge accuracy), not grounded faithfulness
+# against a reference context.  See docs/qualitative-methodology.md for
+# the distinction.
 _VERIFY_CLAIM_PROMPT = (
     "Is the following claim factually correct and not contradicted by common "
     "knowledge? Answer YES or NO only.\n\nClaim: {claim}\n\nAnswer:"
@@ -265,10 +273,10 @@ _COHERENCE_PROMPT = (
 # ---------------------------------------------------------------------------
 
 
-def _score_faithfulness(judge: Any, response: str) -> tuple[float | None, int, int]:
-    """Return ``(faithfulness, n_yes, n_total)``.
+def _score_knowledge_accuracy(judge: Any, response: str) -> tuple[float | None, int, int]:
+    """Return ``(knowledge_accuracy, n_yes, n_total)``.
 
-    ``faithfulness`` is ``None`` when zero claims were extracted.
+    ``knowledge_accuracy`` is ``None`` when zero claims were extracted.
     """
     raw = _llm_complete(
         judge,
@@ -332,7 +340,7 @@ def run_answer_quality(
     model_config: dict[str, Any] | None = None,
     suite_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Score the generator on faithfulness, relevancy, and coherence.
+    """Score the generator on knowledge accuracy, relevancy, and coherence.
 
     Both ``generator_llm`` and ``judge_llm`` must be *separate*
     ``llama_cpp.Llama`` instances — the spec forbids self-grading.
@@ -360,7 +368,7 @@ def run_answer_quality(
         flush=True,
     )
 
-    faith_scores: list[float] = []
+    ka_scores: list[float] = []
     relevancy_scores: list[float] = []
     coherence_scores: list[float] = []
     n_no_claims = 0
@@ -375,25 +383,25 @@ def run_answer_quality(
         )
         if not response.strip():
             # Empty generation — record a 0 across the board, but no
-            # claims to verify, so faithfulness is undefined for this
-            # prompt and excluded from the mean (consistent with the
-            # spec's "null when no claims extracted" rule).
+            # claims to verify, so knowledge accuracy is undefined for
+            # this prompt and excluded from the mean (consistent with
+            # the spec's "null when no claims extracted" rule).
             n_no_claims += 1
             relevancy_scores.append(0.0)
             coherence_scores.append(0.0)
             print(
                 f"  ✓ [{i}/{total}] empty generation — "
-                f"faithfulness=none relevancy=0.00 coherence=0.00 "
+                f"knowledge_accuracy=none relevancy=0.00 coherence=0.00 "
                 f"({time.time() - t0:.1f}s)",
                 flush=True,
             )
             continue
 
-        faith, _n_yes, n_total = _score_faithfulness(judge_llm, response)
-        if faith is None:
+        ka, _n_yes, n_total = _score_knowledge_accuracy(judge_llm, response)
+        if ka is None:
             n_no_claims += 1
         else:
-            faith_scores.append(faith)
+            ka_scores.append(ka)
         relevancy = _score_relevancy(judge_llm, prompt, response)
         coherence = _score_coherence(judge_llm, response)
         if relevancy is not None:
@@ -402,7 +410,7 @@ def run_answer_quality(
             coherence_scores.append(coherence)
 
         composite_components = [
-            x for x in (faith, relevancy, coherence) if x is not None
+            x for x in (ka, relevancy, coherence) if x is not None
         ]
         composite = (
             sum(composite_components) / len(composite_components)
@@ -412,7 +420,7 @@ def run_answer_quality(
         elapsed = time.time() - t0
         print(
             f"  ✓ [{i}/{total}] "
-            f"faithfulness={('%.2f' % faith) if faith is not None else 'none'} "
+            f"knowledge_accuracy={('%.2f' % ka) if ka is not None else 'none'} "
             f"relevancy={('%.2f' % relevancy) if relevancy is not None else 'none'} "
             f"coherence={('%.2f' % coherence) if coherence is not None else 'none'} "
             f"composite={('%.2f' % composite) if not math.isnan(composite) else 'none'} "
@@ -420,15 +428,15 @@ def run_answer_quality(
             flush=True,
         )
 
-    faithfulness_mean = statistics.fmean(faith_scores) if faith_scores else None
-    faithfulness_std = statistics.stdev(faith_scores) if len(faith_scores) > 1 else None
+    knowledge_accuracy_mean = statistics.fmean(ka_scores) if ka_scores else None
+    knowledge_accuracy_std = statistics.stdev(ka_scores) if len(ka_scores) > 1 else None
     answer_relevancy_mean = (
         statistics.fmean(relevancy_scores) if relevancy_scores else None
     )
     coherence_mean = statistics.fmean(coherence_scores) if coherence_scores else None
     composite_components = [
         m
-        for m in (faithfulness_mean, answer_relevancy_mean, coherence_mean)
+        for m in (knowledge_accuracy_mean, answer_relevancy_mean, coherence_mean)
         if m is not None
     ]
     quality_composite_score = (
@@ -439,8 +447,8 @@ def run_answer_quality(
 
     print(
         f"[answer-quality] "
-        f"faithfulness_mean={faithfulness_mean if faithfulness_mean is None else f'{faithfulness_mean:.3f}'} "
-        f"(std={faithfulness_std if faithfulness_std is None else f'{faithfulness_std:.3f}'}) "
+        f"knowledge_accuracy_mean={knowledge_accuracy_mean if knowledge_accuracy_mean is None else f'{knowledge_accuracy_mean:.3f}'} "
+        f"(std={knowledge_accuracy_std if knowledge_accuracy_std is None else f'{knowledge_accuracy_std:.3f}'}) "
         f"relevancy_mean={answer_relevancy_mean if answer_relevancy_mean is None else f'{answer_relevancy_mean:.3f}'} "
         f"coherence_mean={coherence_mean if coherence_mean is None else f'{coherence_mean:.3f}'} "
         f"composite={quality_composite_score if quality_composite_score is None else f'{quality_composite_score:.3f}'}",
@@ -448,8 +456,8 @@ def run_answer_quality(
     )
 
     return {
-        "faithfulness_mean": faithfulness_mean,
-        "faithfulness_std": faithfulness_std,
+        "knowledge_accuracy_mean": knowledge_accuracy_mean,
+        "knowledge_accuracy_std": knowledge_accuracy_std,
         "answer_relevancy_mean": answer_relevancy_mean,
         "coherence_mean": coherence_mean,
         "quality_composite_score": quality_composite_score,

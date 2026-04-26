@@ -95,8 +95,8 @@ tool_accuracy_enabled = true
 # tool_accuracy_n_ctx = 4096
 
 
-# -- Answer Faithfulness & Quality (judge-model pipeline) -------------------
-# Scores model answers on Faithfulness, Answer Relevancy, and Coherence.
+# -- Answer Knowledge-Accuracy & Quality (judge-model pipeline) ------------
+# Scores model answers on Knowledge Accuracy, Answer Relevancy, and Coherence.
 # Uses a TWO-MODEL pipeline: the model under test (the "generator") plus a
 # separate, smaller local "judge" model that grades the responses.  The
 # generator and judge MUST be different models — the judge cannot grade

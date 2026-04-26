@@ -124,7 +124,7 @@ Lengths exceeding the model's measured `vram_cliff_tokens` are skipped and
 recorded as `null` in `context_rot_accuracy_by_length` rather than failing the
 run.
 
-## Qualitative Evaluation (Answer Faithfulness & Quality)
+## Qualitative Evaluation (Answer Knowledge-Accuracy & Quality)
 
 Phase 6 scores model answers on three orthogonal dimensions using a
 _two-model_ pipeline: the model under test (the "generator") plus a separate,
@@ -134,11 +134,16 @@ models — the judge cannot grade itself. Rows produced by this phase carry
 
 | Field                     | Type          | Description                                                              |
 | ------------------------- | ------------- | ------------------------------------------------------------------------ |
-| `faithfulness_mean`       | float \| null | Mean fraction of factual claims judged correct, across the 50-prompt set |
-| `faithfulness_std`        | float \| null | Standard deviation of per-prompt faithfulness scores                     |
+| `knowledge_accuracy_mean` | float \| null | Mean fraction of factual claims judged consistent with common knowledge  |
+| `knowledge_accuracy_std`  | float \| null | Standard deviation of per-prompt knowledge-accuracy scores               |
 | `answer_relevancy_mean`   | float \| null | Mean judge-rated relevancy (1–5 → 0–1)                                   |
 | `coherence_mean`          | float \| null | Mean judge-rated coherence (1–10 → 0–1)                                  |
 | `quality_composite_score` | float \| null | Mean of the three means above — the headline answer-quality metric       |
+
+NOTE: `knowledge_accuracy` differs from RAGAS-style faithfulness, which
+grounds verification against a reference context. PPB has no ground-truth
+reference for open-ended ShareGPT prompts. See
+[`docs/qualitative-methodology.md`](qualitative-methodology.md).
 
 50 single-turn factual prompts are sampled once from
 `anon8231489123/ShareGPT_Vicuna_unfiltered` and cached in

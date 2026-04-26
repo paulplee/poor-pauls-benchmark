@@ -56,6 +56,10 @@ BFCL_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 # one JSON object.
 #   BFCL_v3_simple.json    — single-function, one correct call (~400 cases)
 #   BFCL_v3_multiple.json  — multi-function, model picks one of 2-4 (~200)
+#
+# NOTE: BFCL v3 dataset — pinned intentionally. BFCL v4 restructured the schema;
+# PPB will migrate in a future release. Results from this module are NOT
+# directly comparable to the Berkeley BFCL v4 leaderboard.
 BFCL_FILES = ("BFCL_v3_simple.json", "BFCL_v3_multiple.json")
 
 DEFAULT_BFCL_SAMPLE_SIZE = 100

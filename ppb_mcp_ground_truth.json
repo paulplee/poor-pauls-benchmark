@@ -50,10 +50,12 @@
         "type": "object",
         "properties": {
           "model": {
-            "type": "string"
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
           },
           "gpu_vram_gb": {
-            "type": "number"
+            "type": "number",
+            "description": "GPU VRAM in GB."
           },
           "priority": {
             "type": "string",
@@ -61,7 +63,8 @@
               "speed",
               "quality",
               "balanced"
-            ]
+            ],
+            "description": "Optimisation priority."
           }
         },
         "required": [
@@ -81,7 +84,7 @@
     }
   },
   {
-    "question": "Recommend a balanced quant for Mistral-Small-24B on a 16GB RTX 4080.",
+    "question": "Recommend a balanced quantization for Mistral-Small-24B on a 16GB RTX 4060 Ti.",
     "function": {
       "name": "recommend_quantization",
       "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
@@ -89,10 +92,12 @@
         "type": "object",
         "properties": {
           "model": {
-            "type": "string"
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
           },
           "gpu_vram_gb": {
-            "type": "number"
+            "type": "number",
+            "description": "GPU VRAM in GB."
           },
           "priority": {
             "type": "string",
@@ -100,7 +105,8 @@
               "speed",
               "quality",
               "balanced"
-            ]
+            ],
+            "description": "Optimisation priority."
           }
         },
         "required": [
@@ -120,493 +126,7 @@
     }
   },
   {
-    "question": "What GPUs and models have been tested in PPB?",
-    "function": {
-      "name": "list_tested_configs",
-      "description": "List all GPU, model, and quantization combinations available in the PPB dataset.",
-      "parameters": {
-        "type": "object",
-        "properties": {},
-        "required": []
-      }
-    },
-    "answer": {
-      "name": "list_tested_configs",
-      "arguments": {}
-    }
-  },
-  {
-    "question": "Show me all available benchmark configurations.",
-    "function": {
-      "name": "list_tested_configs",
-      "description": "List all GPU, model, and quantization combinations available in the PPB dataset.",
-      "parameters": {
-        "type": "object",
-        "properties": {},
-        "required": []
-      }
-    },
-    "answer": {
-      "name": "list_tested_configs",
-      "arguments": {}
-    }
-  },
-  {
-    "question": "Show me all configurations that have been tested on an RTX 4090.",
-    "function": {
-      "name": "list_tested_configs",
-      "description": "List PPB-tested (model, quantization, GPU) configurations.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_name": {
-            "type": "string",
-            "description": "Filter by GPU model name."
-          },
-          "model": {
-            "type": "string",
-            "description": "Filter by base model name."
-          }
-        },
-        "required": []
-      }
-    },
-    "answer": {
-      "name": "list_tested_configs",
-      "arguments": {
-        "gpu_name": "RTX 4090"
-      }
-    }
-  },
-  {
-    "question": "Which models have been benchmarked so far?",
-    "function": {
-      "name": "list_tested_configs",
-      "description": "List PPB-tested (model, quantization, GPU) configurations.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_name": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          }
-        },
-        "required": []
-      }
-    },
-    "answer": {
-      "name": "list_tested_configs",
-      "arguments": {}
-    }
-  },
-  {
-    "question": "List all tested configurations for Llama-3.1-8B.",
-    "function": {
-      "name": "list_tested_configs",
-      "description": "List PPB-tested (model, quantization, GPU) configurations.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_name": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          }
-        },
-        "required": []
-      }
-    },
-    "answer": {
-      "name": "list_tested_configs",
-      "arguments": {
-        "model": "Llama-3.1-8B"
-      }
-    }
-  },
-  {
-    "question": "What configs has someone benchmarked with a 3090?",
-    "function": {
-      "name": "list_tested_configs",
-      "description": "List PPB-tested (model, quantization, GPU) configurations.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_name": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          }
-        },
-        "required": []
-      }
-    },
-    "answer": {
-      "name": "list_tested_configs",
-      "arguments": {
-        "gpu_name": "RTX 3090"
-      }
-    }
-  },
-  {
-    "question": "Find the throughput of Qwen3-30B Q4_K_M on an RTX 4090.",
-    "function": {
-      "name": "query_ppb_results",
-      "description": "Query the PPB results dataset for benchmark rows matching the given filters.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "gpu_name": {
-            "type": "string"
-          },
-          "metric": {
-            "type": "string",
-            "description": "Metric to return, e.g. 'avg_throughput_tps'."
-          }
-        },
-        "required": [
-          "model"
-        ]
-      }
-    },
-    "answer": {
-      "name": "query_ppb_results",
-      "arguments": {
-        "gpu_name": "RTX 4090",
-        "metric": "avg_throughput_tps",
-        "model": "Qwen3-30B",
-        "quantization": "Q4_K_M"
-      }
-    }
-  },
-  {
-    "question": "What's the TTFT of Llama-3.1-8B at Q5_K_M?",
-    "function": {
-      "name": "query_ppb_results",
-      "description": "Query the PPB results dataset for benchmark rows matching the given filters.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "gpu_name": {
-            "type": "string"
-          },
-          "metric": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "model"
-        ]
-      }
-    },
-    "answer": {
-      "name": "query_ppb_results",
-      "arguments": {
-        "metric": "p50_ttft_ms",
-        "model": "Llama-3.1-8B",
-        "quantization": "Q5_K_M"
-      }
-    }
-  },
-  {
-    "question": "Show me the context-rot score for Mistral-Small-24B.",
-    "function": {
-      "name": "query_ppb_results",
-      "description": "Query the PPB results dataset for benchmark rows matching the given filters.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "gpu_name": {
-            "type": "string"
-          },
-          "metric": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "model"
-        ]
-      }
-    },
-    "answer": {
-      "name": "query_ppb_results",
-      "arguments": {
-        "metric": "context_rot_score",
-        "model": "Mistral-Small-24B"
-      }
-    }
-  },
-  {
-    "question": "What is the VRAM cliff for Qwen3.5-9B Q4_K_M on an RTX 3090?",
-    "function": {
-      "name": "query_ppb_results",
-      "description": "Query the PPB results dataset for benchmark rows matching the given filters.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "gpu_name": {
-            "type": "string"
-          },
-          "metric": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "model"
-        ]
-      }
-    },
-    "answer": {
-      "name": "query_ppb_results",
-      "arguments": {
-        "gpu_name": "RTX 3090",
-        "metric": "vram_cliff_tokens",
-        "model": "Qwen3.5-9B",
-        "quantization": "Q4_K_M"
-      }
-    }
-  },
-  {
-    "question": "Get me the prompt-processing speed of Phi-4-14B Q6_K.",
-    "function": {
-      "name": "query_ppb_results",
-      "description": "Query the PPB results dataset for benchmark rows matching the given filters.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "gpu_name": {
-            "type": "string"
-          },
-          "metric": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "model"
-        ]
-      }
-    },
-    "answer": {
-      "name": "query_ppb_results",
-      "arguments": {
-        "metric": "tokens_per_sec_prompt",
-        "model": "Phi-4-14B",
-        "quantization": "Q6_K"
-      }
-    }
-  },
-  {
-    "question": "How much VRAM headroom do I have left on a 24GB RTX 4090 if I'm running Qwen3-30B Q4_K_M?",
-    "function": {
-      "name": "get_gpu_headroom",
-      "description": "Estimate remaining GPU VRAM headroom for a given model+quant on a given GPU.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_vram_gb": {
-            "type": "number"
-          },
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "n_ctx": {
-            "type": "integer",
-            "description": "Optional context length to size the KV cache for."
-          }
-        },
-        "required": [
-          "gpu_vram_gb",
-          "model",
-          "quantization"
-        ]
-      }
-    },
-    "answer": {
-      "name": "get_gpu_headroom",
-      "arguments": {
-        "gpu_vram_gb": 24,
-        "model": "Qwen3-30B",
-        "quantization": "Q4_K_M"
-      }
-    }
-  },
-  {
-    "question": "Will Llama-3.1-70B Q3_K_M fit on a 48GB A6000 at 32k context?",
-    "function": {
-      "name": "get_gpu_headroom",
-      "description": "Estimate remaining GPU VRAM headroom for a given model+quant on a given GPU.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_vram_gb": {
-            "type": "number"
-          },
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "n_ctx": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "gpu_vram_gb",
-          "model",
-          "quantization"
-        ]
-      }
-    },
-    "answer": {
-      "name": "get_gpu_headroom",
-      "arguments": {
-        "gpu_vram_gb": 48,
-        "model": "Llama-3.1-70B",
-        "n_ctx": 32768,
-        "quantization": "Q3_K_M"
-      }
-    }
-  },
-  {
-    "question": "How much spare VRAM is left running Mistral-Small-24B Q5_K_M on my 32GB RTX 5090 with 16k context?",
-    "function": {
-      "name": "get_gpu_headroom",
-      "description": "Estimate remaining GPU VRAM headroom for a given model+quant on a given GPU.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_vram_gb": {
-            "type": "number"
-          },
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "n_ctx": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "gpu_vram_gb",
-          "model",
-          "quantization"
-        ]
-      }
-    },
-    "answer": {
-      "name": "get_gpu_headroom",
-      "arguments": {
-        "gpu_vram_gb": 32,
-        "model": "Mistral-Small-24B",
-        "n_ctx": 16384,
-        "quantization": "Q5_K_M"
-      }
-    }
-  },
-  {
-    "question": "Calculate the headroom for Phi-4-14B Q4_K_M on a 16GB RTX 4080.",
-    "function": {
-      "name": "get_gpu_headroom",
-      "description": "Estimate remaining GPU VRAM headroom for a given model+quant on a given GPU.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_vram_gb": {
-            "type": "number"
-          },
-          "model": {
-            "type": "string"
-          },
-          "quantization": {
-            "type": "string"
-          },
-          "n_ctx": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "gpu_vram_gb",
-          "model",
-          "quantization"
-        ]
-      }
-    },
-    "answer": {
-      "name": "get_gpu_headroom",
-      "arguments": {
-        "gpu_vram_gb": 16,
-        "model": "Phi-4-14B",
-        "quantization": "Q4_K_M"
-      }
-    }
-  },
-  {
-    "question": "List configs tested for Qwen3.5-2B on an RTX 4090.",
-    "function": {
-      "name": "list_tested_configs",
-      "description": "List PPB-tested (model, quantization, GPU) configurations.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "gpu_name": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          }
-        },
-        "required": []
-      }
-    },
-    "answer": {
-      "name": "list_tested_configs",
-      "arguments": {
-        "gpu_name": "RTX 4090",
-        "model": "Qwen3.5-2B"
-      }
-    }
-  },
-  {
-    "question": "What quant of Llama-3.1-8B should I pick for a 12GB GPU at balanced quality and speed?",
+    "question": "I have an 8GB GPU and want fastest tok/s for Phi-3-mini — what quant?",
     "function": {
       "name": "recommend_quantization",
       "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
@@ -614,10 +134,12 @@
         "type": "object",
         "properties": {
           "model": {
-            "type": "string"
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
           },
           "gpu_vram_gb": {
-            "type": "number"
+            "type": "number",
+            "description": "GPU VRAM in GB."
           },
           "priority": {
             "type": "string",
@@ -625,7 +147,302 @@
               "speed",
               "quality",
               "balanced"
-            ]
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 8,
+        "model": "Phi-3-mini",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "What's the sweet-spot quantization for Gemma-2-9B on a 12GB RTX 3060?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "Gemma-2-9B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Best quality quant for Qwen2.5-Coder-32B on 24GB?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "Qwen2.5-Coder-32B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Llama-3.2-3B on a 8GB card.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 8,
+        "model": "Llama-3.2-3B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Fastest quant for Yi-1.5-34B on 24GB.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "Yi-1.5-34B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Highest quality quant for DeepSeek-V2-Lite-16B on a 12GB GPU.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "DeepSeek-V2-Lite-16B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant pick for Mixtral-8x7B on a 48GB A6000?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 48,
+        "model": "Mixtral-8x7B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "What's the speediest quant for Llama-3.1-8B on a 12GB RTX 3060?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
           }
         },
         "required": [
@@ -640,8 +457,3095 @@
       "arguments": {
         "gpu_vram_gb": 12,
         "model": "Llama-3.1-8B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Top quality quant for Command-R-35B on 24GB VRAM?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "Command-R-35B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Best quality quant for Qwen3-72B on an 80GB H100?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 80,
+        "model": "Qwen3-72B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Qwen3-72B on a 48GB A6000?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 48,
+        "model": "Qwen3-72B",
         "priority": "balanced"
       }
+    }
+  },
+  {
+    "question": "Fast inference quant for Llama-3.3-70B on 80GB?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 80,
+        "model": "Llama-3.3-70B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Llama-3.3-70B squeezed onto a 24GB 4090?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "Llama-3.3-70B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Granite-3.0-8B on an 8GB GPU.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 8,
+        "model": "Granite-3.0-8B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Speediest quant for Falcon3-7B on a 12GB card.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "Falcon3-7B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Best quality quant for StableLM-2-12B on 16GB.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 16,
+        "model": "StableLM-2-12B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Balanced pick for Hermes-3-8B on a 12GB GPU.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "Hermes-3-8B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Fastest-tok/s quant for Qwen3-14B on a 12GB 3080?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "Qwen3-14B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Highest fidelity quant for Qwen3-14B on a 24GB card.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "Qwen3-14B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Llama-3.1-405B on an 80GB H100?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 80,
+        "model": "Llama-3.1-405B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Speed quant for Phi-3.5-MoE on a 24GB 3090.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "Phi-3.5-MoE",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Best quality quant for Phi-3.5-mini at 8GB VRAM.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 8,
+        "model": "Phi-3.5-mini",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Mistral-Nemo-12B on 16GB?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 16,
+        "model": "Mistral-Nemo-12B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Tightest+fast quant for Mistral-Nemo-12B on a 12GB 3060.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "Mistral-Nemo-12B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for DeepSeek-V3-67B on a 48GB A6000.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 48,
+        "model": "DeepSeek-V3-67B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Highest-quality quant for DeepSeek-V3-67B on 80GB H100.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 80,
+        "model": "DeepSeek-V3-67B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Speedy quant for Aya-23-35B on 24GB.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "Aya-23-35B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Best quality quant for Aya-23-8B on a 12GB card.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "Aya-23-8B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for InternLM2.5-20B on a 24GB 4090.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 24,
+        "model": "InternLM2.5-20B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Solar-Pro-22B on 16GB?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 16,
+        "model": "Solar-Pro-22B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Fastest quant for MiniCPM-3-4B on an 8GB GPU?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 8,
+        "model": "MiniCPM-3-4B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for OLMo-2-7B on 8GB.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 8,
+        "model": "OLMo-2-7B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Best quality quant for OLMo-2-13B on a 16GB 4060 Ti.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 16,
+        "model": "OLMo-2-13B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Speedy quant for Smaug-72B on a 48GB A6000?",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 48,
+        "model": "Smaug-72B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Best quality quant for Smaug-72B on 80GB.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 80,
+        "model": "Smaug-72B",
+        "priority": "quality"
+      }
+    }
+  },
+  {
+    "question": "Fastest quant for Qwen3-MoE-A3B on a 12GB 3060.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 12,
+        "model": "Qwen3-MoE-A3B",
+        "priority": "speed"
+      }
+    }
+  },
+  {
+    "question": "Balanced quant for Mixtral-8x22B on a 48GB A6000.",
+    "function": {
+      "name": "recommend_quantization",
+      "description": "Recommend a GGUF quantization tag for a model+GPU pairing based on benchmarked PPB results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "gpu_vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "speed",
+              "quality",
+              "balanced"
+            ],
+            "description": "Optimisation priority."
+          }
+        },
+        "required": [
+          "model",
+          "gpu_vram_gb",
+          "priority"
+        ]
+      }
+    },
+    "answer": {
+      "name": "recommend_quantization",
+      "arguments": {
+        "gpu_vram_gb": 48,
+        "model": "Mixtral-8x22B",
+        "priority": "balanced"
+      }
+    }
+  },
+  {
+    "question": "Show me every PPB result on the RTX 4090.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "RTX 4090"
+      }
+    }
+  },
+  {
+    "question": "What benchmarks do you have for the RTX 3090?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "RTX 3090"
+      }
+    }
+  },
+  {
+    "question": "List PPB results recorded on an RTX 3060.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "RTX 3060"
+      }
+    }
+  },
+  {
+    "question": "Pull the PPB rows for the A6000.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "A6000"
+      }
+    }
+  },
+  {
+    "question": "Any benchmarks on the M2 Ultra?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "M2 Ultra"
+      }
+    }
+  },
+  {
+    "question": "List every PPB row for Qwen3-30B.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Qwen3-30B"
+      }
+    }
+  },
+  {
+    "question": "Show me all results for Llama-3.1-8B.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Llama-3.1-8B"
+      }
+    }
+  },
+  {
+    "question": "Find PPB results for Mixtral-8x7B.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Mixtral-8x7B"
+      }
+    }
+  },
+  {
+    "question": "What PPB data exists for Phi-3-mini?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Phi-3-mini"
+      }
+    }
+  },
+  {
+    "question": "Pull all rows for Gemma-2-9B.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Gemma-2-9B"
+      }
+    }
+  },
+  {
+    "question": "Show me Qwen3-30B Q4_K_M results.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Qwen3-30B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "List Llama-3.1-70B at Q5_K_M.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Llama-3.1-70B",
+        "quantization": "Q5_K_M"
+      }
+    }
+  },
+  {
+    "question": "Find Mistral-Small-24B IQ3_XS rows.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Mistral-Small-24B",
+        "quantization": "IQ3_XS"
+      }
+    }
+  },
+  {
+    "question": "PPB results for Yi-1.5-34B Q8_0?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Yi-1.5-34B",
+        "quantization": "Q8_0"
+      }
+    }
+  },
+  {
+    "question": "Look up Mixtral-8x22B Q3_K_M.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "model": "Mixtral-8x22B",
+        "quantization": "Q3_K_M"
+      }
+    }
+  },
+  {
+    "question": "Filter PPB results to RTX 4090 (24GB) Qwen3-30B Q4_K_M.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "RTX 4090",
+        "vram_gb": 24,
+        "model": "Qwen3-30B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "Show A100 80GB results for Llama-3.1-70B Q5_K_M.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "A100",
+        "vram_gb": 80,
+        "model": "Llama-3.1-70B",
+        "quantization": "Q5_K_M"
+      }
+    }
+  },
+  {
+    "question": "RTX 3090 24GB Llama-3.3-70B Q3_K_S — what's there?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "RTX 3090",
+        "vram_gb": 24,
+        "model": "Llama-3.3-70B",
+        "quantization": "Q3_K_S"
+      }
+    }
+  },
+  {
+    "question": "RTX 3060 12GB Gemma-2-9B Q4_K_M results please.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "RTX 3060",
+        "vram_gb": 12,
+        "model": "Gemma-2-9B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "M2 Ultra 64GB Llama-3.1-8B Q8_0 rows?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "gpu_name": "M2 Ultra",
+        "vram_gb": 64,
+        "model": "Llama-3.1-8B",
+        "quantization": "Q8_0"
+      }
+    }
+  },
+  {
+    "question": "What runs do you have for any 24GB card?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "vram_gb": 24
+      }
+    }
+  },
+  {
+    "question": "Which results were recorded on 48GB GPUs?",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {
+        "vram_gb": 48
+      }
+    }
+  },
+  {
+    "question": "Dump everything in the PPB results dataset.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Just show me all PPB results, no filters.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Give me the entire PPB result set.",
+    "function": {
+      "name": "query_ppb_results",
+      "description": "Query the PPB results dataset filtered by GPU, VRAM size, model, and/or quantization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "vram_gb": {
+            "type": "number",
+            "description": "GPU VRAM in GB."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name, e.g. 'Qwen3-30B'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag, e.g. 'Q4_K_M'."
+          }
+        },
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "query_ppb_results",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "How much VRAM headroom is left on an RTX 3060 running Llama-3.1-8B Q4_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 3060",
+        "model": "Llama-3.1-8B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "What's the spare VRAM on an RTX 4090 with Qwen3-30B Q5_K_M loaded?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 4090",
+        "model": "Qwen3-30B",
+        "quantization": "Q5_K_M"
+      }
+    }
+  },
+  {
+    "question": "VRAM headroom on RTX 3090 for Llama-3.1-8B Q8_0?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 3090",
+        "model": "Llama-3.1-8B",
+        "quantization": "Q8_0"
+      }
+    }
+  },
+  {
+    "question": "How much VRAM is free on an A100 running Llama-3.1-70B Q4_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "A100",
+        "model": "Llama-3.1-70B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "Spare unified memory on M2 Ultra after loading Mixtral-8x7B Q5_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "M2 Ultra",
+        "model": "Mixtral-8x7B",
+        "quantization": "Q5_K_M"
+      }
+    }
+  },
+  {
+    "question": "Headroom on a 4090 for Llama-3.1-70B IQ3_XS?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 4090",
+        "model": "Llama-3.1-70B",
+        "quantization": "IQ3_XS"
+      }
+    }
+  },
+  {
+    "question": "What's left on an RTX 4060 Ti running Mistral-Small-24B Q4_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 4060 Ti",
+        "model": "Mistral-Small-24B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "How much VRAM does an RTX 3060 have free for Gemma-2-27B Q2_K?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 3060",
+        "model": "Gemma-2-27B",
+        "quantization": "Q2_K"
+      }
+    }
+  },
+  {
+    "question": "RTX 3090 VRAM headroom with Yi-1.5-34B Q4_K_M loaded?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 3090",
+        "model": "Yi-1.5-34B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "A6000 free VRAM for Llama-3.3-70B Q5_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "A6000",
+        "model": "Llama-3.3-70B",
+        "quantization": "Q5_K_M"
+      }
+    }
+  },
+  {
+    "question": "H100 spare VRAM after loading Qwen3-72B Q8_0?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "H100",
+        "model": "Qwen3-72B",
+        "quantization": "Q8_0"
+      }
+    }
+  },
+  {
+    "question": "RTX 4080 VRAM headroom for Qwen3-14B Q4_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 4080",
+        "model": "Qwen3-14B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "RTX 4070 free VRAM with Mixtral-8x7B IQ3_XS?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 4070",
+        "model": "Mixtral-8x7B",
+        "quantization": "IQ3_XS"
+      }
+    }
+  },
+  {
+    "question": "Free unified memory on M3 Max with Llama-3.1-8B Q5_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "M3 Max",
+        "model": "Llama-3.1-8B",
+        "quantization": "Q5_K_M"
+      }
+    }
+  },
+  {
+    "question": "M2 Pro spare memory for Phi-3-mini Q4_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "M2 Pro",
+        "model": "Phi-3-mini",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "RTX 5090 VRAM headroom running Qwen3-30B Q8_0?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 5090",
+        "model": "Qwen3-30B",
+        "quantization": "Q8_0"
+      }
+    }
+  },
+  {
+    "question": "Tesla V100 free VRAM with Llama-3.1-13B Q4_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "Tesla V100",
+        "model": "Llama-3.1-13B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "L40S spare VRAM for Llama-3.1-70B Q5_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "L40S",
+        "model": "Llama-3.1-70B",
+        "quantization": "Q5_K_M"
+      }
+    }
+  },
+  {
+    "question": "Headroom on a 3060 for Mistral-Small-24B IQ3_XS?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX 3060",
+        "model": "Mistral-Small-24B",
+        "quantization": "IQ3_XS"
+      }
+    }
+  },
+  {
+    "question": "RTX A5000 VRAM headroom with Yi-1.5-34B Q4_K_M?",
+    "function": {
+      "name": "get_gpu_headroom",
+      "description": "Return the spare VRAM headroom in GB for a model+quantization on a specific GPU.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gpu_name": {
+            "type": "string",
+            "description": "GPU name, e.g. 'RTX 4090'."
+          },
+          "quantization": {
+            "type": "string",
+            "description": "GGUF quantization tag."
+          },
+          "model": {
+            "type": "string",
+            "description": "Base model name."
+          }
+        },
+        "required": [
+          "gpu_name",
+          "quantization",
+          "model"
+        ]
+      }
+    },
+    "answer": {
+      "name": "get_gpu_headroom",
+      "arguments": {
+        "gpu_name": "RTX A5000",
+        "model": "Yi-1.5-34B",
+        "quantization": "Q4_K_M"
+      }
+    }
+  },
+  {
+    "question": "What configurations have you benchmarked?",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Show me all tested GPUs.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Which models are in the dataset?",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "List every model+GPU+quant combo PPB has data for.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Enumerate the PPB benchmark coverage.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "What's been tested so far?",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Give me the catalog of tested configurations.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "What can I query — what have you actually measured?",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Tell me everything that's been benchmarked.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Which GPUs and models do you have results for?",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "I want a roster of all tested configs.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Print the PPB coverage list.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "Catalogue every tested config in the dataset.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "What's in the PPB results dataset?",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
+    }
+  },
+  {
+    "question": "List the configurations that have been benchmarked.",
+    "function": {
+      "name": "list_tested_configs",
+      "description": "Enumerate all model+GPU+quantization configurations that PPB has benchmarked.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "answer": {
+      "name": "list_tested_configs",
+      "arguments": {}
     }
   }
 ]
