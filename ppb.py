@@ -2351,6 +2351,18 @@ def _write_result(record: dict, results_file: Path) -> None:
         fh.write(json.dumps(record) + "\n")
 
 
+def _write_staging(path: Path, phase: str, qual_block: dict) -> None:
+    """Append current phase snapshot to the per-run staging file.
+
+    Provides crash-recovery visibility during a multi-phase qualitative run.
+    The staging file is deleted on successful full-suite submission and is
+    NOT uploaded to Hugging Face — it is a local safety copy only.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"phase": phase, "qual_block": qual_block}) + "\n")
+
+
 # Cache for _estimate_model_load_time results.  Keyed by resolved
 # file path so repeated calls (vram-cliff → sweep) skip the costly
 # full-file read when the page cache is already warm.
@@ -4010,6 +4022,11 @@ def run_all(
     # ``_on_model_done`` when assembling the published ``qualitative`` block.
     _qual_state: dict[str, dict[str, Any]] = {}
 
+    # Staging file for crash recovery of qualitative phases.  Written after
+    # each phase; deleted on successful full-suite submission.  If the run
+    # crashes mid-suite the file remains for manual inspection / re-run.
+    _staging_path = Path(f"ppb_staging_{suite_run_id}.jsonl")
+
     # Diagnostic keys produced by run_tool_accuracy() that are useful for
     # local debugging (results.jsonl) but must NOT appear in the published
     # qualitative block — they would cause schema drift on Hugging Face.
@@ -4322,7 +4339,6 @@ def run_all(
         qual_cfg = raw.get("qualitative") or {}
         if _phase_qual and qual_cfg.get("context_rot_enabled"):
             console.print(f"\n[info]context-rot[/info] [hw]{hf_id}[/hw]")
-            _line_offset_before_cr = _count_lines(resolved_results)
             try:
                 from ppb_context_rot import run_context_rot_for_model
 
@@ -4397,15 +4413,16 @@ def run_all(
                     f"  [success]✓ context-rot score:[/success] "
                     f"[bold green]{ctx_results['context_rot_score']:.3f}[/bold green]"
                 )
-                # Re-publish to capture the new row.
-                _on_model_done(hf_id, resolved_results, _line_offset_before_cr)
+                # Write phase snapshot to staging file for crash recovery.
+                _write_staging(
+                    _staging_path, "context-rot", _build_qualitative_block(hf_id)
+                )
             except Exception as exc:
                 console.print(f"  [error]context-rot failed for {hf_id}:[/error] {exc}")
 
         # -- qualitative / tool-accuracy for this model -------------------
         if _phase_qual and qual_cfg.get("tool_accuracy_enabled"):
             console.print(f"\n[info]tool-accuracy[/info] [hw]{hf_id}[/hw]")
-            _line_offset_before_ta = _count_lines(resolved_results)
             try:
                 from ppb_tool_accuracy import run_tool_accuracy_for_model
 
@@ -4473,7 +4490,9 @@ def run_all(
                     f"{(tool_results.get('overall_tool_accuracy') or 0.0):.3f}"
                     f"[/bold green]"
                 )
-                _on_model_done(hf_id, resolved_results, _line_offset_before_ta)
+                _write_staging(
+                    _staging_path, "tool-accuracy", _build_qualitative_block(hf_id)
+                )
             except Exception as exc:
                 console.print(
                     f"  [error]tool-accuracy failed for {hf_id}:[/error] {exc}"
@@ -4488,7 +4507,6 @@ def run_all(
                 )
 
             console.print(f"\n[info]answer-quality[/info] [hw]{hf_id}[/hw]")
-            _line_offset_before_aq = _count_lines(resolved_results)
             try:
                 from ppb_answer_quality import run_answer_quality_for_model
 
@@ -4563,7 +4581,11 @@ def run_all(
                     f"{('%.3f' % _composite) if _composite is not None else 'n/a'}"
                     f"[/bold green]"
                 )
-                _on_model_done(hf_id, resolved_results, _line_offset_before_aq)
+                _write_staging(
+                    _staging_path,
+                    "answer-quality",
+                    _build_qualitative_block(hf_id),
+                )
             except Exception as exc:
                 console.print(
                     f"  [error]answer-quality failed for {hf_id}:[/error] {exc}"
@@ -4582,7 +4604,6 @@ def run_all(
                 )
 
             console.print(f"\n[info]multiturn[/info] [hw]{hf_id}[/hw]")
-            _line_offset_before_mt = _count_lines(resolved_results)
             try:
                 from ppb_multiturn import run_multiturn_for_model
 
@@ -4736,9 +4757,48 @@ def run_all(
                         f"(evaluated={mt_results.get('cases_evaluated')}, "
                         f"skipped={mt_results.get('cases_skipped_context')})"
                     )
-                _on_model_done(hf_id, resolved_results, _line_offset_before_mt)
+                _write_staging(
+                    _staging_path, "multiturn", _build_qualitative_block(hf_id)
+                )
             except Exception as exc:
                 console.print(f"  [error]multiturn failed for {hf_id}:[/error] {exc}")
+
+        # -- Consolidated qualitative row (one HF row per model) ----------
+        # All qualitative phases have now run (or been skipped / failed).
+        # Submit exactly ONE row to HuggingFace carrying the full qual block.
+        if _phase_qual and _qual_state.get(hf_id):
+            from utils.flattener import _parse_model_filename as _pmf_qual
+
+            _hw_snap_qual = _hw_sniffer.snapshot()
+            _gpus_qual = _hw_snap_qual.get("gpus") or []
+            _gpu_name_qual = (_gpus_qual[0].get("name") if _gpus_qual else "") or ""
+            _model_base_qual, _quant_qual = _pmf_qual(mp.name)
+            _qual_combined_record: dict[str, Any] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "runner_type": "qualitative",
+                "model": hf_id,
+                "gpu_name": _gpu_name_qual,
+                "model_name": _model_base_qual or "",
+                "quant": _quant_qual or "",
+                "n_ctx": None,
+                "n_batch": None,
+                "concurrent_users": None,
+                "hardware": _hw_snap_qual,
+                "suite_run_id": suite_run_id,
+                "task_type": "qualitative",
+                "prompt_dataset": None,
+                "llm_engine_name": "llama-cpp-python",
+                "llm_engine_version": None,
+                "run_type": mode,
+                "results": _build_qualitative_block(hf_id),
+            }
+            _lno_before_combined = _count_lines(resolved_results)
+            _write_result(_qual_combined_record, resolved_results)
+            _on_model_done(hf_id, resolved_results, _lno_before_combined)
+
+    # -- Clean up staging file on successful run completion ---------------
+    if _phase_qual:
+        _staging_path.unlink(missing_ok=True)
 
     # -- Final summary -----------------------------------------------------
     if any_vram_cliff_failed and not any(v > 0 for v in max_ctx_caps.values()):

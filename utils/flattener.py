@@ -438,6 +438,48 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat["raw_payload"] = raw_payload
         _stamp_provenance(flat)
         rows = [flat]
+    elif runner_type == "qualitative" and isinstance(results, dict):
+        # Consolidated row written after all qualitative phases complete for a
+        # model.  All phase fields are promoted to the top level so downstream
+        # consumers see a single canonical row per model+quant combination.
+        # runner_type="qualitative" → full suite (all enabled phases present).
+        # runner_type="context-rot"|"tool-accuracy"|"answer-quality"|"multiturn"
+        #   → single-phase run, other phase fields are null.
+        flat = _new_row()
+        flat.update(envelope)
+        flat.update(hw_fields)
+        # Context-Rot
+        flat["context_rot_score"] = results.get("context_rot_score")
+        by_len = results.get("context_rot_accuracy_by_length")
+        by_depth = results.get("context_rot_accuracy_by_depth")
+        flat["context_rot_accuracy_by_length"] = (
+            json.dumps(by_len) if by_len is not None else None
+        )
+        flat["context_rot_accuracy_by_depth"] = (
+            json.dumps(by_depth) if by_depth is not None else None
+        )
+        # Tool-Call Accuracy
+        flat["tool_selection_accuracy"] = results.get("tool_selection_accuracy")
+        flat["parameter_accuracy"] = results.get("parameter_accuracy")
+        flat["parameter_hallucination_rate"] = results.get(
+            "parameter_hallucination_rate"
+        )
+        flat["parse_success_rate"] = results.get("parse_success_rate")
+        flat["overall_tool_accuracy"] = results.get("overall_tool_accuracy")
+        # Answer Quality
+        flat["knowledge_accuracy_mean"] = results.get("knowledge_accuracy_mean")
+        flat["knowledge_accuracy_std"] = results.get("knowledge_accuracy_std")
+        flat["answer_relevancy_mean"] = results.get("answer_relevancy_mean")
+        flat["coherence_mean"] = results.get("coherence_mean")
+        flat["quality_composite_score"] = results.get("quality_composite_score")
+        # Multi-turn
+        flat["memory_accuracy"] = results.get("memory_accuracy")
+        flat["mt_bench_score"] = results.get("mt_bench_score")
+        flat["cases_evaluated"] = results.get("cases_evaluated")
+        flat["cases_skipped_context"] = results.get("cases_skipped_context")
+        flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
+        rows = [flat]
     else:
         # Unknown / unsupported runner — emit one row with Nones
         flat = _new_row()
@@ -479,7 +521,13 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         or (
             "qualitative"
             if row.get("runner_type")
-            in ("context-rot", "tool-accuracy", "answer-quality", "multiturn")
+            in (
+                "context-rot",
+                "tool-accuracy",
+                "answer-quality",
+                "multiturn",
+                "qualitative",
+            )
             else "quantitative"
         ),
         "model": model,

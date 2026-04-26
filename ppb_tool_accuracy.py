@@ -69,7 +69,12 @@ BFCL_IRRELEVANCE_SPLIT = "BFCL_v4_irrelevance.json"
 DEFAULT_BFCL_SAMPLE_SIZE = 100
 DEFAULT_MAX_TOKENS = 256
 
-PPB_GROUND_TRUTH_PATH = Path(__file__).resolve().parent / "ppb_mcp_ground_truth.json"
+PPB_GROUND_TRUTH_PATH = (
+    Path(__file__).resolve().parent
+    / "ppb_datasets"
+    / "data"
+    / "ppb_mcp_ground_truth.json"
+)
 
 SYSTEM_PROMPT_TEMPLATE = (
     "You are a helpful assistant. You have access to the following tools. "

@@ -77,7 +77,13 @@ _MIN_PROMPT_LEN = 20
 _PROMPT_CACHE_SEED = 20260426  # frozen so re-sampling is deterministic
 _PROMPT_CACHE_VERSION = 1
 
-PROMPT_CACHE_PATH = Path(__file__).resolve().parent / "ppb_quality_prompts_cache.json"
+PROMPT_CACHE_PATH = (
+    Path(__file__).resolve().parent
+    / "ppb_datasets"
+    / "cache"
+    / "ppb_quality_prompts_cache.json"
+)
+PROMPT_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +279,9 @@ _COHERENCE_PROMPT = (
 # ---------------------------------------------------------------------------
 
 
-def _score_knowledge_accuracy(judge: Any, response: str) -> tuple[float | None, int, int]:
+def _score_knowledge_accuracy(
+    judge: Any, response: str
+) -> tuple[float | None, int, int]:
     """Return ``(knowledge_accuracy, n_yes, n_total)``.
 
     ``knowledge_accuracy`` is ``None`` when zero claims were extracted.
@@ -409,9 +417,7 @@ def run_answer_quality(
         if coherence is not None:
             coherence_scores.append(coherence)
 
-        composite_components = [
-            x for x in (ka, relevancy, coherence) if x is not None
-        ]
+        composite_components = [x for x in (ka, relevancy, coherence) if x is not None]
         composite = (
             sum(composite_components) / len(composite_components)
             if composite_components

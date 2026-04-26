@@ -1,4 +1,5 @@
-# Ignore downloaded dataset files — only track code, .gitignore, and bundled prompts
+# Ignore downloaded dataset files — only track code, .gitignore, and bundled fixtures
 *
 !.gitignore
 !mt_bench_questions.json
+!ppb_mcp_ground_truth.json
