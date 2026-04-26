@@ -4211,14 +4211,26 @@ def run_all(
                     n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
                     verbose=False,
                 )
+                # Explicit join key (gpu_name, model_name, quant) so the
+                # composable schema is populated even for non-standard
+                # filenames where the flattener's heuristics might fail.
+                from utils.flattener import _parse_model_filename
+
+                _hw_snap = _hw_sniffer.snapshot()
+                _gpus = _hw_snap.get("gpus") or []
+                _gpu_name = (_gpus[0].get("name") if _gpus else "") or ""
+                _model_base, _quant = _parse_model_filename(mp.name)
                 ctx_record = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "runner_type": "context-rot",
                     "model": hf_id,
+                    "gpu_name": _gpu_name,
+                    "model_name": _model_base or "",
+                    "quant": _quant or "",
                     "n_ctx": cap,
                     "n_batch": None,
                     "concurrent_users": 1,
-                    "hardware": _hw_sniffer.snapshot(),
+                    "hardware": _hw_snap,
                     "suite_run_id": suite_run_id,
                     "task_type": "context-rot-niah",
                     "prompt_dataset": "sharegpt-v3",

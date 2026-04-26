@@ -576,6 +576,8 @@ The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish
 4. **Phase 3 — context-rot** _(optional)_: If the TOML has a `[qualitative]` section with `context_rot_enabled = true`, runs the semantic Needle-in-a-Haystack evaluation after each model's sweep. Results are appended to the same JSONL file with `runner_type = "context-rot"`. See [§5 — Context-Rot](#5-run-context-rot-qualitative) below.
 5. **Phase 4 — publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
 
+> **Result rows:** `ppb all` writes _separate rows_ per phase to the same JSONL/CSV — one quantitative row (`runner_type = "llama-bench"`) per sweep configuration plus one qualitative row (`runner_type = "context-rot"`) per model. Every row carries the composite join key `(gpu_name, model_name, quant, run_type)` so downstream tools can stitch them together. The `run_type` column is `"all"` for rows produced by this command; the standalone `ppb quantitative` and `ppb qualitative` subcommands tag their rows `"quantitative"` and `"qualitative"` respectively.
+
 ```bash
 python ppb.py all suites/my_gpu.toml
 python ppb.py all suites/my_gpu.toml --results results/my_run.jsonl

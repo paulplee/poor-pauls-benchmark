@@ -92,6 +92,12 @@ def _build_token_pool(llm: Any, target_max: int) -> list[int]:
     # Add a generous safety margin so we have room for slicing + needle insertion.
     needed = int(target_max * 1.10) + 1024
 
+    log.info(
+        "[context-rot] building ShareGPT token pool (target: %d tokens) — "
+        "this may take ~10–30 s on the first run …",
+        needed,
+    )
+
     for chunk in _iter_sharegpt_text(json_path):
         if len(pool) >= needed:
             break
@@ -169,9 +175,9 @@ def _run_single_case(
     haystack_budget = (
         target_ctx - len(needle_tokens) - len(query_tokens) - answer_budget
     )
-    if haystack_budget <= 0:
-        raise ValueError(f"target_ctx={target_ctx} too small for needle+query+answer")
-
+    # Note: callers (run_context_rot) pre-validate haystack_budget > 0
+    # before invoking this helper, so the only remaining failure mode is
+    # a token pool smaller than the requested haystack — still a hard error.
     if len(token_pool) < haystack_budget:
         raise ValueError(
             f"token pool ({len(token_pool)}) smaller than haystack budget "
@@ -319,10 +325,37 @@ def run_context_rot(
     passes_by_length: dict[int, list[int]] = {L: [] for L in runnable_lengths}
     passes_by_depth: dict[int, list[int]] = {d: [] for d in depths_pct}
 
+    # Pre-tokenise the query once for budget validation; _run_single_case
+    # re-tokenises internally (its existing signature is unchanged).
+    try:
+        _query_tokens_preview = llm.tokenize(
+            needle_query.encode("utf-8"), add_bos=False, special=False
+        )
+    except TypeError:
+        _query_tokens_preview = llm.tokenize(
+            needle_query.encode("utf-8"), add_bos=False
+        )
+    _answer_budget = 20
+
     case_idx = 0
     for L in runnable_lengths:
         for depth in depths_pct:
             case_idx += 1
+            # Guard: skip the case if there is no room for a haystack.
+            haystack_budget = (
+                L - len(needle_tokens) - len(_query_tokens_preview) - _answer_budget
+            )
+            if haystack_budget <= 0:
+                log.warning(
+                    "[context-rot] skipping ctx=%d depth=%d%%: needle+query+answer "
+                    "(%d tokens) leaves no room for a haystack",
+                    L,
+                    depth,
+                    L - haystack_budget,
+                )
+                passes_by_length[L].append(0)
+                passes_by_depth[depth].append(0)
+                continue
             try:
                 passed, _elapsed, _resp = _run_single_case(
                     llm,

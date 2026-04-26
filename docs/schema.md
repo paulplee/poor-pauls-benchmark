@@ -98,11 +98,49 @@ that list changes.
 | `p50_itl_ms`  | float \| null | Median ITL in ms                  |
 | `p99_itl_ms`  | float \| null | 99th-percentile ITL in ms         |
 
-## Performance — Quality
+## Performance — Quality (Quantitative)
 
-| Field           | Type          | Description                                                             |
-| --------------- | ------------- | ----------------------------------------------------------------------- |
-| `quality_score` | float \| null | Reserved for future output quality evaluation (currently always `null`) |
+| Field           | Type          | Description                                                                   |
+| --------------- | ------------- | ----------------------------------------------------------------------------- |
+| `quality_score` | float \| null | Reserved for future quantitative quality evaluation (currently always `null`) |
+
+## Qualitative Evaluation (Phase 4 — Context-Rot)
+
+The qualitative phase runs a semantic Needle-in-a-Haystack (NIAH) evaluation
+over a 6 × 5 grid of haystack lengths × needle depths. Rows produced by this
+phase carry `runner_type = "context-rot"` and `run_type = "qualitative"` (or
+`"all"` when produced by `ppb all`). Quantitative perf columns
+(`avg_throughput_tps`, `p50_ttft_ms`, …) are `null` on these rows.
+
+| Field                            | Type           | Description                                                                       |
+| -------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `task_type`                      | string \| null | `"context-rot-niah"` for qualitative rows                                         |
+| `prompt_dataset`                 | string \| null | Source corpus for haystack tokens (e.g. `"sharegpt-v3"`)                          |
+| `context_rot_score`              | float \| null  | Mean accuracy across all (length × depth) cases — the headline qualitative metric |
+| `context_rot_accuracy_by_length` | string \| null | JSON-encoded `{haystack_length: accuracy}` map (one entry per runnable length)    |
+| `context_rot_accuracy_by_depth`  | string \| null | JSON-encoded `{depth_pct: accuracy}` map (one entry per tested depth)             |
+
+Lengths exceeding the model's measured `vram_cliff_tokens` are skipped and
+recorded as `null` in `context_rot_accuracy_by_length` rather than failing the
+run.
+
+## Composable Schema and Join Key
+
+PPB's three run modes (`all`, `quantitative`, `qualitative`) all emit rows
+that share a stable composite join key so downstream consumers (ppb-mcp,
+poorpaul.dev) can stitch them back together:
+
+| Field        | Type           | Description                                            |
+| ------------ | -------------- | ------------------------------------------------------ |
+| `gpu_name`   | string \| null | Primary GPU model (first GPU in the hardware snapshot) |
+| `model_name` | string \| null | Base model name (alias of `model_base`)                |
+| `quant`      | string \| null | Quantisation tag (e.g. `Q4_K_M`, `IQ4_XS`)             |
+| `run_type`   | string \| null | One of `"all"`, `"quantitative"`, `"qualitative"`      |
+
+`(gpu_name, model_name, quant)` uniquely identifies a model+hardware pairing;
+`run_type` distinguishes the phase that produced the row. A `qualitative`
+row LEFT-JOINed against the most recent `quantitative` row on this key yields
+a unified profile without re-running expensive perf sweeps.
 
 ## OS / System Context
 
