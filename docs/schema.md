@@ -119,6 +119,12 @@ phase carry `runner_type = "context-rot"` and `run_type = "qualitative"` (or
 | `context_rot_score`              | float \| null  | Mean accuracy across all (length × depth) cases — the headline qualitative metric |
 | `context_rot_accuracy_by_length` | string \| null | JSON-encoded `{haystack_length: accuracy}` map (one entry per runnable length)    |
 | `context_rot_accuracy_by_depth`  | string \| null | JSON-encoded `{depth_pct: accuracy}` map (one entry per tested depth)             |
+| `context_rot_accuracy_by_needle` | object \| null | Per-needle pass-rate map keyed by needle label (e.g. `code`, `date`)              |
+| `multi_needle_score`             | float \| null  | Mean accuracy across multi-needle inference scenarios (Phase 4 multi-needle mode) |
+| `multi_needle_accuracy_by_length`| object \| null | Per-haystack-length accuracy map for multi-needle inference                       |
+
+> `multi_needle_score` and `multi_needle_accuracy_by_length` are `null` unless
+> `multi_needle_enabled = true` is set in the suite TOML `[qualitative]` block.
 
 Lengths exceeding the model's measured `vram_cliff_tokens` are skipped and
 recorded as `null` in `context_rot_accuracy_by_length` rather than failing the

@@ -4067,6 +4067,9 @@ def run_all(
             "context_rot_accuracy_by_depth": (cr or {}).get(
                 "context_rot_accuracy_by_depth"
             ),
+            "context_rot_accuracy_by_needle":  (cr or {}).get("context_rot_accuracy_by_needle"),
+            "multi_needle_score":               (cr or {}).get("multi_needle_score"),
+            "multi_needle_accuracy_by_length":  (cr or {}).get("multi_needle_accuracy_by_length"),
             # Tool-Call Accuracy (BFCL + PPB-native)
             "tool_selection_accuracy": (ta or {}).get("tool_selection_accuracy"),
             "parameter_accuracy": (ta or {}).get("parameter_accuracy"),
@@ -4076,8 +4079,8 @@ def run_all(
             "parse_success_rate": (ta or {}).get("parse_success_rate"),
             "overall_tool_accuracy": (ta or {}).get("overall_tool_accuracy"),
             # Reserved for future phases — always null for now.
-            "knowledge_accuracy_mean": (aq or {}).get("knowledge_accuracy_mean"),
-            "knowledge_accuracy_std": (aq or {}).get("knowledge_accuracy_std"),
+            "knowledge_accuracy_mean": (aq or {}).get("knowledge_accuracy_mean"),  # BREAKING: renamed from faithfulness_mean (d7290b9)
+            "knowledge_accuracy_std":  (aq or {}).get("knowledge_accuracy_std"),   # BREAKING: renamed from faithfulness_std (d7290b9)
             "answer_relevancy_mean": (aq or {}).get("answer_relevancy_mean"),
             "coherence_mean": (aq or {}).get("coherence_mean"),
             "quality_composite_score": (aq or {}).get("quality_composite_score"),
