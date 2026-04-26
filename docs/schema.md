@@ -112,16 +112,16 @@ phase carry `runner_type = "context-rot"` and `run_type = "qualitative"` (or
 `"all"` when produced by `ppb all`). Quantitative perf columns
 (`avg_throughput_tps`, `p50_ttft_ms`, …) are `null` on these rows.
 
-| Field                            | Type           | Description                                                                       |
-| -------------------------------- | -------------- | --------------------------------------------------------------------------------- |
-| `task_type`                      | string \| null | `"context-rot-niah"` for qualitative rows                                         |
-| `prompt_dataset`                 | string \| null | Source corpus for haystack tokens (e.g. `"sharegpt-v3"`)                          |
-| `context_rot_score`              | float \| null  | Mean accuracy across all (length × depth) cases — the headline qualitative metric |
-| `context_rot_accuracy_by_length` | string \| null | JSON-encoded `{haystack_length: accuracy}` map (one entry per runnable length)    |
-| `context_rot_accuracy_by_depth`  | string \| null | JSON-encoded `{depth_pct: accuracy}` map (one entry per tested depth)             |
-| `context_rot_accuracy_by_needle` | object \| null | Per-needle pass-rate map keyed by needle label (e.g. `code`, `date`)              |
-| `multi_needle_score`             | float \| null  | Mean accuracy across multi-needle inference scenarios (Phase 4 multi-needle mode) |
-| `multi_needle_accuracy_by_length`| object \| null | Per-haystack-length accuracy map for multi-needle inference                       |
+| Field                             | Type           | Description                                                                       |
+| --------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `task_type`                       | string \| null | `"context-rot-niah"` for qualitative rows                                         |
+| `prompt_dataset`                  | string \| null | Source corpus for haystack tokens (e.g. `"sharegpt-v3"`)                          |
+| `context_rot_score`               | float \| null  | Mean accuracy across all (length × depth) cases — the headline qualitative metric |
+| `context_rot_accuracy_by_length`  | string \| null | JSON-encoded `{haystack_length: accuracy}` map (one entry per runnable length)    |
+| `context_rot_accuracy_by_depth`   | string \| null | JSON-encoded `{depth_pct: accuracy}` map (one entry per tested depth)             |
+| `context_rot_accuracy_by_needle`  | object \| null | Per-needle pass-rate map keyed by needle label (e.g. `code`, `date`)              |
+| `multi_needle_score`              | float \| null  | Mean accuracy across multi-needle inference scenarios (Phase 4 multi-needle mode) |
+| `multi_needle_accuracy_by_length` | object \| null | Per-haystack-length accuracy map for multi-needle inference                       |
 
 > `multi_needle_score` and `multi_needle_accuracy_by_length` are `null` unless
 > `multi_needle_enabled = true` is set in the suite TOML `[qualitative]` block.
@@ -138,13 +138,13 @@ smaller local "judge" model. The generator and judge MUST be different
 models — the judge cannot grade itself. Rows produced by this phase carry
 `runner_type = "answer-quality"` and `task_type = "answer-quality"`.
 
-| Field                     | Type          | Description                                                              |
-| ------------------------- | ------------- | ------------------------------------------------------------------------ |
-| `knowledge_accuracy_mean` | float \| null | Mean fraction of factual claims judged consistent with common knowledge  |
-| `knowledge_accuracy_std`  | float \| null | Standard deviation of per-prompt knowledge-accuracy scores               |
-| `answer_relevancy_mean`   | float \| null | Mean judge-rated relevancy (1–5 → 0–1)                                   |
-| `coherence_mean`          | float \| null | Mean judge-rated coherence (1–10 → 0–1)                                  |
-| `quality_composite_score` | float \| null | Mean of the three means above — the headline answer-quality metric       |
+| Field                     | Type          | Description                                                             |
+| ------------------------- | ------------- | ----------------------------------------------------------------------- |
+| `knowledge_accuracy_mean` | float \| null | Mean fraction of factual claims judged consistent with common knowledge |
+| `knowledge_accuracy_std`  | float \| null | Standard deviation of per-prompt knowledge-accuracy scores              |
+| `answer_relevancy_mean`   | float \| null | Mean judge-rated relevancy (1–5 → 0–1)                                  |
+| `coherence_mean`          | float \| null | Mean judge-rated coherence (1–10 → 0–1)                                 |
+| `quality_composite_score` | float \| null | Mean of the three means above — the headline answer-quality metric      |
 
 NOTE: `knowledge_accuracy` differs from RAGAS-style faithfulness, which
 grounds verification against a reference context. PPB has no ground-truth

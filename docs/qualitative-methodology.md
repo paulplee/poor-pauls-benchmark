@@ -7,10 +7,10 @@ explains the distinction and why PPB chose the metric it did.
 
 ## Definitions
 
-| Metric | What is verified against | Question being asked |
-| ------ | ------------------------ | -------------------- |
-| **RAGAS Faithfulness** | A *reference context* supplied alongside the prompt (e.g. retrieved documents in a RAG pipeline). | "Is each claim in the answer entailed by the retrieved context?" |
-| **PPB Knowledge Accuracy** | The *judge model's parametric knowledge* (no reference context). | "Is each claim in the answer consistent with what the judge believes is true about the world?" |
+| Metric                     | What is verified against                                                                          | Question being asked                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **RAGAS Faithfulness**     | A _reference context_ supplied alongside the prompt (e.g. retrieved documents in a RAG pipeline). | "Is each claim in the answer entailed by the retrieved context?"                               |
+| **PPB Knowledge Accuracy** | The _judge model's parametric knowledge_ (no reference context).                                  | "Is each claim in the answer consistent with what the judge believes is true about the world?" |
 
 Both metrics share the same overall shape:
 
@@ -19,7 +19,7 @@ Both metrics share the same overall shape:
 3. Score = `n_claims_passing / n_claims_total`.
 
 But the verification step differs fundamentally — RAGAS asks a
-*grounding* question, PPB asks a *knowledge* question. A response that
+_grounding_ question, PPB asks a _knowledge_ question. A response that
 fabricates a citation entirely is penalised by both, but a response
 that disagrees with the retrieved context yet is true in the wider world
 will be marked unfaithful by RAGAS while passing PPB's knowledge check.
@@ -45,7 +45,7 @@ when comparing scores.
 `quality_composite_score` (the headline answer-quality number) is the
 mean of `knowledge_accuracy_mean`, `answer_relevancy_mean` and
 `coherence_mean`. Because `knowledge_accuracy` is one of the three
-inputs, the headline number inherits the same caveat: it is *not*
+inputs, the headline number inherits the same caveat: it is _not_
 directly comparable to RAGAS leaderboards. It IS comparable across
 PPB rows that share the same judge model and prompt cache hash.
 
