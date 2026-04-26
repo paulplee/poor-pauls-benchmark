@@ -1,0 +1,81 @@
+# Poor Paul's Benchmark — Qualitative Suite Starter
+#
+# Use this file to run the qualitative phases only (no re-running quantitative tests):
+#   uv run ppb.py qualitative suites/qualitative_example.toml
+#
+# Or run everything together:
+#   uv run ppb.py all suites/qualitative_example.toml
+#
+# Copy and rename this file for your own GPU — everything in suites/ except
+# example files is gitignored.
+#
+# IMPORTANT: The qualitative phase requires llama-cpp-python with GPU support.
+# Install it before running:
+#   CUDA (Linux/Windows):
+#     CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama-cpp-python>=0.3.0"
+#   Metal (macOS Apple Silicon):
+#     CMAKE_ARGS="-DGGML_METAL=on" pip install "llama-cpp-python>=0.3.0"
+#   Or via uv with a pre-built CUDA 12.4 wheel:
+#     uv pip install llama-cpp-python \
+#       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+#   Or use the optional dependency group (compiles from source):
+#     uv pip install -e ".[qualitative]"
+
+
+# ── Model (required) ─────────────────────────────────────────────────────────
+# The same model is used for both quantitative and qualitative phases.
+# Change these to your target model.
+repo_id    = "unsloth/Qwen3.5-0.8B-GGUF"
+filename   = "Qwen3.5-0.8B-Q4_K_M.gguf"
+models_dir = "./models"
+
+
+# ── Quantitative phases (used by `ppb all` and `ppb quantitative`) ───────────
+# Omit these sections if running `ppb qualitative` only.
+
+[vram-cliff]
+# min_ctx   = 2048
+# max_ctx   = 131072
+# tolerance = 1024
+
+[sweep]
+n_ctx    = [4096, 8192, 16384]
+n_batch  = [512]
+
+
+# ── Qualitative phases (used by `ppb all` and `ppb qualitative`) ─────────────
+
+[qualitative]
+
+# -- Phase 4: Context-Rot (Semantic Needle-in-a-Haystack) --------------------
+# Measures how answer accuracy degrades as context length increases.
+# 6 lengths × 5 depths = 30 test cases per model.
+# Set context_rot_enabled = true to activate this phase.
+context_rot_enabled = true
+
+# haystack_lengths: token counts at which to test. Lengths exceeding the
+# measured VRAM cliff (from a prior quantitative run or the current run's
+# vram-cliff phase) are automatically skipped.
+# Default: [4096, 8192, 16384, 32768, 65536, 131072]
+# haystack_lengths = [4096, 8192, 16384, 32768, 65536, 131072]
+
+# depths_pct: where in the haystack the needle is inserted (% of total tokens).
+# Default: [10, 30, 50, 70, 90]
+# depths_pct = [10, 30, 50, 70, 90]
+
+# Needle configuration — the synthetic fact injected into the haystack.
+# Override these to create your own needle. The answer must be an exact
+# substring of needle_text for scoring to work correctly.
+# needle_text   = "The secret launch code for Project Nightingale is ALPHA-7-DELTA."
+# needle_query  = "Based only on the text provided, what is the secret launch code for Project Nightingale? Answer with just the code."
+# needle_answer = "ALPHA-7-DELTA"
+
+# GPU offload layers. -1 offloads all layers (recommended).
+# n_gpu_layers = -1
+
+
+# ── Publishing (optional) ─────────────────────────────────────────────────────
+# Uncomment to publish results to the PPB leaderboard after each model.
+# [publish]
+# submitter = "Your Name or GitHub handle"
+# upload    = true   # set false to write CSV only without uploading
