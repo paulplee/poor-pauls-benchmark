@@ -184,7 +184,6 @@ PPB-native MCP ground-truth set. Rows produced by this phase carry
 > `parameter_hallucination_rate` alongside a low `no_call_accuracy` indicates
 > the model is both generating bad calls **and** failing to abstain when
 > abstention is correct.
-
 > `overall_tool_accuracy` deliberately excludes `no_call_accuracy` — abstention
 > and positive-call quality measure different (and partially anticorrelated)
 > capabilities, so they are reported separately rather than folded together.

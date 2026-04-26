@@ -112,7 +112,7 @@ uv sync
 
 > **NVIDIA GPU detection:** `pynvml` is included in the dependencies and will be installed automatically. If no NVIDIA hardware is present it is simply unused. On systems without `pynvml`, PPB falls back to parsing `nvidia-smi` output.
 
-#### Context-rot (optional)
+### Context-rot (optional)
 
 The qualitative context-rot evaluation (`ppb_context_rot.py`) requires `llama-cpp-python`, which is **not installed by default** because it needs a platform-specific GPU-enabled build. A plain `pip install llama-cpp-python` gives a CPU-only binary that is impractically slow for long-context evaluation.
 
@@ -138,7 +138,6 @@ Pre-built wheels for common CUDA / ROCm / Metal targets are published by the lla
 You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`). See **[Building and Upgrading llama.cpp](docs/building-llama-cpp.md)** for step-by-step instructions.
 
 > **llama.cpp version:** Build **b8688+** is recommended. Older builds may lack support for newer model architectures (e.g. Gemma 4 requires ≥ b8688). PPB will detect unsupported architectures and report a clear error instead of silently failing.
-
 > **Conversational dataset:** The `llama-server` runner uses real conversational prompts from the [ShareGPT dataset](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) (~700 MB) by default. It is downloaded automatically on the first `llama-server` run, or you can pre-fetch it with `python ppb.py download-dataset`. You can also point to any HF-hosted dataset with `--repo` and `--filename` — see [§2](#2-run-a-parameter-sweep) for details.
 
 ### Running Tests
@@ -981,7 +980,7 @@ PPB extended its result schema to add **model provenance**, **multi-GPU**, **LLM
 | `quality_score`      | Output quality metric — reserved for future use, defaults to `null`             |
 | `tags`               | Free-form JSON string for arbitrary metadata (e.g. `{"env": "ci"}`)             |
 
-#### Prerequisites
+#### Migration Prerequisites
 
 1. **Finish** all active benchmark runs before migrating.
 2. **Back up** your results directory (the script refuses to run without this):

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+import pytest
 from utils.flattener import COLUMN_ORDER
 from utils.publisher import _composable_key
 

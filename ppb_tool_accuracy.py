@@ -269,6 +269,8 @@ def _normalise_bfcl_row(
     qid = row.get("id", "")
     question_field = row.get("question")
     try:
+        if question_field is None:
+            raise TypeError
         content = question_field[0][0]["content"]
     except (TypeError, KeyError, IndexError):
         log.warning(
@@ -710,7 +712,7 @@ def run_tool_accuracy_for_model(
     invoke the phase without managing the ``llama_cpp.Llama`` lifecycle.
     """
     try:
-        from llama_cpp import Llama
+        from llama_cpp import Llama  # type: ignore[import-untyped]
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "ppb_tool_accuracy requires llama-cpp-python. "
