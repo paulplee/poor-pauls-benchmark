@@ -119,3 +119,80 @@ def publish_to_hf(
         Path(tmp_path).unlink(missing_ok=True)
 
     return f"https://huggingface.co/datasets/{PPB_HF_REPO}"
+
+
+# ---------------------------------------------------------------------------
+# Composable-schema lookup helpers
+# ---------------------------------------------------------------------------
+
+
+def _composable_key(model_hf_id: str, hardware: dict[str, Any]) -> tuple[str, str, str]:
+    """Build the (gpu_name, model_name, quantization) join key.
+
+    Mirrors the parsing logic used by ``utils.flattener``: the model
+    filename is split on the last ``-`` to separate the base model from
+    the quantization tag.
+    """
+    fname = Path(model_hf_id).name if model_hf_id else ""
+    stem = fname.rsplit(".gguf", 1)[0]
+    if "-" in stem:
+        base, quant = stem.rsplit("-", 1)
+    else:
+        base, quant = stem, ""
+    gpus = (hardware or {}).get("gpus") or [{}]
+    gpu_name = gpus[0].get("name", "") if gpus else ""
+    return gpu_name, base, quant
+
+
+def fetch_existing_quantitative_for(
+    *,
+    hf_id: str,
+    hardware: dict[str, Any],
+    token: str | None = None,
+) -> dict[str, Any] | None:
+    """Look up the most recent quantitative row for this model+GPU+quant.
+
+    Queries the central ``paulplee/ppb-results`` dataset via the
+    ``datasets`` library and returns the latest row matching the
+    composable join key, or ``None`` if no match is found / the dataset
+    cannot be loaded.
+
+    The returned dict is the raw flattened row from the dataset; callers
+    typically read ``vram_cliff_tokens`` from it.
+    """
+    try:
+        from datasets import load_dataset  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+
+    gpu_name, model_base, quant = _composable_key(hf_id, hardware)
+    if not (gpu_name and model_base):
+        return None
+
+    try:
+        ds = load_dataset(PPB_HF_REPO, split="train", token=token)
+    except Exception:
+        return None
+
+    matches: list[dict[str, Any]] = []
+    for row in ds:
+        if not isinstance(row, dict):
+            continue
+        # Accept either the new top-level run_type ('quantitative'/'all') or
+        # legacy rows where it's absent (treated as quantitative).
+        rt = row.get("run_type") or "quantitative"
+        if rt not in ("quantitative", "all"):
+            continue
+        if (
+            (row.get("gpu_name") or "") == gpu_name
+            and (row.get("model_base") or row.get("model_name") or "") == model_base
+            and (row.get("quant") or row.get("quantization") or "") == quant
+        ):
+            matches.append(row)
+
+    if not matches:
+        return None
+
+    # Return the most recent by timestamp (lexicographic ISO-8601 sort).
+    matches.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+    return matches[0]

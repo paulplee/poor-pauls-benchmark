@@ -647,7 +647,52 @@ uv run ppb.py all suites/my_gpu.toml --no-resume
 
 > **Caveat:** auto-resume keys on the HF id (`repo_id/filename.gguf`) and the expected combo count from your current TOML. If you change `n_ctx`, `n_batch`, `concurrent_users`, `repo_id`, or `filename` between runs, models previously marked complete may no longer match and will be re-benchmarked.
 
-> **Caveat:** auto-resume keys on the HF id (`repo_id/filename.gguf`) and the expected combo count from your current TOML. If you change `n_ctx`, `n_batch`, `concurrent_users`, `repo_id`, or `filename` between runs, models previously marked complete may no longer match and will be re-benchmarked.
+## Run Modes — Quantitative, Qualitative, or Both
+
+PPB exposes three top-level commands that all consume the **same suite TOML**:
+
+| Command                          | Phases run                                       | When to use                                                            |
+| -------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `ppb all <suite>`                | vram-cliff + sweep + context-rot                 | First-time benchmark of a new model on new hardware.                   |
+| `ppb quantitative <suite>`       | vram-cliff + sweep                               | Refresh perf numbers (e.g. after a llama.cpp upgrade) without re-running expensive qualitative evals. |
+| `ppb qualitative <suite>`        | context-rot (and future qualitative phases) only | Add qualitative scores to a model that already has published quantitative results. Skips vram-cliff and sweep entirely. |
+
+`ppb all <suite> --mode {all,quantitative,qualitative}` is the canonical form; `quantitative` and `qualitative` are convenience subcommands that pin `--mode` for you. Existing scripts that call `ppb all` keep working unchanged.
+
+### Composable result schema
+
+Every published row carries a four-field **join key** so quantitative-only and qualitative-only runs can be stitched together downstream by `ppb-mcp` and `poorpaul.dev`:
+
+| Column | Meaning |
+|---|---|
+| `gpu_name` | e.g. `NVIDIA GeForce RTX 4090` |
+| `model_name` | base model name (alias of `model_base`) |
+| `quantization` | quant tag (alias of `quant`) |
+| `run_type` | `"all"` \| `"quantitative"` \| `"qualitative"` |
+
+Each row also carries a **quantitative block** (`vram_used_gb`, `vram_cliff_tokens`, `tokens_per_sec_prompt`, `tokens_per_sec_generation`, `throughput_tok_s`, …) and a **qualitative block** (`context_rot_score`, `context_rot_accuracy_by_length`, `context_rot_accuracy_by_depth`, plus nullable placeholders for forthcoming `tool_selection_accuracy`, `quality_composite_score`, `mt_bench_score`, etc.). Whichever block isn't relevant to a given run is left `null`.
+
+### How `qualitative` mode finds the VRAM cliff
+
+When you run `ppb qualitative <suite>`, the runner queries the central `paulplee/ppb-results` Hugging Face dataset for the most recent row matching `(gpu_name, model_name, quantization)` with `run_type ∈ {"all", "quantitative"}`. If a match exists its `vram_cliff_tokens` is reused to filter context-rot haystack lengths:
+
+```text
+[PPB] Run mode: qualitative | Suite: my_gpu.toml
+  ℹ Using existing quantitative result: vram_cliff_tokens=32768
+```
+
+If no match is found:
+
+```text
+  ⚠ No existing quantitative result found for this config.
+    context_rot will not skip lengths based on VRAM cliff.
+```
+
+Qualitative results are **not** merged into the quantitative row — they are published as a separate row with `run_type="qualitative"` and `quantitative=null` columns. The JOIN happens downstream.
+
+### Backward compatibility
+
+The existing dataset Parquet schema is preserved: every new column is **nullable** and old columns (`model`, `quant`, `throughput_tok_s`, `context_rot_score`, …) are unchanged. Legacy rows without an explicit `run_type` are treated as `"quantitative"` by the lookup logic.
 
 ### 5. Run Context-Rot (Qualitative)
 
@@ -707,23 +752,23 @@ Haystack lengths that exceed the per-model VRAM cliff cap are skipped automatica
 
 Context-rot results are appended to the same JSONL file as regular benchmark rows (`runner_type = "context-rot"`) and flattened to three new CSV/HF columns:
 
-| Column | Type | Description |
-|---|---|---|
-| `context_rot_score` | float | Mean accuracy across all 30 cases |
-| `context_rot_accuracy_by_length` | JSON string | `{"4096": 1.0, "8192": 0.8, …}` |
-| `context_rot_accuracy_by_depth` | JSON string | `{"10": 0.9, "30": 0.85, …}` |
+| Column                           | Type        | Description                       |
+| -------------------------------- | ----------- | --------------------------------- |
+| `context_rot_score`              | float       | Mean accuracy across all 30 cases |
+| `context_rot_accuracy_by_length` | JSON string | `{"4096": 1.0, "8192": 0.8, …}`   |
+| `context_rot_accuracy_by_depth`  | JSON string | `{"10": 0.9, "30": 0.85, …}`      |
 
 #### `[qualitative]` TOML reference
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `context_rot_enabled` | bool | `false` | Master switch — must be `true` to run the phase. |
-| `haystack_lengths` | list of ints | `[4096, 8192, 16384, 32768, 65536, 131072]` | Target token-length haystacks. |
-| `depths_pct` | list of ints | `[10, 30, 50, 70, 90]` | Needle insertion depths (percent of haystack). |
-| `needle_text` | string | (built-in) | The synthetic fact injected into the haystack. |
-| `needle_query` | string | (built-in) | Prompt sent to the model after the haystack. |
-| `needle_answer` | string | `"ALPHA-7-DELTA"` | Expected answer (exact substring match, case-insensitive). |
-| `n_gpu_layers` | int | `-1` | GPU layers to offload (`-1` = all). |
+| Key                   | Type         | Default                                     | Description                                                |
+| --------------------- | ------------ | ------------------------------------------- | ---------------------------------------------------------- |
+| `context_rot_enabled` | bool         | `false`                                     | Master switch — must be `true` to run the phase.           |
+| `haystack_lengths`    | list of ints | `[4096, 8192, 16384, 32768, 65536, 131072]` | Target token-length haystacks.                             |
+| `depths_pct`          | list of ints | `[10, 30, 50, 70, 90]`                      | Needle insertion depths (percent of haystack).             |
+| `needle_text`         | string       | (built-in)                                  | The synthetic fact injected into the haystack.             |
+| `needle_query`        | string       | (built-in)                                  | Prompt sent to the model after the haystack.               |
+| `needle_answer`       | string       | `"ALPHA-7-DELTA"`                           | Expected answer (exact substring match, case-insensitive). |
+| `n_gpu_layers`        | int          | `-1`                                        | GPU layers to offload (`-1` = all).                        |
 
 ### 6. View Your Hardware Profile
 

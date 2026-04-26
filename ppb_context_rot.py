@@ -52,9 +52,7 @@ log = logging.getLogger("ppb")
 DEFAULT_HAYSTACK_LENGTHS: list[int] = [4096, 8192, 16384, 32768, 65536, 131072]
 DEFAULT_DEPTHS_PCT: list[int] = [10, 30, 50, 70, 90]
 
-DEFAULT_NEEDLE_TEXT = (
-    "The secret launch code for Project Nightingale is ALPHA-7-DELTA."
-)
+DEFAULT_NEEDLE_TEXT = "The secret launch code for Project Nightingale is ALPHA-7-DELTA."
 DEFAULT_NEEDLE_QUERY = (
     "Based only on the text provided, what is the secret launch code for "
     "Project Nightingale? Answer with just the code."
@@ -168,11 +166,11 @@ def _run_single_case(
         query_tokens = llm.tokenize(needle_query.encode("utf-8"), add_bos=False)
 
     answer_budget = 20
-    haystack_budget = target_ctx - len(needle_tokens) - len(query_tokens) - answer_budget
+    haystack_budget = (
+        target_ctx - len(needle_tokens) - len(query_tokens) - answer_budget
+    )
     if haystack_budget <= 0:
-        raise ValueError(
-            f"target_ctx={target_ctx} too small for needle+query+answer"
-        )
+        raise ValueError(f"target_ctx={target_ctx} too small for needle+query+answer")
 
     if len(token_pool) < haystack_budget:
         raise ValueError(
@@ -184,7 +182,9 @@ def _run_single_case(
 
     # Insert the needle at the requested depth.
     insert_at = (len(haystack) * depth_pct) // 100
-    composed = haystack[:insert_at] + needle_tokens + haystack[insert_at:] + query_tokens
+    composed = (
+        haystack[:insert_at] + needle_tokens + haystack[insert_at:] + query_tokens
+    )
 
     # Decode back to text, then call the model.  We pass text rather than
     # token ids because llama-cpp-python's high-level call expects a prompt
@@ -288,7 +288,11 @@ def run_context_rot(
     print(
         f"\n[context-rot] {len(runnable_lengths)} length(s) × {len(depths_pct)} depth(s) "
         f"= {total_cases} case(s)"
-        + (f"  [skipped {len(skipped_lengths)} > VRAM cap {max_ctx_cap}]" if skipped_lengths else ""),
+        + (
+            f"  [skipped {len(skipped_lengths)} > VRAM cap {max_ctx_cap}]"
+            if skipped_lengths
+            else ""
+        ),
         flush=True,
     )
 

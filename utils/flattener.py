@@ -25,6 +25,13 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 COLUMN_ORDER: list[str] = [
+    # Composable-schema join key (added 2026-04 — nullable on legacy rows).
+    # Together (gpu_name, model_name, quantization, run_type) are the
+    # primary key used by downstream consumers (ppb-mcp, poorpaul.dev) to
+    # JOIN quantitative- and qualitative-only rows into a single profile.
+    "run_type",  # "all" | "quantitative" | "qualitative"
+    "model_name",  # alias of model_base — duplicated for the composable key
+    "quantization",  # alias of quant     — duplicated for the composable key
     # Benchmark identity
     "model",
     "model_base",
@@ -57,6 +64,11 @@ COLUMN_ORDER: list[str] = [
     "n_predict",
     # Performance — raw speed
     "throughput_tok_s",
+    # Quantitative composable block (nullable on qualitative-only rows).
+    "vram_used_gb",
+    "vram_cliff_tokens",
+    "tokens_per_sec_prompt",
+    "tokens_per_sec_generation",
     # Performance — power efficiency
     "avg_power_w",
     "max_power_w",
@@ -80,6 +92,18 @@ COLUMN_ORDER: list[str] = [
     "context_rot_score",
     "context_rot_accuracy_by_length",
     "context_rot_accuracy_by_depth",
+    # Future qualitative blocks (nullable placeholders — populated by
+    # forthcoming phases: tool_accuracy, answer_quality, multiturn).
+    "tool_selection_accuracy",
+    "parameter_accuracy",
+    "parameter_hallucination_rate",
+    "parse_success_rate",
+    "faithfulness_mean",
+    "answer_relevancy_mean",
+    "coherence_mean",
+    "quality_composite_score",
+    "memory_accuracy",
+    "mt_bench_score",
     # OS / system context
     "os_system",
     "os_release",
@@ -390,9 +414,19 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "timestamp": row.get("timestamp"),
         "runner_type": row.get("runner_type"),
+        # Composable-schema join key.  ``run_type`` distinguishes
+        # quantitative-only, qualitative-only, and combined runs so that
+        # downstream consumers can JOIN them by (gpu_name, model_name,
+        # quantization).  Defaults to "quantitative" for legacy rows that
+        # don't set it explicitly (anything driven by `ppb sweep` or the
+        # original `ppb all`).
+        "run_type": row.get("run_type")
+        or ("qualitative" if row.get("runner_type") == "context-rot" else "quantitative"),
         "model": model,
         "model_base": base,
         "quant": quant,
+        "model_name": base,  # alias for the composable key
+        "quantization": quant,  # alias for the composable key
         "model_org": model_org,
         "model_repo": model_repo,
         # LLM engine (inference backend)
@@ -406,7 +440,8 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         # Workload
         "task_type": row.get("task_type"),
         "prompt_dataset": row.get("prompt_dataset"),
-        "num_prompts": row.get("num_prompts") or results_dict.get("num_prompts_attempted"),
+        "num_prompts": row.get("num_prompts")
+        or results_dict.get("num_prompts_attempted"),
         "n_predict": row.get("n_predict") or results_dict.get("n_predict"),
         # Quality
         "quality_score": row.get("quality_score"),

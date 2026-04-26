@@ -3761,6 +3761,17 @@ def run_all(
             "file even if a prior matching run exists."
         ),
     ),
+    mode: str = typer.Option(
+        "all",
+        "--mode",
+        help=(
+            "Which phases to execute: 'all' (quantitative + qualitative), "
+            "'quantitative' (vram-cliff + sweep only), or 'qualitative' "
+            "(context-rot + future qualitative phases only — fetches the "
+            "VRAM-cliff cap from a prior published quantitative result on "
+            "Hugging Face when available)."
+        ),
+    ),
 ) -> None:
     """Run the full benchmark suite: vram-cliff → sweep → publish.
 
@@ -3796,7 +3807,8 @@ def run_all(
         resolved_results = default_results
 
     console.print(
-        f"[info]Full benchmark suite[/info] from [bold]{config}[/bold]\n"
+        f"[info][PPB] Run mode:[/info] [bold]{(mode or 'all').lower()}[/bold]  "
+        f"[info]| Suite:[/info] [bold]{config.name}[/bold]\n"
         f"  Results → [bold]{resolved_results.resolve()}[/bold]\n"
     )
 
@@ -3900,8 +3912,20 @@ def run_all(
         resume_path = resolved_results
 
     # -- Parse configs early -----------------------------------------------
-    do_vram_cliff = "vram-cliff" in raw
-    do_sweep = "sweep" in raw
+    # Mode gating: in 'qualitative' we skip vram-cliff + sweep; in
+    # 'quantitative' we skip the qualitative phase.  'all' runs everything.
+    mode = (mode or "all").strip().lower()
+    if mode not in ("all", "quantitative", "qualitative"):
+        console.print(
+            f"[error]Invalid --mode '{mode}'. Use 'all', 'quantitative', or "
+            f"'qualitative'.[/error]"
+        )
+        raise typer.Exit(code=1)
+    _phase_quant = mode in ("all", "quantitative")
+    _phase_qual = mode in ("all", "qualitative")
+
+    do_vram_cliff = _phase_quant and ("vram-cliff" in raw)
+    do_sweep = _phase_quant and ("sweep" in raw)
 
     al_cfg: VramCliffConfig | None = None
     if do_vram_cliff:
@@ -3919,9 +3943,19 @@ def run_all(
             console.print(f"[error]Invalid sweep config:[/error] {exc}")
             raise typer.Exit(code=1) from exc
 
-    if not do_sweep:
+    if not do_sweep and _phase_quant:
         console.print("[warning]No [sweep] section — nothing more to do.[/warning]")
         return
+
+    # In qualitative-only mode we don't run sweep but still need to iterate
+    # the model list and run the qualitative phase per-model.
+    if mode == "qualitative":
+        if not (raw.get("qualitative") or {}).get("context_rot_enabled"):
+            console.print(
+                "[warning]Mode 'qualitative' but [qualitative].context_rot_enabled "
+                "is not set — nothing to do.[/warning]"
+            )
+            return
 
     # -- Resume detection (needs sweep_cfg) ---------------------------------
     # Build a temporary resolved_models list for resume detection from
@@ -4121,29 +4155,59 @@ def run_all(
                 )
 
         # -- sweep for this model -----------------------------------------
-        console.print(f"\n[info]sweep[/info] [hw]{hf_id}[/hw]")
-        single_sweep = SweepConfig(**_merge_shared_params(raw, "sweep"))
-        single_sweep.resolved_models = [(mp, hf_id)]
+        if do_sweep:
+            console.print(f"\n[info]sweep[/info] [hw]{hf_id}[/hw]")
+            single_sweep = SweepConfig(**_merge_shared_params(raw, "sweep"))
+            single_sweep.resolved_models = [(mp, hf_id)]
 
-        execute_sweep(
-            sweep_config=single_sweep,
-            results_file=resolved_results,
-            max_ctx_caps=max_ctx_caps if max_ctx_caps else None,
-            suite_run_id=suite_run_id,
-            on_model_done=_on_model_done,
-        )
+            execute_sweep(
+                sweep_config=single_sweep,
+                results_file=resolved_results,
+                max_ctx_caps=max_ctx_caps if max_ctx_caps else None,
+                suite_run_id=suite_run_id,
+                on_model_done=_on_model_done,
+            )
 
         # -- qualitative / context-rot for this model ---------------------
         qual_cfg = raw.get("qualitative") or {}
-        if qual_cfg.get("context_rot_enabled"):
+        if _phase_qual and qual_cfg.get("context_rot_enabled"):
             console.print(f"\n[info]context-rot[/info] [hw]{hf_id}[/hw]")
             try:
                 from ppb_context_rot import run_context_rot_for_model
 
+                # Determine the VRAM cliff cap for this model.  In quantitative
+                # or 'all' mode we use the value just measured; in qualitative-
+                # only mode we fetch the most recent published quantitative row
+                # from Hugging Face.
+                cap = max_ctx_caps.get(mp)
+                if cap is None and mode == "qualitative":
+                    from utils.publisher import (
+                        fetch_existing_quantitative_for,
+                    )
+
+                    pub_token_q = (raw.get("publish") or {}).get("token") or None
+                    prior = fetch_existing_quantitative_for(
+                        hf_id=hf_id,
+                        hardware=_hw_sniffer.snapshot(),
+                        token=pub_token_q,
+                    )
+                    if prior and prior.get("vram_cliff_tokens"):
+                        cap = int(prior["vram_cliff_tokens"])
+                        console.print(
+                            f"  [info]ℹ Using existing quantitative result: "
+                            f"vram_cliff_tokens={cap}[/info]"
+                        )
+                    else:
+                        console.print(
+                            "  [warning]⚠ No existing quantitative result found "
+                            "for this config. context_rot will not skip lengths "
+                            "based on VRAM cliff.[/warning]"
+                        )
+
                 ctx_results = run_context_rot_for_model(
                     mp,
                     suite_config=qual_cfg,
-                    max_ctx_cap=max_ctx_caps.get(mp),
+                    max_ctx_cap=cap,
                     n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
                     verbose=False,
                 )
@@ -4151,7 +4215,7 @@ def run_all(
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "runner_type": "context-rot",
                     "model": hf_id,
-                    "n_ctx": max_ctx_caps.get(mp),
+                    "n_ctx": cap,
                     "n_batch": None,
                     "concurrent_users": 1,
                     "hardware": _hw_sniffer.snapshot(),
@@ -4160,6 +4224,7 @@ def run_all(
                     "prompt_dataset": "sharegpt-v3",
                     "llm_engine_name": "llama-cpp-python",
                     "llm_engine_version": None,
+                    "run_type": mode,
                     "results": ctx_results,
                 }
                 _write_result(ctx_record, resolved_results)
@@ -4170,9 +4235,7 @@ def run_all(
                 # Re-publish to capture the new row.
                 _on_model_done(hf_id, resolved_results, 0)
             except Exception as exc:
-                console.print(
-                    f"  [error]context-rot failed for {hf_id}:[/error] {exc}"
-                )
+                console.print(f"  [error]context-rot failed for {hf_id}:[/error] {exc}")
 
     # -- Final summary -----------------------------------------------------
     if any_vram_cliff_failed and not any(v > 0 for v in max_ctx_caps.values()):
@@ -4199,6 +4262,79 @@ def run_all(
             f"\n[success]✅ All done![/success]  Suite run: [bold]{suite_run_id[:12]}…[/bold]\n"
             f"  View the global leaderboard at [bold]https://poorpaul.dev/leaderboard[/bold]"
         )
+
+
+# ---------------------------------------------------------------------------
+# Run-mode aliases — `quantitative` and `qualitative` delegate to `run_all`
+# with a fixed --mode.
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="quantitative")
+def run_quantitative(
+    config: Path = typer.Argument(
+        ...,
+        help="Path to a TOML benchmark suite file",
+        exists=True,
+        readable=True,
+    ),
+    results_file: Optional[Path] = typer.Option(
+        None, "--results", "-r",
+        help="JSONL results file (auto-generated by default).",
+    ),
+    no_resume: bool = typer.Option(
+        False, "--no-resume",
+        help="Disable auto-resume.",
+    ),
+) -> None:
+    """Run **only** the quantitative phases (vram-cliff + sweep + publish).
+
+    Equivalent to ``ppb all <suite> --mode quantitative``.  Use this when
+    you want to (re)benchmark performance without touching qualitative
+    evaluations like context-rot.
+    """
+    run_all(
+        config=config,
+        results_file=results_file,
+        no_resume=no_resume,
+        mode="quantitative",
+    )
+
+
+@app.command(name="qualitative")
+def run_qualitative(
+    config: Path = typer.Argument(
+        ...,
+        help="Path to a TOML benchmark suite file",
+        exists=True,
+        readable=True,
+    ),
+    results_file: Optional[Path] = typer.Option(
+        None, "--results", "-r",
+        help="JSONL results file (auto-generated by default).",
+    ),
+    no_resume: bool = typer.Option(
+        False, "--no-resume",
+        help="Disable auto-resume.",
+    ),
+) -> None:
+    """Run **only** the qualitative phases (context-rot, etc.).
+
+    Skips vram-cliff and sweep entirely.  When a prior published
+    quantitative result exists for the same ``(gpu_name, model, quant)``
+    on the central PPB Hugging Face dataset, its measured
+    ``vram_cliff_tokens`` is fetched and used to filter context-rot
+    haystack lengths.  Otherwise a warning is printed and all configured
+    haystack lengths are attempted.
+
+    Equivalent to ``ppb all <suite> --mode qualitative``.
+    """
+    run_all(
+        config=config,
+        results_file=results_file,
+        no_resume=no_resume,
+        mode="qualitative",
+    )
 
 
 # ---------------------------------------------------------------------------
