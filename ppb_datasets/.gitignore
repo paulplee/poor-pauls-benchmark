@@ -1,0 +1,7 @@
+# Ignore nothing by default — all files here are intentional commits.
+# The cache/ subdirectory holds the canonical ppb_quality_prompts_cache.json
+# which IS committed. Do not add blanket ignores here.
+
+# If you ever add large downloaded dataset files, ignore them here:
+# data/ShareGPT_*.json
+# data/*.jsonl
