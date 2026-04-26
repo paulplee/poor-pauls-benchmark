@@ -4133,6 +4133,47 @@ def run_all(
             on_model_done=_on_model_done,
         )
 
+        # -- qualitative / context-rot for this model ---------------------
+        qual_cfg = raw.get("qualitative") or {}
+        if qual_cfg.get("context_rot_enabled"):
+            console.print(f"\n[info]context-rot[/info] [hw]{hf_id}[/hw]")
+            try:
+                from ppb_context_rot import run_context_rot_for_model
+
+                ctx_results = run_context_rot_for_model(
+                    mp,
+                    suite_config=qual_cfg,
+                    max_ctx_cap=max_ctx_caps.get(mp),
+                    n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
+                    verbose=False,
+                )
+                ctx_record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "runner_type": "context-rot",
+                    "model": hf_id,
+                    "n_ctx": max_ctx_caps.get(mp),
+                    "n_batch": None,
+                    "concurrent_users": 1,
+                    "hardware": _hw_sniffer.snapshot(),
+                    "suite_run_id": suite_run_id,
+                    "task_type": "context-rot-niah",
+                    "prompt_dataset": "sharegpt-v3",
+                    "llm_engine_name": "llama-cpp-python",
+                    "llm_engine_version": None,
+                    "results": ctx_results,
+                }
+                _write_result(ctx_record, resolved_results)
+                console.print(
+                    f"  [success]✓ context-rot score:[/success] "
+                    f"[bold green]{ctx_results['context_rot_score']:.3f}[/bold green]"
+                )
+                # Re-publish to capture the new row.
+                _on_model_done(hf_id, resolved_results, 0)
+            except Exception as exc:
+                console.print(
+                    f"  [error]context-rot failed for {hf_id}:[/error] {exc}"
+                )
+
     # -- Final summary -----------------------------------------------------
     if any_vram_cliff_failed and not any(v > 0 for v in max_ctx_caps.values()):
         console.print(

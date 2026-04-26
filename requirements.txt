@@ -5,3 +5,21 @@ pydantic>=2.0.0
 python-dotenv>=1.0.0
 nvidia-ml-py>=12.0.0  # optional — NVIDIA GPU detection
 httpx>=0.27.0
+
+# ---------------------------------------------------------------------------
+# Optional: Phase 4 — qualitative context-rot evaluation
+#
+# llama-cpp-python needs a GPU-enabled build; a plain pip install gives
+# CPU-only inference.  See pyproject.toml [project.optional-dependencies]
+# for the full build instructions, or install a pre-built GPU wheel:
+#
+#   CUDA 12.4 (Linux/Windows):
+#     CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python>=0.3.0
+#
+#   Metal (macOS Apple Silicon):
+#     CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python>=0.3.0
+#
+# Or via uv:
+#   uv pip install "poor-pauls-benchmark[qualitative]"
+# ---------------------------------------------------------------------------
+# llama-cpp-python>=0.3.0

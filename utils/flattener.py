@@ -76,6 +76,10 @@ COLUMN_ORDER: list[str] = [
     "p99_itl_ms",
     # Performance — quality
     "quality_score",
+    # Phase 4 — context-rot (semantic Needle-in-a-Haystack)
+    "context_rot_score",
+    "context_rot_accuracy_by_length",
+    "context_rot_accuracy_by_depth",
     # OS / system context
     "os_system",
     "os_release",
@@ -337,6 +341,24 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         rows = [
             _flatten_llama_server_loadtest(envelope, hw_fields, results, raw_payload)
         ]
+    elif runner_type == "context-rot" and isinstance(results, dict):
+        flat = _new_row()
+        flat.update(envelope)
+        flat.update(hw_fields)
+        # Serialize the per-length and per-depth dicts as JSON strings so
+        # they fit cleanly into a single CSV cell / Arrow string column.
+        by_len = results.get("context_rot_accuracy_by_length")
+        by_depth = results.get("context_rot_accuracy_by_depth")
+        flat["context_rot_score"] = results.get("context_rot_score")
+        flat["context_rot_accuracy_by_length"] = (
+            json.dumps(by_len) if by_len is not None else None
+        )
+        flat["context_rot_accuracy_by_depth"] = (
+            json.dumps(by_depth) if by_depth is not None else None
+        )
+        flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
+        rows = [flat]
     else:
         # Unknown / unsupported runner — emit one row with Nones
         flat = _new_row()

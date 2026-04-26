@@ -54,6 +54,7 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 
 ```text
 ppb.py                 # CLI entry point (Typer app)
+ppb_context_rot.py     # Phase 4 — context-rot / NIAH qualitative evaluation
 runners/
   __init__.py          # Runner registry (register_runner / get_runner)
   base.py              # BaseRunner ABC — contract for all backends
@@ -78,8 +79,9 @@ tests/
   test_orchestration.py # Sweep, vram-cliff, & VRAM preflight tests
   test_gguf_metadata.py # GGUF header parser & VRAM estimation tests
 suites/
-  suite.example.toml   # Starter benchmark suite (copy → suites/my_gpu.toml)
-  .gitignore           # Ignores user suite files, keeps examples
+  suite.example.toml        # Starter benchmark suite (copy → suites/my_gpu.toml)
+  qualitative_example.toml  # Starter suite with context-rot enabled
+  .gitignore                # Ignores user suite files, keeps examples
 results/               # Benchmark output directory (gitignored)
   results.jsonl        # ← files land here automatically
 docs/
@@ -105,6 +107,29 @@ uv sync
 ```
 
 > **NVIDIA GPU detection:** `pynvml` is included in the dependencies and will be installed automatically. If no NVIDIA hardware is present it is simply unused. On systems without `pynvml`, PPB falls back to parsing `nvidia-smi` output.
+
+#### Phase 4 — context-rot (optional)
+
+The qualitative context-rot evaluation (`ppb_context_rot.py`) requires `llama-cpp-python`, which is **not installed by default** because it needs a platform-specific GPU-enabled build. A plain `pip install llama-cpp-python` gives a CPU-only binary that is impractically slow for long-context evaluation.
+
+Install the GPU-accelerated variant **once** before running a qualitative suite:
+
+```bash
+# CUDA (Linux / Windows)
+CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama-cpp-python>=0.3.0"
+
+# Metal (macOS Apple Silicon)
+CMAKE_ARGS="-DGGML_METAL=on" pip install "llama-cpp-python>=0.3.0"
+
+# Or via uv with a pre-built wheel index (CUDA 12.4 example)
+uv pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+
+# Or use the pyproject.toml optional group (compiles from source)
+uv pip install -e ".[qualitative]"
+```
+
+Pre-built wheels for common CUDA / ROCm / Metal targets are published by the llama-cpp-python project at <https://github.com/abetlen/llama-cpp-python/releases>.
 
 You must also have `llama-bench` and/or `llama-server` from [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled and accessible in your system PATH (or point to them with `PPB_LLAMA_BENCH` / `PPB_LLAMA_SERVER`). See **[Building and Upgrading llama.cpp](docs/building-llama-cpp.md)** for step-by-step instructions.
 
@@ -548,7 +573,8 @@ The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish
 1. **Phase 1 — vram-cliff:** Discovers the max safe context window for each model.
 2. **Phase 1.5 — VRAM pre-flight check:** Before sweeping, PPB reads GGUF metadata from each model and estimates worst-case VRAM usage (max `n_ctx` × max `concurrent_users`). If any model is likely to OOM, a warning table is shown and you can choose to **a**uto-cap `n_ctx`, **p**roceed anyway, or **q**uit.
 3. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1 (or the auto-cap from Phase 1.5).
-4. **Phase 3 — publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
+4. **Phase 3 — context-rot** _(optional)_: If the TOML has a `[qualitative]` section with `context_rot_enabled = true`, runs the semantic Needle-in-a-Haystack evaluation after each model's sweep. Results are appended to the same JSONL file with `runner_type = "context-rot"`. See [§5 — Context-Rot](#5-run-context-rot-qualitative) below.
+5. **Phase 4 — publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
 
 ```bash
 python ppb.py all suites/my_gpu.toml
@@ -621,7 +647,85 @@ uv run ppb.py all suites/my_gpu.toml --no-resume
 
 > **Caveat:** auto-resume keys on the HF id (`repo_id/filename.gguf`) and the expected combo count from your current TOML. If you change `n_ctx`, `n_batch`, `concurrent_users`, `repo_id`, or `filename` between runs, models previously marked complete may no longer match and will be re-benchmarked.
 
-### 4. View Your Hardware Profile
+> **Caveat:** auto-resume keys on the HF id (`repo_id/filename.gguf`) and the expected combo count from your current TOML. If you change `n_ctx`, `n_batch`, `concurrent_users`, `repo_id`, or `filename` between runs, models previously marked complete may no longer match and will be re-benchmarked.
+
+### 5. Run Context-Rot (Qualitative)
+
+**Context rot** measures how a model's answer accuracy degrades as context length grows — a qualitative complement to the raw-throughput numbers from the standard sweep.
+
+PPB implements a semantic [Needle-in-a-Haystack (NIAH)](https://github.com/gkamradt/LLMTest_NeedleInAHaystack) evaluation inspired by [NVIDIA RULER](https://github.com/NVIDIA/RULER):
+
+1. **Haystack** — real ShareGPT conversations are concatenated to build distractors of target token lengths `[4096, 8192, 16384, 32768, 65536, 131072]`.
+2. **Needle** — a synthetic factual statement not present in any ShareGPT conversation (e.g. `"The secret launch code for Project Nightingale is ALPHA-7-DELTA."`) is inserted at five depth positions: 10 %, 30 %, 50 %, 70 %, 90 %.
+3. **Query** — `temperature=0, max_tokens=20`, exact-match scoring.
+4. **30 test cases** (6 lengths × 5 depths) per model/quantisation.
+
+#### Prerequisites
+
+Install a GPU-enabled `llama-cpp-python` — see the [Phase 4 installation note above](#phase-4--context-rot-optional).
+
+#### Enabling context-rot in a suite
+
+Add a `[qualitative]` section to any suite TOML:
+
+```toml
+[qualitative]
+context_rot_enabled = true
+
+haystack_lengths = [4096, 8192, 16384, 32768, 65536, 131072]
+depths_pct       = [10, 30, 50, 70, 90]
+
+needle_text   = "The secret launch code for Project Nightingale is ALPHA-7-DELTA."
+needle_query  = "Based only on the text provided, what is the secret launch code for Project Nightingale? Answer with just the code."
+needle_answer = "ALPHA-7-DELTA"
+
+n_gpu_layers  = -1   # -1 = offload all layers to GPU
+```
+
+A ready-to-copy example is at [`suites/qualitative_example.toml`](suites/qualitative_example.toml).
+
+Run with:
+
+```bash
+uv run ppb.py all suites/qualitative_example.toml
+```
+
+Haystack lengths that exceed the per-model VRAM cliff cap are skipped automatically and recorded as `null` in the results.
+
+#### Progress output
+
+```text
+[context-rot] 4 length(s) × 5 depth(s) = 20 case(s)  [skipped 2 > VRAM cap 32768]
+  ✓ [1/20] ctx=4096  depth=10% pass (0.4s)
+  ✓ [2/20] ctx=4096  depth=30% pass (0.4s)
+  ...
+  ✓ [20/20] ctx=32768 depth=90% fail (1.8s)
+[context-rot] overall score: 0.750  (by length: 4096=1.00, 8192=0.80, ...)
+```
+
+#### Result columns
+
+Context-rot results are appended to the same JSONL file as regular benchmark rows (`runner_type = "context-rot"`) and flattened to three new CSV/HF columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `context_rot_score` | float | Mean accuracy across all 30 cases |
+| `context_rot_accuracy_by_length` | JSON string | `{"4096": 1.0, "8192": 0.8, …}` |
+| `context_rot_accuracy_by_depth` | JSON string | `{"10": 0.9, "30": 0.85, …}` |
+
+#### `[qualitative]` TOML reference
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `context_rot_enabled` | bool | `false` | Master switch — must be `true` to run the phase. |
+| `haystack_lengths` | list of ints | `[4096, 8192, 16384, 32768, 65536, 131072]` | Target token-length haystacks. |
+| `depths_pct` | list of ints | `[10, 30, 50, 70, 90]` | Needle insertion depths (percent of haystack). |
+| `needle_text` | string | (built-in) | The synthetic fact injected into the haystack. |
+| `needle_query` | string | (built-in) | Prompt sent to the model after the haystack. |
+| `needle_answer` | string | `"ALPHA-7-DELTA"` | Expected answer (exact substring match, case-insensitive). |
+| `n_gpu_layers` | int | `-1` | GPU layers to offload (`-1` = all). |
+
+### 6. View Your Hardware Profile
 
 Quickly check what PPB detects about your system:
 

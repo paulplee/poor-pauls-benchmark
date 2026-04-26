@@ -31,5 +31,25 @@ ppb = "ppb:app"
 packages = ["runners", "utils", "datasets"]
 include = ["ppb.py"]
 
+[project.optional-dependencies]
+# Phase 4 — qualitative context-rot evaluation.
+#
+# llama-cpp-python requires a C++ build step.  A plain `pip install`
+# will compile a CPU-only binary.  For GPU-accelerated inference (required
+# for meaningful benchmark numbers) you must pass build flags:
+#
+#   CUDA (Linux/Windows):
+#     CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+#
+#   Metal (macOS Apple Silicon):
+#     CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+#
+#   Or install a pre-built wheel from https://github.com/abetlen/llama-cpp-python/releases
+#
+# With uv (recommended):
+#   uv pip install llama-cpp-python --extra-index-url \
+#     https://abetlen.github.io/llama-cpp-python/whl/cu124  # CUDA 12.4 example
+qualitative = ["llama-cpp-python>=0.3.0"]
+
 [dependency-groups]
 dev = ["pytest>=8.0.0", "ruff>=0.5", "hatchling"]
