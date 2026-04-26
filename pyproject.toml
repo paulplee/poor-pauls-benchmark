@@ -51,7 +51,8 @@ include = ["ppb.py"]
 #     https://abetlen.github.io/llama-cpp-python/whl/cu124  # CUDA 12.4 example
 qualitative = [
     "llama-cpp-python>=0.3.0",
-    "datasets>=2.0.0",   # HuggingFace datasets library for BFCL loading
+    # BFCL is loaded directly via huggingface_hub (already a core dependency);
+    # the HuggingFace `datasets` library is NOT required.
 ]
 
 [dependency-groups]

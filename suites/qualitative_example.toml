@@ -20,11 +20,9 @@
 #       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 #   Or use the optional dependency group (compiles from source):
 #     uv pip install -e ".[qualitative]"
-#   This installs llama-cpp-python (requires GPU build flags — see above)
-#   AND the HuggingFace `datasets` library needed for BFCL loading.
-# If you only want tool-accuracy without context-rot (no GPU required
-#   for the tool-accuracy phase itself, only for model inference):
-#     uv pip install datasets>=2.0.0
+#   This installs llama-cpp-python (requires GPU build flags — see above).
+#   The HuggingFace Hub client (huggingface_hub) is already installed as a
+#   core PPB dependency and handles BFCL file downloads automatically.
 
 
 # ── Model (required) ─────────────────────────────────────────────────────────
@@ -84,10 +82,8 @@ context_rot_enabled = true
 # tool calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) plus
 # a PPB-native MCP ground-truth set covering the four ppb-mcp tools.
 # Set tool_accuracy_enabled = true to activate this phase.
-# NOTE: Requires the HuggingFace `datasets` library for BFCL loading
-# (installed via `uv pip install -e ".[qualitative]"`). Without it,
-# only the 20 PPB-native MCP cases run; BFCL cases are skipped with a
-# warning.
+# BFCL files are downloaded automatically via huggingface_hub on first run
+# and cached locally. No extra dependencies required beyond the core install.
 tool_accuracy_enabled = true
 
 # Number of BFCL cases to sample (PPB-native cases always run in addition).

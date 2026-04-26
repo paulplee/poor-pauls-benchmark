@@ -51,7 +51,12 @@ log = logging.getLogger("ppb")
 # ---------------------------------------------------------------------------
 
 BFCL_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
-BFCL_SPLITS = ("BFCL_v3_simple", "BFCL_v3_multiple")
+# BFCL is published as raw JSONL files — the dataset README explicitly
+# states ``load_dataset`` is not compatible.  Each line in these files is
+# one JSON object.
+#   BFCL_v3_simple.json    — single-function, one correct call (~400 cases)
+#   BFCL_v3_multiple.json  — multi-function, model picks one of 2-4 (~200)
+BFCL_FILES = ("BFCL_v3_simple.json", "BFCL_v3_multiple.json")
 
 DEFAULT_BFCL_SAMPLE_SIZE = 100
 DEFAULT_MAX_TOKENS = 256
@@ -79,36 +84,60 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
     """
     if sample_size <= 0:
         return []
+
     try:
-        from datasets import load_dataset
+        from huggingface_hub import hf_hub_download
     except ImportError:  # pragma: no cover
         log.warning(
-            "[tool-accuracy] `datasets` not installed; skipping BFCL evaluation."
+            "[tool-accuracy] `huggingface_hub` not installed; skipping BFCL evaluation."
         )
         return []
 
     rows: list[dict[str, Any]] = []
-    per_split = max(1, sample_size // len(BFCL_SPLITS))
-    for split in BFCL_SPLITS:
+    per_file = max(1, sample_size // len(BFCL_FILES))
+
+    for filename in BFCL_FILES:
         try:
-            ds = load_dataset(BFCL_REPO, split=split, trust_remote_code=True)
+            local_path = hf_hub_download(
+                repo_id=BFCL_REPO,
+                repo_type="dataset",
+                filename=filename,
+            )
         except Exception as exc:  # pragma: no cover — network/dataset issues
             log.warning(
-                "[tool-accuracy] WARNING: Failed to load BFCL split %r: %s. "
-                "Falling back to PPB-native cases only (20 cases). "
-                "Expected splits: %s. "
-                "Set BFCL_TRUST_REMOTE_CODE=1 to enable trust_remote_code if needed.",
-                split,
+                "[tool-accuracy] Failed to download BFCL file %r: %s. "
+                "Skipping this file \u2014 PPB-native cases will still run.",
+                filename,
                 exc,
-                BFCL_SPLITS,
             )
             continue
-        for i, row in enumerate(ds):
-            if i >= per_split:
-                break
-            rows.append(_normalise_bfcl_row(row))
+
+        count = 0
+        try:
+            with open(local_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if count >= per_file:
+                        break
+                    try:
+                        raw = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    rows.append(_normalise_bfcl_row(raw))
+                    count += 1
+        except Exception as exc:  # pragma: no cover
+            log.warning(
+                "[tool-accuracy] Failed to read BFCL file %r: %s.",
+                filename,
+                exc,
+            )
+            continue
+
         if len(rows) >= sample_size:
             break
+
     return rows[:sample_size]
 
 
