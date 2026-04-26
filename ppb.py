@@ -3951,9 +3951,7 @@ def run_all(
     # the model list and run the qualitative phase per-model.
     if mode == "qualitative":
         _qual = raw.get("qualitative") or {}
-        if not (
-            _qual.get("context_rot_enabled") or _qual.get("tool_accuracy_enabled")
-        ):
+        if not (_qual.get("context_rot_enabled") or _qual.get("tool_accuracy_enabled")):
             console.print(
                 "[warning]Mode 'qualitative' but no qualitative phase is enabled "
                 "(context_rot_enabled / tool_accuracy_enabled all unset) — "
@@ -4267,9 +4265,7 @@ def run_all(
                             fetch_existing_quantitative_for,
                         )
 
-                        pub_token_t = (
-                            (raw.get("publish") or {}).get("token") or None
-                        )
+                        pub_token_t = (raw.get("publish") or {}).get("token") or None
                         prior_q = fetch_existing_quantitative_for(
                             hf_id=hf_id,
                             hardware=_hw_sniffer.snapshot(),

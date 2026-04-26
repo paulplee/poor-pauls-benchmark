@@ -93,9 +93,7 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
         try:
             ds = load_dataset(BFCL_REPO, split=split)
         except Exception as exc:  # pragma: no cover — network/dataset issues
-            log.warning(
-                "[tool-accuracy] failed to load BFCL split %r: %s", split, exc
-            )
+            log.warning("[tool-accuracy] failed to load BFCL split %r: %s", split, exc)
             continue
         for i, row in enumerate(ds):
             if i >= per_split:

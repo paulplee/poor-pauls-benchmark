@@ -194,7 +194,9 @@ def test_run_tool_accuracy_zero_cases_returns_nulls(monkeypatch) -> None:
     monkeypatch.setattr(mod, "_load_bfcl", lambda n: [])
     monkeypatch.setattr(mod, "_load_ppb_native", lambda: [])
 
-    out = run_tool_accuracy(_StubLLM("{}"), suite_config={"tool_accuracy_sample_size": 0})
+    out = run_tool_accuracy(
+        _StubLLM("{}"), suite_config={"tool_accuracy_sample_size": 0}
+    )
     assert out["n_cases"] == 0
     assert out["overall_tool_accuracy"] is None
 
