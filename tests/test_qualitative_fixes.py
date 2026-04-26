@@ -129,7 +129,6 @@ def test_qualitative_publish_pipeline(monkeypatch, tmp_path) -> None:
     and ``flatten_benchmark_row`` are NOT mocked — the test exercises the
     real wiring between them and ``publish_to_hf``.
     """
-    import pytest
 
     import ppb
     import ppb_context_rot
@@ -275,18 +274,15 @@ def test_qualitative_publish_pipeline(monkeypatch, tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-import json as _json
-
-import pytest
-
-
 def test_score_response_context_rot():
     """Verify _score_response covers exact, case-insensitive, substring, empty, and wrong cases."""
     from ppb_context_rot import _score_response
 
     assert _score_response("ALPHA-7-DELTA", "ALPHA-7-DELTA") == 1
     assert _score_response("alpha-7-delta", "ALPHA-7-DELTA") == 1
-    assert _score_response("The answer is ALPHA-7-DELTA, confirmed.", "ALPHA-7-DELTA") == 1
+    assert (
+        _score_response("The answer is ALPHA-7-DELTA, confirmed.", "ALPHA-7-DELTA") == 1
+    )
     assert _score_response("", "ALPHA-7-DELTA") == 0
     assert _score_response("totally unrelated text", "ALPHA-7-DELTA") == 0
 
@@ -328,11 +324,19 @@ def test_build_qualitative_block_partial():
 
     block = {
         "context_rot_score": (cr or {}).get("context_rot_score"),
-        "context_rot_accuracy_by_length": (cr or {}).get("context_rot_accuracy_by_length"),
-        "context_rot_accuracy_by_depth": (cr or {}).get("context_rot_accuracy_by_depth"),
-        "context_rot_accuracy_by_needle": (cr or {}).get("context_rot_accuracy_by_needle"),
+        "context_rot_accuracy_by_length": (cr or {}).get(
+            "context_rot_accuracy_by_length"
+        ),
+        "context_rot_accuracy_by_depth": (cr or {}).get(
+            "context_rot_accuracy_by_depth"
+        ),
+        "context_rot_accuracy_by_needle": (cr or {}).get(
+            "context_rot_accuracy_by_needle"
+        ),
         "multi_needle_score": (cr or {}).get("multi_needle_score"),
-        "multi_needle_accuracy_by_length": (cr or {}).get("multi_needle_accuracy_by_length"),
+        "multi_needle_accuracy_by_length": (cr or {}).get(
+            "multi_needle_accuracy_by_length"
+        ),
         "tool_selection_accuracy": (ta or {}).get("tool_selection_accuracy"),
         "parameter_accuracy": (ta or {}).get("parameter_accuracy"),
         "parameter_hallucination_rate": (ta or {}).get("parameter_hallucination_rate"),
@@ -373,7 +377,9 @@ def test_parse_claims_json():
     """Verify _parse_claims_json handles valid, empty, malformed, integer-claims, and fenced JSON."""
     from ppb_answer_quality import _parse_claims_json
 
-    out_valid = _parse_claims_json('{"claims": ["The sky is blue.", "Water boils at 100°C."]}')
+    out_valid = _parse_claims_json(
+        '{"claims": ["The sky is blue.", "Water boils at 100°C."]}'
+    )
     assert out_valid == ["The sky is blue.", "Water boils at 100°C."]
 
     assert _parse_claims_json('{"claims": []}') == []
@@ -406,5 +412,7 @@ def test_needle_selection_deterministic():
     assert len({n["answer"] for n in seq_a}) > 1
 
     # Seed isolation: changing the seed by 1 yields a different sequence.
-    seq_c = [select_needle(DEFAULT_NEEDLES, DEFAULT_NEEDLE_SEED + 1, i) for i in range(30)]
+    seq_c = [
+        select_needle(DEFAULT_NEEDLES, DEFAULT_NEEDLE_SEED + 1, i) for i in range(30)
+    ]
     assert [n["answer"] for n in seq_a] != [n["answer"] for n in seq_c]

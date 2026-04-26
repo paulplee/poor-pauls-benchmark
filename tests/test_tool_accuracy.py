@@ -357,7 +357,10 @@ def test_normalise_bfcl_row() -> None:
     out = _normalise_bfcl_row(raw_ok, ground_truth_map=gt_map)
     assert out is not None
     assert out["question"] == "Recommend a quant."
-    assert isinstance(out["function"], list) and out["function"][0]["name"] == "recommend_quantization"
+    assert (
+        isinstance(out["function"], list)
+        and out["function"][0]["name"] == "recommend_quantization"
+    )
     assert out["answer"]["name"] == "recommend_quantization"
     assert out["answer"]["arguments"] == {
         "model": "Qwen3-30B",
@@ -380,9 +383,7 @@ def test_normalise_bfcl_row() -> None:
         "question": [[{"role": "user", "content": "What is the weather like?"}]],
         "function": [{"name": "calculator", "parameters": {}}],
     }
-    out_irr = _normalise_bfcl_row(
-        raw_irr, ground_truth_map={}, expected_no_call=True
-    )
+    out_irr = _normalise_bfcl_row(raw_irr, ground_truth_map={}, expected_no_call=True)
     assert out_irr is not None
     assert out_irr["expected_no_call"] is True
     assert out_irr["answer"] == {}
@@ -428,7 +429,7 @@ def test_irrelevance_routing(monkeypatch) -> None:
     # produce the same string.  Note ``_parse_response`` extracts the
     # embedded JSON for the positive case (still parseable).
     response = (
-        'recommend_quantization(model=...) → '
+        "recommend_quantization(model=...) → "
         '{"name": "recommend_quantization", "arguments": '
         '{"model": "Qwen3-30B", "gpu_vram_gb": 24, "priority": "speed"}}'
     )
@@ -465,4 +466,3 @@ def test_irrelevance_routing_correct_abstention(monkeypatch) -> None:
     assert out["tool_selection_accuracy"] is None
     assert out["parameter_accuracy"] is None
     assert out["overall_tool_accuracy"] is None
-

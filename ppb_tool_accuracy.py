@@ -57,10 +57,10 @@ BFCL_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 # Single-turn splits used by PPB.
 # Excludes: live/*, multi_turn/*, memory, web_search, java, javascript.
 BFCL_SPLITS = (
-    "BFCL_v4_simple_python.json",   # 399 cases — one tool, one call
-    "BFCL_v4_multiple.json",        # 199 cases — tool selection from candidates
-    "BFCL_v4_parallel.json",        # 199 cases — parallel / batched calls
-    "BFCL_v4_irrelevance.json",     # 239 cases — model must decline to call
+    "BFCL_v4_simple_python.json",  # 399 cases — one tool, one call
+    "BFCL_v4_multiple.json",  # 199 cases — tool selection from candidates
+    "BFCL_v4_parallel.json",  # 199 cases — parallel / batched calls
+    "BFCL_v4_irrelevance.json",  # 239 cases — model must decline to call
 )
 BFCL_ANSWER_PREFIX = "possible_answer/"  # ground-truth subfolder in the same repo
 # Split filename suffix that signals "model must NOT emit a tool call".
@@ -655,9 +655,7 @@ def run_tool_accuracy(
         # of the other dimension. Use arithmetic mean only if you want partial credit.
         # Note: ``no_call_accuracy`` is NOT folded into this geometric mean — it
         # measures a different (negative) capability and is reported alongside.
-        overall_tool_accuracy = math.sqrt(
-            tool_selection_accuracy * parameter_accuracy
-        )
+        overall_tool_accuracy = math.sqrt(tool_selection_accuracy * parameter_accuracy)
     else:
         tool_selection_accuracy = None
         parameter_accuracy = None
