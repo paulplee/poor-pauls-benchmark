@@ -23,3 +23,6 @@ httpx>=0.27.0
 #   uv pip install "poor-pauls-benchmark[qualitative]"
 # ---------------------------------------------------------------------------
 # llama-cpp-python>=0.3.0
+
+# Optional: required for BFCL tool-accuracy evaluation
+# datasets>=2.0.0

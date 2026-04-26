@@ -20,6 +20,11 @@
 #       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 #   Or use the optional dependency group (compiles from source):
 #     uv pip install -e ".[qualitative]"
+#   This installs llama-cpp-python (requires GPU build flags — see above)
+#   AND the HuggingFace `datasets` library needed for BFCL loading.
+# If you only want tool-accuracy without context-rot (no GPU required
+#   for the tool-accuracy phase itself, only for model inference):
+#     uv pip install datasets>=2.0.0
 
 
 # ── Model (required) ─────────────────────────────────────────────────────────
@@ -79,6 +84,10 @@ context_rot_enabled = true
 # tool calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) plus
 # a PPB-native MCP ground-truth set covering the four ppb-mcp tools.
 # Set tool_accuracy_enabled = true to activate this phase.
+# NOTE: Requires the HuggingFace `datasets` library for BFCL loading
+# (installed via `uv pip install -e ".[qualitative]"`). Without it,
+# only the 20 PPB-native MCP cases run; BFCL cases are skipped with a
+# warning.
 tool_accuracy_enabled = true
 
 # Number of BFCL cases to sample (PPB-native cases always run in addition).
@@ -88,6 +97,33 @@ tool_accuracy_enabled = true
 # Context window used when loading the model for tool-accuracy. The default
 # (4096) is plenty for BFCL-style single-turn function calls.
 # tool_accuracy_n_ctx = 4096
+
+
+# -- Answer Faithfulness & Quality (judge-model pipeline) -------------------
+# Scores model answers on Faithfulness, Answer Relevancy, and Coherence.
+# Uses a TWO-MODEL pipeline: the model under test (the "generator") plus a
+# separate, smaller local "judge" model that grades the responses.  The
+# generator and judge MUST be different models — the judge cannot grade
+# itself.  50 single-turn factual questions are sampled once from
+# anon8231489123/ShareGPT_Vicuna_unfiltered and cached in
+# `ppb_quality_prompts_cache.json` so every model in the leaderboard is
+# graded on identical prompts.
+#
+# Set answer_quality_enabled = true to activate this phase.
+# answer_quality_enabled = false
+
+# Path to the judge GGUF.  REQUIRED when answer_quality_enabled = true.
+# Recommendation: a small, well-aligned model in the 3–7B range.
+# judge_model_path = "./models/Qwen3.5-4B-Q4_K_M.gguf"
+
+# Number of evaluation prompts.  Default: 50.  Lower this only for smoke
+# tests — leaderboard rows should keep the default so they remain
+# directly comparable.
+# answer_quality_sample_size = 50
+
+# Context windows for the generator and judge respectively.  Defaults: 4096.
+# answer_quality_n_ctx = 4096
+# answer_quality_judge_n_ctx = 4096
 
 
 # ── Publishing (optional) ─────────────────────────────────────────────────────

@@ -55,6 +55,9 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 ```text
 ppb.py                 # CLI entry point (Typer app)
 ppb_context_rot.py     # context-rot / NIAH qualitative evaluation
+ppb_tool_accuracy.py   # tool-call accuracy (BFCL + PPB-native)
+ppb_answer_quality.py  # answer faithfulness / quality (judge-model pipeline)
+ppb_quality_prompts_cache.json  # frozen 50-prompt evaluation set (auto-generated)
 runners/
   __init__.py          # Runner registry (register_runner / get_runner)
   base.py              # BaseRunner ABC — contract for all backends
@@ -228,16 +231,22 @@ did not run for the row carry `null` for their respective keys.
 | `parameter_hallucination_rate`   | Tool-Call Accuracy (BFCL + PPB-native) | float  |
 | `parse_success_rate`             | Tool-Call Accuracy (BFCL + PPB-native) | float  |
 | `overall_tool_accuracy`          | Tool-Call Accuracy (BFCL + PPB-native) | float  |
-| `faithfulness_mean`              | Reserved (answer quality, future)      | float  |
-| `answer_relevancy_mean`          | Reserved (answer quality, future)      | float  |
-| `coherence_mean`                 | Reserved (answer quality, future)      | float  |
-| `quality_composite_score`        | Reserved (answer quality, future)      | float  |
+| `faithfulness_mean`              | Answer Quality (judge-model pipeline)  | float  |
+| `faithfulness_std`               | Answer Quality (judge-model pipeline)  | float  |
+| `answer_relevancy_mean`          | Answer Quality (judge-model pipeline)  | float  |
+| `coherence_mean`                 | Answer Quality (judge-model pipeline)  | float  |
+| `quality_composite_score`        | Answer Quality (judge-model pipeline)  | float  |
 | `memory_accuracy`                | Reserved (multi-turn memory, future)   | float  |
 | `mt_bench_score`                 | Reserved (MT-Bench, future)            | float  |
 
 When `run_type == "qualitative"`, the sibling `quantitative` column is
 explicitly `null` so consumers don't conflate stale quant numbers with a
 fresh qualitative measurement.
+
+Each published row also carries an opaque `meta` JSON column. Phase 6
+(answer quality) populates `meta.quality_prompts_cache_hash` with the
+SHA-256 of `ppb_quality_prompts_cache.json` so downstream tools can
+detect drift in the 50-prompt evaluation set across runs.
 
 ## Usage Guide
 

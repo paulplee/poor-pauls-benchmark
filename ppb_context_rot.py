@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from datasets.sharegpt import (
+from ppb_datasets.sharegpt import (
     SHAREGPT_FILENAME,
     SHAREGPT_REPO,
     download_dataset,

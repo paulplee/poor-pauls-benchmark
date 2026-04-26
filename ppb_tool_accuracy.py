@@ -51,7 +51,7 @@ log = logging.getLogger("ppb")
 # ---------------------------------------------------------------------------
 
 BFCL_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
-BFCL_SPLITS = ("simple", "multiple_function")
+BFCL_SPLITS = ("BFCL_v3_simple", "BFCL_v3_multiple")
 
 DEFAULT_BFCL_SAMPLE_SIZE = 100
 DEFAULT_MAX_TOKENS = 256
@@ -96,9 +96,11 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
             log.warning(
                 "[tool-accuracy] WARNING: Failed to load BFCL split %r: %s. "
                 "Falling back to PPB-native cases only (20 cases). "
+                "Expected splits: %s. "
                 "Set BFCL_TRUST_REMOTE_CODE=1 to enable trust_remote_code if needed.",
                 split,
                 exc,
+                BFCL_SPLITS,
             )
             continue
         for i, row in enumerate(ds):

@@ -51,8 +51,8 @@ from rich.progress import (
 from rich.prompt import Prompt
 from rich.theme import Theme
 
-from datasets import download_dataset
-from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
+from ppb_datasets import download_dataset
+from ppb_datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
 from runners._server_mixin import ServerMixin
 from utils.flattener import compute_file_sha256, flatten_benchmark_row
@@ -3954,10 +3954,15 @@ def run_all(
     # the model list and run the qualitative phase per-model.
     if mode == "qualitative":
         _qual = raw.get("qualitative") or {}
-        if not (_qual.get("context_rot_enabled") or _qual.get("tool_accuracy_enabled")):
+        if not (
+            _qual.get("context_rot_enabled")
+            or _qual.get("tool_accuracy_enabled")
+            or _qual.get("answer_quality_enabled")
+        ):
             console.print(
                 "[warning]Mode 'qualitative' but no qualitative phase is enabled "
-                "(context_rot_enabled / tool_accuracy_enabled all unset) — "
+                "(context_rot_enabled / tool_accuracy_enabled / "
+                "answer_quality_enabled all unset) — "
                 "nothing to do.[/warning]"
             )
             return
@@ -4005,6 +4010,14 @@ def run_all(
     # local debugging (results.jsonl) but must NOT appear in the published
     # qualitative block — they would cause schema drift on Hugging Face.
     _TOOL_ACCURACY_DIAGNOSTIC_KEYS = ("n_cases", "n_bfcl", "n_ppb_native")
+    # Likewise for run_answer_quality(): ``n_prompts`` / ``n_no_claims`` are
+    # local diagnostics, and ``quality_prompts_cache_hash`` is published in
+    # the meta block rather than the qualitative block.
+    _ANSWER_QUALITY_DIAGNOSTIC_KEYS = (
+        "n_prompts",
+        "n_no_claims",
+        "quality_prompts_cache_hash",
+    )
 
     def _build_qualitative_block(model_hf_id: str) -> dict[str, Any]:
         """Assemble the canonical ``qualitative`` block for a model.
@@ -4016,6 +4029,7 @@ def run_all(
         state = _qual_state.get(model_hf_id) or {}
         cr = state.get("context_rot") or None
         ta_full = state.get("tool_accuracy") or None
+        aq_full = state.get("answer_quality") or None
         # Strip diagnostic-only keys before publish (Fix 6).
         ta = (
             {
@@ -4024,6 +4038,15 @@ def run_all(
                 if k not in _TOOL_ACCURACY_DIAGNOSTIC_KEYS
             }
             if ta_full
+            else None
+        )
+        aq = (
+            {
+                k: v
+                for k, v in aq_full.items()
+                if k not in _ANSWER_QUALITY_DIAGNOSTIC_KEYS
+            }
+            if aq_full
             else None
         )
         return {
@@ -4044,16 +4067,33 @@ def run_all(
             "parse_success_rate": (ta or {}).get("parse_success_rate"),
             "overall_tool_accuracy": (ta or {}).get("overall_tool_accuracy"),
             # Reserved for future phases — always null for now.
-            "faithfulness_mean": None,
-            "faithfulness_std": None,
-            "answer_relevancy_mean": None,
-            "coherence_mean": None,
-            "quality_composite_score": None,
+            "faithfulness_mean": (aq or {}).get("faithfulness_mean"),
+            "faithfulness_std": (aq or {}).get("faithfulness_std"),
+            "answer_relevancy_mean": (aq or {}).get("answer_relevancy_mean"),
+            "coherence_mean": (aq or {}).get("coherence_mean"),
+            "quality_composite_score": (aq or {}).get("quality_composite_score"),
             "memory_accuracy": None,
             "mt_bench_score": None,
+            # Reserved for Phase 7 (multiturn/LongMemEval) — populated by
+            # ppb_multiturn.py.
             "cases_evaluated": None,
             "cases_skipped_context": None,
         }
+
+    def _build_meta_block(model_hf_id: str) -> dict[str, Any]:
+        """Assemble the per-row ``meta`` block from accumulated phase state.
+
+        Currently carries only the answer-quality prompt-cache SHA-256
+        (``quality_prompts_cache_hash``) so downstream consumers can
+        detect drift in the 50-prompt evaluation set across runs.
+        """
+        state = _qual_state.get(model_hf_id) or {}
+        aq_full = state.get("answer_quality") or {}
+        meta: dict[str, Any] = {}
+        cache_hash = aq_full.get("quality_prompts_cache_hash")
+        if cache_hash:
+            meta["quality_prompts_cache_hash"] = cache_hash
+        return meta
 
     def _on_model_done(model_hf_id: str, rfile: Path, line_offset: int) -> None:
         """Publish results incrementally after each model completes."""
@@ -4084,6 +4124,12 @@ def run_all(
                 # Attach the per-model qualitative block.  Keys for phases
                 # that haven't run for this model are None.
                 flat["qualitative"] = _build_qualitative_block(model_hf_id)
+                # Per-row meta block: reproducibility hints (e.g. the
+                # answer-quality prompt-cache SHA so consumers can detect
+                # cache drift).  None when no qualitative phase recorded
+                # any meta values.
+                _meta = _build_meta_block(model_hf_id)
+                flat["meta"] = _meta or None
                 # In qualitative-only runs, blank out the quantitative
                 # block so downstream consumers don't mistake a stale
                 # quant column for a fresh measurement.
@@ -4252,6 +4298,7 @@ def run_all(
         qual_cfg = raw.get("qualitative") or {}
         if _phase_qual and qual_cfg.get("context_rot_enabled"):
             console.print(f"\n[info]context-rot[/info] [hw]{hf_id}[/hw]")
+            _line_offset_before_cr = _count_lines(resolved_results)
             try:
                 from ppb_context_rot import run_context_rot_for_model
 
@@ -4309,7 +4356,7 @@ def run_all(
                     "quant": _quant or "",
                     "n_ctx": cap,
                     "n_batch": None,
-                    "concurrent_users": 1,
+                    "concurrent_users": None,
                     "hardware": _hw_snap,
                     "suite_run_id": suite_run_id,
                     "task_type": "context-rot-niah",
@@ -4327,13 +4374,14 @@ def run_all(
                     f"[bold green]{ctx_results['context_rot_score']:.3f}[/bold green]"
                 )
                 # Re-publish to capture the new row.
-                _on_model_done(hf_id, resolved_results, 0)
+                _on_model_done(hf_id, resolved_results, _line_offset_before_cr)
             except Exception as exc:
                 console.print(f"  [error]context-rot failed for {hf_id}:[/error] {exc}")
 
         # -- qualitative / tool-accuracy for this model -------------------
         if _phase_qual and qual_cfg.get("tool_accuracy_enabled"):
             console.print(f"\n[info]tool-accuracy[/info] [hw]{hf_id}[/hw]")
+            _line_offset_before_ta = _count_lines(resolved_results)
             try:
                 from ppb_tool_accuracy import run_tool_accuracy_for_model
 
@@ -4382,7 +4430,7 @@ def run_all(
                     "quant": _quant2 or "",
                     "n_ctx": tool_n_ctx,
                     "n_batch": None,
-                    "concurrent_users": 1,
+                    "concurrent_users": None,
                     "hardware": _hw_snap2,
                     "suite_run_id": suite_run_id,
                     "task_type": "tool-call-accuracy",
@@ -4401,10 +4449,100 @@ def run_all(
                     f"{(tool_results.get('overall_tool_accuracy') or 0.0):.3f}"
                     f"[/bold green]"
                 )
-                _on_model_done(hf_id, resolved_results, 0)
+                _on_model_done(hf_id, resolved_results, _line_offset_before_ta)
             except Exception as exc:
                 console.print(
                     f"  [error]tool-accuracy failed for {hf_id}:[/error] {exc}"
+                )
+
+        # -- qualitative / answer-quality for this model ------------------
+        if _phase_qual and qual_cfg.get("answer_quality_enabled"):
+            judge_path_cfg = qual_cfg.get("judge_model_path")
+            if not judge_path_cfg:
+                raise ValueError(
+                    "answer_quality phase requires judge_model_path in suite TOML."
+                )
+
+            console.print(f"\n[info]answer-quality[/info] [hw]{hf_id}[/hw]")
+            _line_offset_before_aq = _count_lines(resolved_results)
+            try:
+                from ppb_answer_quality import run_answer_quality_for_model
+
+                # Joinability hint for qualitative-only mode.
+                if mode == "qualitative":
+                    try:
+                        from utils.publisher import (
+                            fetch_existing_quantitative_for,
+                        )
+
+                        pub_token_q = (raw.get("publish") or {}).get("token") or None
+                        prior_q = fetch_existing_quantitative_for(
+                            hf_id=hf_id,
+                            hardware=_hw_sniffer.snapshot(),
+                            token=pub_token_q,
+                        )
+                        if prior_q:
+                            console.print(
+                                "  [info]ℹ Existing quantitative result found — "
+                                "quality results will be joinable.[/info]"
+                            )
+                    except Exception:
+                        pass
+
+                aq_n_ctx = int(qual_cfg.get("answer_quality_n_ctx", 4096))
+                aq_judge_n_ctx = int(qual_cfg.get("answer_quality_judge_n_ctx", 4096))
+                aq_results = run_answer_quality_for_model(
+                    mp,
+                    judge_path_cfg,
+                    suite_config=qual_cfg,
+                    n_ctx=aq_n_ctx,
+                    judge_n_ctx=aq_judge_n_ctx,
+                    n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
+                    judge_n_gpu_layers=qual_cfg.get(
+                        "answer_quality_judge_n_gpu_layers",
+                        qual_cfg.get("n_gpu_layers", -1),
+                    ),
+                    verbose=False,
+                )
+                from utils.flattener import _parse_model_filename as _pmf3
+
+                _hw_snap3 = _hw_sniffer.snapshot()
+                _gpus3 = _hw_snap3.get("gpus") or []
+                _gpu_name3 = (_gpus3[0].get("name") if _gpus3 else "") or ""
+                _model_base3, _quant3 = _pmf3(mp.name)
+                aq_record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "runner_type": "answer-quality",
+                    "model": hf_id,
+                    "gpu_name": _gpu_name3,
+                    "model_name": _model_base3 or "",
+                    "quant": _quant3 or "",
+                    "n_ctx": aq_n_ctx,
+                    "n_batch": None,
+                    "concurrent_users": None,
+                    "hardware": _hw_snap3,
+                    "suite_run_id": suite_run_id,
+                    "task_type": "answer-quality",
+                    "prompt_dataset": "sharegpt-v3",
+                    "llm_engine_name": "llama-cpp-python",
+                    "llm_engine_version": None,
+                    "run_type": mode,
+                    "results": aq_results,
+                    "judge_model_path": str(judge_path_cfg),
+                }
+                _write_result(aq_record, resolved_results)
+                _qual_state.setdefault(hf_id, {})["answer_quality"] = aq_results
+                _composite = aq_results.get("quality_composite_score")
+                console.print(
+                    f"  [success]✓ quality composite:[/success] "
+                    f"[bold green]"
+                    f"{('%.3f' % _composite) if _composite is not None else 'n/a'}"
+                    f"[/bold green]"
+                )
+                _on_model_done(hf_id, resolved_results, _line_offset_before_aq)
+            except Exception as exc:
+                console.print(
+                    f"  [error]answer-quality failed for {hf_id}:[/error] {exc}"
                 )
 
     # -- Final summary -----------------------------------------------------

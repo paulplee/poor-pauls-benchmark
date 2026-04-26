@@ -28,7 +28,7 @@ dependencies = [
 ppb = "ppb:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["runners", "utils", "datasets"]
+packages = ["runners", "utils", "ppb_datasets"]
 include = ["ppb.py"]
 
 [project.optional-dependencies]
@@ -49,7 +49,10 @@ include = ["ppb.py"]
 # With uv (recommended):
 #   uv pip install llama-cpp-python --extra-index-url \
 #     https://abetlen.github.io/llama-cpp-python/whl/cu124  # CUDA 12.4 example
-qualitative = ["llama-cpp-python>=0.3.0"]
+qualitative = [
+    "llama-cpp-python>=0.3.0",
+    "datasets>=2.0.0",   # HuggingFace datasets library for BFCL loading
+]
 
 [dependency-groups]
 dev = ["pytest>=8.0.0", "ruff>=0.5", "hatchling"]

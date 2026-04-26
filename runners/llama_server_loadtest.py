@@ -53,8 +53,8 @@ from typing import Any
 
 import httpx
 
-from datasets import download_dataset, load_sharegpt_prompts
-from datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
+from ppb_datasets import download_dataset, load_sharegpt_prompts
+from ppb_datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 
 from .base import BaseRunner
 from ._server_mixin import (

@@ -823,7 +823,7 @@ class TestShareGPTDataset:
 
     def test_load_sharegpt_prompts_filters_short(self, tmp_path: Path) -> None:
         """Prompts shorter than _MIN_PROMPT_LENGTH are filtered out."""
-        from datasets.sharegpt import load_sharegpt_prompts
+        from ppb_datasets.sharegpt import load_sharegpt_prompts
 
         data = [
             {"conversations": [{"from": "human", "value": "Hi"}]},  # too short
@@ -845,7 +845,7 @@ class TestShareGPTDataset:
 
     def test_load_sharegpt_prompts_max(self, tmp_path: Path) -> None:
         """max_prompts limits the number of returned prompts."""
-        from datasets.sharegpt import load_sharegpt_prompts
+        from ppb_datasets.sharegpt import load_sharegpt_prompts
 
         data = [
             {
@@ -866,7 +866,7 @@ class TestShareGPTDataset:
 
     def test_load_sharegpt_prompts_skips_non_human(self, tmp_path: Path) -> None:
         """Conversations with no human turn are skipped."""
-        from datasets.sharegpt import load_sharegpt_prompts
+        from ppb_datasets.sharegpt import load_sharegpt_prompts
 
         data = [
             {
@@ -884,10 +884,10 @@ class TestShareGPTDataset:
         prompts = load_sharegpt_prompts(f, max_prompts=10)
         assert len(prompts) == 0
 
-    @patch("datasets.sharegpt.hf_hub_download")
+    @patch("ppb_datasets.sharegpt.hf_hub_download")
     def test_download_sharegpt(self, mock_dl: Mock, tmp_path: Path) -> None:
         """download_sharegpt calls hf_hub_download and returns a Path."""
-        from datasets.sharegpt import download_sharegpt
+        from ppb_datasets.sharegpt import download_sharegpt
 
         mock_dl.return_value = str(tmp_path / "data.json")
         result = download_sharegpt(dataset_dir=tmp_path)
@@ -895,10 +895,10 @@ class TestShareGPTDataset:
         assert isinstance(result, Path)
         mock_dl.assert_called_once()
 
-    @patch("datasets.sharegpt.hf_hub_download")
+    @patch("ppb_datasets.sharegpt.hf_hub_download")
     def test_download_dataset_custom_repo(self, mock_dl: Mock, tmp_path: Path) -> None:
         """download_dataset forwards custom repo_id and filename."""
-        from datasets.sharegpt import download_dataset
+        from ppb_datasets.sharegpt import download_dataset
 
         mock_dl.return_value = str(tmp_path / "custom.json")
         result = download_dataset(
@@ -917,7 +917,7 @@ class TestShareGPTDataset:
 
     def test_load_sharegpt_prompts_shuffle(self, tmp_path: Path) -> None:
         """shuffle=True changes prompt order; seed makes it reproducible."""
-        from datasets.sharegpt import load_sharegpt_prompts
+        from ppb_datasets.sharegpt import load_sharegpt_prompts
 
         data = [
             {

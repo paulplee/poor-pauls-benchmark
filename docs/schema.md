@@ -124,6 +124,32 @@ Lengths exceeding the model's measured `vram_cliff_tokens` are skipped and
 recorded as `null` in `context_rot_accuracy_by_length` rather than failing the
 run.
 
+## Qualitative Evaluation (Answer Faithfulness & Quality)
+
+Phase 6 scores model answers on three orthogonal dimensions using a
+_two-model_ pipeline: the model under test (the "generator") plus a separate,
+smaller local "judge" model. The generator and judge MUST be different
+models — the judge cannot grade itself. Rows produced by this phase carry
+`runner_type = "answer-quality"` and `task_type = "answer-quality"`.
+
+| Field                     | Type          | Description                                                              |
+| ------------------------- | ------------- | ------------------------------------------------------------------------ |
+| `faithfulness_mean`       | float \| null | Mean fraction of factual claims judged correct, across the 50-prompt set |
+| `faithfulness_std`        | float \| null | Standard deviation of per-prompt faithfulness scores                     |
+| `answer_relevancy_mean`   | float \| null | Mean judge-rated relevancy (1–5 → 0–1)                                   |
+| `coherence_mean`          | float \| null | Mean judge-rated coherence (1–10 → 0–1)                                  |
+| `quality_composite_score` | float \| null | Mean of the three means above — the headline answer-quality metric       |
+
+50 single-turn factual prompts are sampled once from
+`anon8231489123/ShareGPT_Vicuna_unfiltered` and cached in
+`ppb_quality_prompts_cache.json` so every model in the leaderboard is graded
+on identical prompts. The cache file's SHA-256 is published in the row's
+`meta.quality_prompts_cache_hash` field.
+
+| Field  | Type           | Description                                                                                                |
+| ------ | -------------- | ---------------------------------------------------------------------------------------------------------- |
+| `meta` | object \| null | Per-row reproducibility hints. Currently carries only `quality_prompts_cache_hash` (SHA-256 of the cache). |
+
 ## Composable Schema and Join Key
 
 PPB's three run modes (`all`, `quantitative`, `qualitative`) all emit rows
