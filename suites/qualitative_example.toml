@@ -74,6 +74,22 @@ context_rot_enabled = true
 # n_gpu_layers = -1
 
 
+# -- Phase 5: Tool-Call Accuracy ---------------------------------------------
+# Measures whether the model produces structurally valid, schema-correct
+# tool calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) plus
+# a PPB-native MCP ground-truth set covering the four ppb-mcp tools.
+# Set tool_accuracy_enabled = true to activate this phase.
+tool_accuracy_enabled = true
+
+# Number of BFCL cases to sample (PPB-native cases always run in addition).
+# Default: 100  (→ 100 BFCL + 20 PPB-native = 120 total cases)
+# tool_accuracy_sample_size = 100
+
+# Context window used when loading the model for tool-accuracy. The default
+# (4096) is plenty for BFCL-style single-turn function calls.
+# tool_accuracy_n_ctx = 4096
+
+
 # ── Publishing (optional) ─────────────────────────────────────────────────────
 # Uncomment to publish results to the PPB leaderboard after each model.
 # [publish]

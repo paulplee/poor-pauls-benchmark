@@ -3950,10 +3950,14 @@ def run_all(
     # In qualitative-only mode we don't run sweep but still need to iterate
     # the model list and run the qualitative phase per-model.
     if mode == "qualitative":
-        if not (raw.get("qualitative") or {}).get("context_rot_enabled"):
+        _qual = raw.get("qualitative") or {}
+        if not (
+            _qual.get("context_rot_enabled") or _qual.get("tool_accuracy_enabled")
+        ):
             console.print(
-                "[warning]Mode 'qualitative' but [qualitative].context_rot_enabled "
-                "is not set — nothing to do.[/warning]"
+                "[warning]Mode 'qualitative' but no qualitative phase is enabled "
+                "(context_rot_enabled / tool_accuracy_enabled all unset) — "
+                "nothing to do.[/warning]"
             )
             return
 
@@ -4248,6 +4252,82 @@ def run_all(
                 _on_model_done(hf_id, resolved_results, 0)
             except Exception as exc:
                 console.print(f"  [error]context-rot failed for {hf_id}:[/error] {exc}")
+
+        # -- qualitative / tool-accuracy for this model -------------------
+        if _phase_qual and qual_cfg.get("tool_accuracy_enabled"):
+            console.print(f"\n[info]tool-accuracy[/info] [hw]{hf_id}[/hw]")
+            try:
+                from ppb_tool_accuracy import run_tool_accuracy_for_model
+
+                # In qualitative-only mode, surface the joinability hint if a
+                # prior quantitative result exists for this config.
+                if mode == "qualitative":
+                    try:
+                        from utils.publisher import (
+                            fetch_existing_quantitative_for,
+                        )
+
+                        pub_token_t = (
+                            (raw.get("publish") or {}).get("token") or None
+                        )
+                        prior_q = fetch_existing_quantitative_for(
+                            hf_id=hf_id,
+                            hardware=_hw_sniffer.snapshot(),
+                            token=pub_token_t,
+                        )
+                        if prior_q:
+                            console.print(
+                                "  [info]ℹ Existing quantitative result found — "
+                                "tool accuracy results will be joinable.[/info]"
+                            )
+                    except Exception:
+                        pass
+
+                tool_n_ctx = int(qual_cfg.get("tool_accuracy_n_ctx", 4096))
+                tool_results = run_tool_accuracy_for_model(
+                    mp,
+                    suite_config=qual_cfg,
+                    n_ctx=tool_n_ctx,
+                    n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
+                    verbose=False,
+                )
+                from utils.flattener import _parse_model_filename as _pmf2
+
+                _hw_snap2 = _hw_sniffer.snapshot()
+                _gpus2 = _hw_snap2.get("gpus") or []
+                _gpu_name2 = (_gpus2[0].get("name") if _gpus2 else "") or ""
+                _model_base2, _quant2 = _pmf2(mp.name)
+                tool_record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "runner_type": "tool-accuracy",
+                    "model": hf_id,
+                    "gpu_name": _gpu_name2,
+                    "model_name": _model_base2 or "",
+                    "quant": _quant2 or "",
+                    "n_ctx": tool_n_ctx,
+                    "n_batch": None,
+                    "concurrent_users": 1,
+                    "hardware": _hw_snap2,
+                    "suite_run_id": suite_run_id,
+                    "task_type": "tool-call-accuracy",
+                    "prompt_dataset": "bfcl+ppb-mcp",
+                    "llm_engine_name": "llama-cpp-python",
+                    "llm_engine_version": None,
+                    "run_type": mode,
+                    "results": tool_results,
+                }
+                _write_result(tool_record, resolved_results)
+                console.print(
+                    f"  [success]✓ overall tool accuracy:[/success] "
+                    f"[bold green]"
+                    f"{(tool_results.get('overall_tool_accuracy') or 0.0):.3f}"
+                    f"[/bold green]"
+                )
+                _on_model_done(hf_id, resolved_results, 0)
+            except Exception as exc:
+                console.print(
+                    f"  [error]tool-accuracy failed for {hf_id}:[/error] {exc}"
+                )
 
     # -- Final summary -----------------------------------------------------
     if any_vram_cliff_failed and not any(v > 0 for v in max_ctx_caps.values()):

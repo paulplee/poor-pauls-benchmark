@@ -98,6 +98,7 @@ COLUMN_ORDER: list[str] = [
     "parameter_accuracy",
     "parameter_hallucination_rate",
     "parse_success_rate",
+    "overall_tool_accuracy",
     "faithfulness_mean",
     "answer_relevancy_mean",
     "coherence_mean",
@@ -383,6 +384,20 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat["raw_payload"] = raw_payload
         _stamp_provenance(flat)
         rows = [flat]
+    elif runner_type == "tool-accuracy" and isinstance(results, dict):
+        flat = _new_row()
+        flat.update(envelope)
+        flat.update(hw_fields)
+        flat["tool_selection_accuracy"] = results.get("tool_selection_accuracy")
+        flat["parameter_accuracy"] = results.get("parameter_accuracy")
+        flat["parameter_hallucination_rate"] = results.get(
+            "parameter_hallucination_rate"
+        )
+        flat["parse_success_rate"] = results.get("parse_success_rate")
+        flat["overall_tool_accuracy"] = results.get("overall_tool_accuracy")
+        flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
+        rows = [flat]
     else:
         # Unknown / unsupported runner — emit one row with Nones
         flat = _new_row()
@@ -422,7 +437,9 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         # original `ppb all`).
         "run_type": row.get("run_type")
         or (
-            "qualitative" if row.get("runner_type") == "context-rot" else "quantitative"
+            "qualitative"
+            if row.get("runner_type") in ("context-rot", "tool-accuracy")
+            else "quantitative"
         ),
         "model": model,
         "model_base": base,
