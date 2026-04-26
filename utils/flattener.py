@@ -100,6 +100,7 @@ COLUMN_ORDER: list[str] = [
     "parse_success_rate",
     "overall_tool_accuracy",
     "faithfulness_mean",
+    "faithfulness_std",
     "answer_relevancy_mean",
     "coherence_mean",
     "quality_composite_score",
@@ -111,6 +112,9 @@ COLUMN_ORDER: list[str] = [
     # JOINing on (gpu_name, model_name, quantization, run_type).
     "qualitative",
     "quantitative",
+    # Per-row meta block — opaque JSON dict carrying reproducibility
+    # hints (e.g. ``quality_prompts_cache_hash``).  Nullable.
+    "meta",
     # OS / system context
     "os_system",
     "os_release",
@@ -404,6 +408,18 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat["raw_payload"] = raw_payload
         _stamp_provenance(flat)
         rows = [flat]
+    elif runner_type == "answer-quality" and isinstance(results, dict):
+        flat = _new_row()
+        flat.update(envelope)
+        flat.update(hw_fields)
+        flat["faithfulness_mean"] = results.get("faithfulness_mean")
+        flat["faithfulness_std"] = results.get("faithfulness_std")
+        flat["answer_relevancy_mean"] = results.get("answer_relevancy_mean")
+        flat["coherence_mean"] = results.get("coherence_mean")
+        flat["quality_composite_score"] = results.get("quality_composite_score")
+        flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
+        rows = [flat]
     else:
         # Unknown / unsupported runner — emit one row with Nones
         flat = _new_row()
@@ -444,7 +460,8 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         "run_type": row.get("run_type")
         or (
             "qualitative"
-            if row.get("runner_type") in ("context-rot", "tool-accuracy")
+            if row.get("runner_type")
+            in ("context-rot", "tool-accuracy", "answer-quality")
             else "quantitative"
         ),
         "model": model,
