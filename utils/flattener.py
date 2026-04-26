@@ -421,7 +421,9 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         # don't set it explicitly (anything driven by `ppb sweep` or the
         # original `ppb all`).
         "run_type": row.get("run_type")
-        or ("qualitative" if row.get("runner_type") == "context-rot" else "quantitative"),
+        or (
+            "qualitative" if row.get("runner_type") == "context-rot" else "quantitative"
+        ),
         "model": model,
         "model_base": base,
         "quant": quant,

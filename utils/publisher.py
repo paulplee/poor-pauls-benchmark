@@ -40,12 +40,7 @@ def check_hf_token(token: str | None = None) -> None:
         ) from exc
 
     # 2. Classic tokens carry a "role" field — reject "read".
-    role = (
-        user_info
-        .get("auth", {})
-        .get("accessToken", {})
-        .get("role")
-    )
+    role = user_info.get("auth", {}).get("accessToken", {}).get("role")
     if role == "read":
         raise PermissionError(
             "Your Hugging Face token is read-only and cannot upload to the PPB dataset.\n"

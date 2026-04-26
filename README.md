@@ -651,11 +651,11 @@ uv run ppb.py all suites/my_gpu.toml --no-resume
 
 PPB exposes three top-level commands that all consume the **same suite TOML**:
 
-| Command                          | Phases run                                       | When to use                                                            |
-| -------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------- |
-| `ppb all <suite>`                | vram-cliff + sweep + context-rot                 | First-time benchmark of a new model on new hardware.                   |
-| `ppb quantitative <suite>`       | vram-cliff + sweep                               | Refresh perf numbers (e.g. after a llama.cpp upgrade) without re-running expensive qualitative evals. |
-| `ppb qualitative <suite>`        | context-rot (and future qualitative phases) only | Add qualitative scores to a model that already has published quantitative results. Skips vram-cliff and sweep entirely. |
+| Command                    | Phases run                                       | When to use                                                                                                             |
+| -------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `ppb all <suite>`          | vram-cliff + sweep + context-rot                 | First-time benchmark of a new model on new hardware.                                                                    |
+| `ppb quantitative <suite>` | vram-cliff + sweep                               | Refresh perf numbers (e.g. after a llama.cpp upgrade) without re-running expensive qualitative evals.                   |
+| `ppb qualitative <suite>`  | context-rot (and future qualitative phases) only | Add qualitative scores to a model that already has published quantitative results. Skips vram-cliff and sweep entirely. |
 
 `ppb all <suite> --mode {all,quantitative,qualitative}` is the canonical form; `quantitative` and `qualitative` are convenience subcommands that pin `--mode` for you. Existing scripts that call `ppb all` keep working unchanged.
 
@@ -663,12 +663,12 @@ PPB exposes three top-level commands that all consume the **same suite TOML**:
 
 Every published row carries a four-field **join key** so quantitative-only and qualitative-only runs can be stitched together downstream by `ppb-mcp` and `poorpaul.dev`:
 
-| Column | Meaning |
-|---|---|
-| `gpu_name` | e.g. `NVIDIA GeForce RTX 4090` |
-| `model_name` | base model name (alias of `model_base`) |
-| `quantization` | quant tag (alias of `quant`) |
-| `run_type` | `"all"` \| `"quantitative"` \| `"qualitative"` |
+| Column         | Meaning                                        |
+| -------------- | ---------------------------------------------- |
+| `gpu_name`     | e.g. `NVIDIA GeForce RTX 4090`                 |
+| `model_name`   | base model name (alias of `model_base`)        |
+| `quantization` | quant tag (alias of `quant`)                   |
+| `run_type`     | `"all"` \| `"quantitative"` \| `"qualitative"` |
 
 Each row also carries a **quantitative block** (`vram_used_gb`, `vram_cliff_tokens`, `tokens_per_sec_prompt`, `tokens_per_sec_generation`, `throughput_tok_s`, …) and a **qualitative block** (`context_rot_score`, `context_rot_accuracy_by_length`, `context_rot_accuracy_by_depth`, plus nullable placeholders for forthcoming `tool_selection_accuracy`, `quality_composite_score`, `mt_bench_score`, etc.). Whichever block isn't relevant to a given run is left `null`.
 
