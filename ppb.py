@@ -4081,6 +4081,7 @@ def run_all(
                 "parameter_hallucination_rate"
             ),
             "parse_success_rate": (ta or {}).get("parse_success_rate"),
+            "no_call_accuracy": (ta or {}).get("no_call_accuracy"),
             "overall_tool_accuracy": (ta or {}).get("overall_tool_accuracy"),
             # Reserved for future phases — always null for now.
             "knowledge_accuracy_mean": (aq or {}).get(

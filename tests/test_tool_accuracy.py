@@ -326,3 +326,143 @@ def test_run_type_default_for_tool_accuracy_runner() -> None:
     }
     rows = flatten_benchmark_row(row)
     assert rows[0]["run_type"] == "qualitative"
+
+
+# ---------------------------------------------------------------------------
+# BFCL v4 — _normalise_bfcl_row, _score_no_call, irrelevance routing
+# ---------------------------------------------------------------------------
+
+
+def test_normalise_bfcl_row() -> None:
+    """BFCL v4 row normalisation handles well-formed, malformed, and irrelevance."""
+    from ppb_tool_accuracy import _normalise_bfcl_row
+
+    # (a) well-formed v4 positive case with merged ground truth.
+    raw_ok = {
+        "id": "simple_python_0",
+        "question": [[{"role": "user", "content": "Recommend a quant."}]],
+        "function": [
+            {
+                "name": "recommend_quantization",
+                "description": "...",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    }
+    gt_map = {
+        "simple_python_0": [
+            "recommend_quantization(model='Qwen3-30B', gpu_vram_gb=24, priority='speed')"
+        ]
+    }
+    out = _normalise_bfcl_row(raw_ok, ground_truth_map=gt_map)
+    assert out is not None
+    assert out["question"] == "Recommend a quant."
+    assert isinstance(out["function"], list) and out["function"][0]["name"] == "recommend_quantization"
+    assert out["answer"]["name"] == "recommend_quantization"
+    assert out["answer"]["arguments"] == {
+        "model": "Qwen3-30B",
+        "gpu_vram_gb": 24,
+        "priority": "speed",
+    }
+    assert out["expected_no_call"] is False
+
+    # (b) malformed nesting (single-list shape, not double-nested) → row skipped.
+    raw_bad = {
+        "id": "bad_0",
+        "question": [{"role": "user", "content": "missing outer list"}],
+        "function": [],
+    }
+    assert _normalise_bfcl_row(raw_bad, ground_truth_map={}) is None
+
+    # (c) irrelevance row → expected_no_call=True, answer empty.
+    raw_irr = {
+        "id": "irrelevance_42",
+        "question": [[{"role": "user", "content": "What is the weather like?"}]],
+        "function": [{"name": "calculator", "parameters": {}}],
+    }
+    out_irr = _normalise_bfcl_row(
+        raw_irr, ground_truth_map={}, expected_no_call=True
+    )
+    assert out_irr is not None
+    assert out_irr["expected_no_call"] is True
+    assert out_irr["answer"] == {}
+    assert out_irr["question"] == "What is the weather like?"
+
+
+def test_score_no_call() -> None:
+    """`_score_no_call` correctly identifies abstention vs tool-call attempts."""
+    from ppb_tool_accuracy import _score_no_call
+
+    # Plain prose abstentions → True.
+    assert _score_no_call("I cannot help with that without more context.") is True
+    assert _score_no_call("Sorry, I don't know.") is True
+    assert _score_no_call("") is True
+    assert _score_no_call("   \n  ") is True
+
+    # Tool-call attempts → False.
+    assert _score_no_call("get_weather(city='London')") is False
+    assert _score_no_call('{"function_call": {"name": "x"}}') is False
+    assert _score_no_call('{"tool_call": {}}') is False
+    assert _score_no_call("<tool_call>foo</tool_call>") is False
+
+
+def test_irrelevance_routing(monkeypatch) -> None:
+    """Irrelevance cases populate `no_call_accuracy` and skip positive scoring."""
+    import ppb_tool_accuracy as mod
+
+    irr_case = {
+        "question": "What is the meaning of life?",
+        "function": [{"name": "calculator", "parameters": {}}],
+        "answer": {},
+        "expected_no_call": True,
+    }
+    pos_case = {
+        "question": "Recommend a quant.",
+        "function": {"name": "recommend_quantization", "parameters": _SCHEMA},
+        "answer": _TRUTH,
+    }
+    monkeypatch.setattr(mod, "_load_bfcl", lambda n: [irr_case])
+    monkeypatch.setattr(mod, "_load_ppb_native", lambda: [pos_case])
+
+    # Stub returns a Python-style call (contains ``(``) so both prompts
+    # produce the same string.  Note ``_parse_response`` extracts the
+    # embedded JSON for the positive case (still parseable).
+    response = (
+        'recommend_quantization(model=...) → '
+        '{"name": "recommend_quantization", "arguments": '
+        '{"model": "Qwen3-30B", "gpu_vram_gb": 24, "priority": "speed"}}'
+    )
+    out = run_tool_accuracy(_StubLLM(response))
+
+    assert out["n_cases"] == 2
+    # Positive denominator excludes irrelevance: only 1 positive case → 1.0.
+    assert out["tool_selection_accuracy"] == pytest.approx(1.0)
+    assert out["parameter_accuracy"] == pytest.approx(1.0)
+    assert out["parse_success_rate"] == pytest.approx(1.0)
+    # Irrelevance: response contains "(" → scored as a call → 0.0.
+    assert out["no_call_accuracy"] == pytest.approx(0.0)
+    # Geometric mean over positive cases only — does NOT fold in no_call.
+    assert out["overall_tool_accuracy"] == pytest.approx(1.0)
+
+
+def test_irrelevance_routing_correct_abstention(monkeypatch) -> None:
+    """When the model abstains in prose, no_call_accuracy is 1.0."""
+    import ppb_tool_accuracy as mod
+
+    irr_case = {
+        "question": "What is the weather like in Paris?",
+        "function": [{"name": "calculator", "parameters": {}}],
+        "answer": {},
+        "expected_no_call": True,
+    }
+    monkeypatch.setattr(mod, "_load_bfcl", lambda n: [irr_case])
+    monkeypatch.setattr(mod, "_load_ppb_native", lambda: [])
+
+    out = run_tool_accuracy(_StubLLM("I don't have access to weather data."))
+    assert out["n_cases"] == 1
+    assert out["no_call_accuracy"] == pytest.approx(1.0)
+    # No positive cases → all positive metrics are None.
+    assert out["tool_selection_accuracy"] is None
+    assert out["parameter_accuracy"] is None
+    assert out["overall_tool_accuracy"] is None
+

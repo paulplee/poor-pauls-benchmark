@@ -55,7 +55,7 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 ```text
 ppb.py                 # CLI entry point (Typer app)
 ppb_context_rot.py     # context-rot / NIAH qualitative evaluation
-ppb_tool_accuracy.py   # tool-call accuracy (BFCL **v3** + PPB-native; see ppb_tool_accuracy.py re: v4 migration)
+ppb_tool_accuracy.py   # tool-call accuracy (BFCL **v4** single-turn splits + PPB-native; emits no_call_accuracy on the irrelevance split)
 ppb_answer_quality.py  # answer knowledge-accuracy / quality (judge-model pipeline)
 ppb_multiturn.py       # multi-turn memory & coherence (LongMemEval / MT-Bench)
 ppb_quality_prompts_cache.json  # frozen 50-prompt evaluation set (auto-generated)

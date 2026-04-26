@@ -1,10 +1,11 @@
 """
-PPB — Tool-Call Accuracy (BFCL + PPB-native).
+PPB — Tool-Call Accuracy (BFCL v4 + PPB-native).
 
 Measures whether a model produces structurally valid, schema-correct tool
-calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) ``simple`` and
-``multiple_function`` splits as the primary evaluation set, supplemented by
-a PPB-native MCP ground-truth set covering the four ``ppb-mcp`` tools.
+calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) v4 single-turn
+splits (``simple_python``, ``multiple``, ``parallel``, ``irrelevance``) as
+the primary evaluation set, supplemented by a PPB-native MCP ground-truth
+set covering the four ``ppb-mcp`` tools.
 
 Method
 ------
@@ -36,6 +37,7 @@ Public entry point
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import math
@@ -51,16 +53,18 @@ log = logging.getLogger("ppb")
 # ---------------------------------------------------------------------------
 
 BFCL_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
-# BFCL is published as raw JSONL files — the dataset README explicitly
-# states ``load_dataset`` is not compatible.  Each line in these files is
-# one JSON object.
-#   BFCL_v3_simple.json    — single-function, one correct call (~400 cases)
-#   BFCL_v3_multiple.json  — multi-function, model picks one of 2-4 (~200)
-#
-# NOTE: BFCL v3 dataset — pinned intentionally. BFCL v4 restructured the schema;
-# PPB will migrate in a future release. Results from this module are NOT
-# directly comparable to the Berkeley BFCL v4 leaderboard.
-BFCL_FILES = ("BFCL_v3_simple.json", "BFCL_v3_multiple.json")
+
+# Single-turn splits used by PPB.
+# Excludes: live/*, multi_turn/*, memory, web_search, java, javascript.
+BFCL_SPLITS = (
+    "BFCL_v4_simple_python.json",   # 399 cases — one tool, one call
+    "BFCL_v4_multiple.json",        # 199 cases — tool selection from candidates
+    "BFCL_v4_parallel.json",        # 199 cases — parallel / batched calls
+    "BFCL_v4_irrelevance.json",     # 239 cases — model must decline to call
+)
+BFCL_ANSWER_PREFIX = "possible_answer/"  # ground-truth subfolder in the same repo
+# Split filename suffix that signals "model must NOT emit a tool call".
+BFCL_IRRELEVANCE_SPLIT = "BFCL_v4_irrelevance.json"
 
 DEFAULT_BFCL_SAMPLE_SIZE = 100
 DEFAULT_MAX_TOKENS = 256
@@ -80,11 +84,95 @@ SYSTEM_PROMPT_TEMPLATE = (
 # ---------------------------------------------------------------------------
 
 
-def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
-    """Load BFCL simple + multiple_function rows, capped at *sample_size*.
+def _parse_bfcl_ground_truth(call_str: str) -> dict[str, Any]:
+    """Parse a BFCL v4 ground-truth call string into a ``{name, arguments}`` dict.
 
-    Falls back to an empty list (with a warning) if the dataset cannot be
-    fetched — the PPB-native ground truth still runs.
+    BFCL v4 expresses ground truth as Python function-call syntax, e.g.
+    ``"recommend_quantization(model='Qwen3-30B', gpu_vram_gb=24)"``.
+    Returns ``{}`` on any parse failure.
+    """
+    if not call_str or not isinstance(call_str, str):
+        return {}
+    try:
+        tree = ast.parse(call_str.strip(), mode="eval")
+    except SyntaxError:
+        return {}
+    call = tree.body
+    if not isinstance(call, ast.Call):
+        return {}
+    if isinstance(call.func, ast.Name):
+        name = call.func.id
+    elif isinstance(call.func, ast.Attribute):
+        name = call.func.attr
+    else:
+        return {}
+    arguments: dict[str, Any] = {}
+    for kw in call.keywords:
+        if kw.arg is None:
+            continue
+        try:
+            arguments[kw.arg] = ast.literal_eval(kw.value)
+        except Exception:
+            return {}
+    return {"name": name, "arguments": arguments}
+
+
+def _load_bfcl_answers(split_filename: str) -> dict[str, list[str]]:
+    """Download and parse the ``possible_answer/<split>`` ground-truth file.
+
+    Returns a mapping from BFCL ``id`` to its ``ground_truth`` list (a list
+    of Python function-call strings).  Returns an empty dict on failure so
+    the question rows can still be loaded (and skipped per-row when no
+    ground truth is found).
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:  # pragma: no cover
+        return {}
+    try:
+        local_path = hf_hub_download(
+            repo_id=BFCL_REPO,
+            repo_type="dataset",
+            filename=f"{BFCL_ANSWER_PREFIX}{split_filename}",
+        )
+    except Exception as exc:  # pragma: no cover — network/dataset issues
+        log.warning(
+            "[tool-accuracy] Failed to download BFCL ground-truth for %r: %s",
+            split_filename,
+            exc,
+        )
+        return {}
+    answers: dict[str, list[str]] = {}
+    try:
+        with open(local_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                qid = obj.get("id")
+                gt = obj.get("ground_truth") or []
+                if qid is not None and isinstance(gt, list):
+                    answers[qid] = gt
+    except Exception as exc:  # pragma: no cover
+        log.warning(
+            "[tool-accuracy] Failed to read BFCL ground-truth %r: %s",
+            split_filename,
+            exc,
+        )
+    return answers
+
+
+def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
+    """Load BFCL v4 single-turn rows from each split, capped at *sample_size*.
+
+    Each split contributes ``sample_size // len(BFCL_SPLITS)`` rows.  Ground
+    truth is fetched separately from ``possible_answer/<split>`` and merged
+    into each row by ``id``.  Falls back to an empty list (with a warning)
+    if the dataset cannot be fetched.
     """
     if sample_size <= 0:
         return []
@@ -98,9 +186,10 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
         return []
 
     rows: list[dict[str, Any]] = []
-    per_file = max(1, sample_size // len(BFCL_FILES))
+    per_split = max(1, sample_size // len(BFCL_SPLITS))
 
-    for filename in BFCL_FILES:
+    for filename in BFCL_SPLITS:
+        is_irrelevance = filename == BFCL_IRRELEVANCE_SPLIT
         try:
             local_path = hf_hub_download(
                 repo_id=BFCL_REPO,
@@ -109,12 +198,17 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
             )
         except Exception as exc:  # pragma: no cover — network/dataset issues
             log.warning(
-                "[tool-accuracy] Failed to download BFCL file %r: %s. "
-                "Skipping this file \u2014 PPB-native cases will still run.",
+                "[tool-accuracy] Failed to download BFCL split %r: %s. "
+                "Skipping this split \u2014 other splits and PPB-native cases will still run.",
                 filename,
                 exc,
             )
             continue
+
+        # Irrelevance split has no positive ground truth; skip the answer fetch.
+        ground_truth_map: dict[str, list[str]] = (
+            {} if is_irrelevance else _load_bfcl_answers(filename)
+        )
 
         count = 0
         try:
@@ -123,17 +217,24 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
                     line = line.strip()
                     if not line:
                         continue
-                    if count >= per_file:
+                    if count >= per_split:
                         break
                     try:
                         raw = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    rows.append(_normalise_bfcl_row(raw))
+                    normalised = _normalise_bfcl_row(
+                        raw,
+                        ground_truth_map=ground_truth_map,
+                        expected_no_call=is_irrelevance,
+                    )
+                    if normalised is None:
+                        continue
+                    rows.append(normalised)
                     count += 1
         except Exception as exc:  # pragma: no cover
             log.warning(
-                "[tool-accuracy] Failed to read BFCL file %r: %s.",
+                "[tool-accuracy] Failed to read BFCL split %r: %s.",
                 filename,
                 exc,
             )
@@ -145,34 +246,61 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
     return rows[:sample_size]
 
 
-def _normalise_bfcl_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Normalise a raw BFCL row into the same shape as PPB-native cases.
+def _normalise_bfcl_row(
+    row: dict[str, Any],
+    *,
+    ground_truth_map: dict[str, list[str]] | None = None,
+    expected_no_call: bool = False,
+) -> dict[str, Any] | None:
+    """Normalise a raw BFCL v4 row into the same shape as PPB-native cases.
 
-    BFCL stores ``function`` as either a JSON string or an already-parsed
-    dict, and ``answer`` similarly.  We normalise both to dicts here.
+    The v4 schema is fixed:
+
+    * ``question`` is ``[[{"role": "user", "content": "..."}]]`` (the user
+      message lives at ``question[0][0]["content"]``).
+    * ``function`` is always a list of tool-schema dicts.
+    * Ground truth lives in a separate ``possible_answer/<split>`` file and
+      is supplied via *ground_truth_map* keyed by ``id``.
+
+    Returns ``None`` (and logs a warning) if the question nesting is shallower
+    than expected.  Irrelevance rows return ``answer={}`` and
+    ``expected_no_call=True``; the scorer routes them through ``_score_no_call``.
     """
-    func = row.get("function")
-    if isinstance(func, str):
-        try:
-            func = json.loads(func)
-        except Exception:
-            func = {}
-    # BFCL ``function`` can be a list of schemas (multiple_function); we keep
-    # the list shape if so and let the prompt builder render all of them.
-    answer = row.get("answer")
-    if isinstance(answer, str):
-        try:
-            answer = json.loads(answer)
-        except Exception:
-            answer = {}
-    # BFCL answer schema: typically ``{"name": ..., "arguments": {...}}`` or
-    # a list with one such object — normalise to a single dict.
-    if isinstance(answer, list) and answer:
-        answer = answer[0]
+    qid = row.get("id", "")
+    question_field = row.get("question")
+    try:
+        content = question_field[0][0]["content"]
+    except (TypeError, KeyError, IndexError):
+        log.warning(
+            "[tool-accuracy] malformed question shape for %r; skipping row.", qid
+        )
+        return None
+    if not isinstance(content, str):
+        log.warning(
+            "[tool-accuracy] non-string question content for %r; skipping row.", qid
+        )
+        return None
+
+    function = row.get("function") or []
+    if isinstance(function, dict):
+        function = [function]
+    elif not isinstance(function, list):
+        function = []
+
+    if expected_no_call:
+        answer: dict[str, Any] = {}
+    else:
+        gt_list = (ground_truth_map or {}).get(qid) or []
+        # BFCL parallel cases have multiple ground-truth calls; PPB scores
+        # against the first call (single-call response model).
+        answer = _parse_bfcl_ground_truth(gt_list[0]) if gt_list else {}
+
     return {
-        "question": row.get("question", ""),
-        "function": func,
-        "answer": answer if isinstance(answer, dict) else {},
+        "id": qid,
+        "question": content,
+        "function": function,
+        "answer": answer,
+        "expected_no_call": expected_no_call,
     }
 
 
@@ -330,13 +458,49 @@ def _ast_match(
 # ---------------------------------------------------------------------------
 
 
+# Substrings that strongly suggest the model attempted a tool / function call.
+# Used by ``_score_no_call`` to score irrelevance cases (where the correct
+# behaviour is to abstain from calling any tool).
+_TOOL_CALL_MARKERS: tuple[str, ...] = ("(", "function_call", "tool_call", "<tool")
+
+
+def _score_no_call(model_response: str) -> bool:
+    """Return ``True`` when *model_response* does NOT look like a tool call.
+
+    Used for the BFCL ``irrelevance`` split where the correct behaviour is to
+    refuse and answer in plain prose.  This is a deliberately simple heuristic
+    that flags the response as a tool-call attempt if it contains any of:
+
+    * ``"("``           — bare Python-style call ``foo(...)``
+    * ``"function_call"`` / ``"tool_call"`` — common JSON-wrapper keys
+    * ``"<tool"``       — XML-style ``<tool_call>`` openers used by some models
+
+    False-positive risk: prose containing an open paren (e.g. *"(per the user)"*)
+    is incorrectly flagged as a call.  Treat ``no_call_accuracy`` as a coarse
+    floor on abstention skill, not a rigorous metric.  Empty / whitespace-only
+    responses are treated as a successful abstention.
+    """
+    if not model_response:
+        return True
+    text = model_response.strip()
+    if not text:
+        return True
+    return not any(marker in text for marker in _TOOL_CALL_MARKERS)
+
+
 def _evaluate_case(
     llm: Any,
     case: dict[str, Any],
     *,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> dict[str, Any]:
-    """Run *case* through the model and score it."""
+    """Run *case* through the model and score it.
+
+    Irrelevance cases (``case["expected_no_call"] is True``) are routed
+    through :func:`_score_no_call` and their result populates ``no_call_match``;
+    they intentionally do not contribute to ``tool_match`` / ``param_match``
+    / ``parse_ok`` so positive-case metrics remain interpretable.
+    """
     prompt = _build_prompt(case)
     t0 = time.time()
     out = llm(
@@ -351,12 +515,26 @@ def _evaluate_case(
     except Exception:
         text = ""
 
+    if case.get("expected_no_call"):
+        return {
+            "expected_no_call": True,
+            "no_call_match": _score_no_call(text),
+            "parse_ok": False,
+            "tool_match": False,
+            "param_match": False,
+            "hallucinated": False,
+            "elapsed_s": elapsed,
+            "raw_response": text,
+        }
+
     parsed = _parse_response(text)
     truth = case.get("answer") or {}
     schema_params = _expected_schema(case.get("function"), truth.get("name", ""))
 
     if parsed is None:
         return {
+            "expected_no_call": False,
+            "no_call_match": False,
             "parse_ok": False,
             "tool_match": False,
             "param_match": False,
@@ -367,6 +545,8 @@ def _evaluate_case(
 
     name_match, param_match, hallucinated = _ast_match(parsed, truth, schema_params)
     return {
+        "expected_no_call": False,
+        "no_call_match": False,
         "parse_ok": True,
         "tool_match": bool(name_match),
         "param_match": bool(param_match),
@@ -416,6 +596,7 @@ def run_tool_accuracy(
             "parameter_accuracy": None,
             "parameter_hallucination_rate": None,
             "parse_success_rate": None,
+            "no_call_accuracy": None,
             "overall_tool_accuracy": None,
             "n_cases": 0,
         }
@@ -424,6 +605,8 @@ def run_tool_accuracy(
     n_tool_match = 0
     n_param_match = 0
     n_hallucinated = 0
+    no_call_scores: list[bool] = []
+    n_positive = 0  # cases that contribute to tool/param/parse metrics
 
     for i, case in enumerate(cases, start=1):
         try:
@@ -431,12 +614,24 @@ def run_tool_accuracy(
         except Exception as exc:  # pragma: no cover — defensive
             log.warning("[tool-accuracy] case %d failed: %s", i, exc)
             result = {
+                "expected_no_call": bool(case.get("expected_no_call")),
+                "no_call_match": False,
                 "parse_ok": False,
                 "tool_match": False,
                 "param_match": False,
                 "hallucinated": False,
                 "elapsed_s": 0.0,
             }
+        if result.get("expected_no_call"):
+            no_call_scores.append(bool(result["no_call_match"]))
+            print(
+                f"  ✓ [{i}/{total}] no_call_match={result['no_call_match']} "
+                f"(irrelevance, {result['elapsed_s']:.1f}s)",
+                flush=True,
+            )
+            continue
+
+        n_positive += 1
         n_parse_ok += int(result["parse_ok"])
         n_tool_match += int(result["tool_match"])
         n_param_match += int(result["param_match"])
@@ -449,22 +644,39 @@ def run_tool_accuracy(
             flush=True,
         )
 
-    tool_selection_accuracy = n_tool_match / total
-    parameter_accuracy = n_param_match / total
-    parameter_hallucination_rate = n_hallucinated / total
-    parse_success_rate = n_parse_ok / total
-    # Geometric mean: collapses to 0 if either selection OR parameter accuracy
-    # is 0. This is intentional — a model that can't reliably select the right
-    # tool OR correctly parameterise it is not usable for tool calling, regardless
-    # of the other dimension. Use arithmetic mean only if you want partial credit.
-    overall_tool_accuracy = math.sqrt(tool_selection_accuracy * parameter_accuracy)
+    if n_positive > 0:
+        tool_selection_accuracy = n_tool_match / n_positive
+        parameter_accuracy = n_param_match / n_positive
+        parameter_hallucination_rate = n_hallucinated / n_positive
+        parse_success_rate = n_parse_ok / n_positive
+        # Geometric mean: collapses to 0 if either selection OR parameter accuracy
+        # is 0. This is intentional — a model that can't reliably select the right
+        # tool OR correctly parameterise it is not usable for tool calling, regardless
+        # of the other dimension. Use arithmetic mean only if you want partial credit.
+        # Note: ``no_call_accuracy`` is NOT folded into this geometric mean — it
+        # measures a different (negative) capability and is reported alongside.
+        overall_tool_accuracy = math.sqrt(
+            tool_selection_accuracy * parameter_accuracy
+        )
+    else:
+        tool_selection_accuracy = None
+        parameter_accuracy = None
+        parameter_hallucination_rate = None
+        parse_success_rate = None
+        overall_tool_accuracy = None
+
+    no_call_accuracy = (
+        float(sum(no_call_scores) / len(no_call_scores)) if no_call_scores else None
+    )
 
     print(
-        f"[tool-accuracy] tool_selection={tool_selection_accuracy:.3f} "
-        f"param_accuracy={parameter_accuracy:.3f} "
-        f"hallucination={parameter_hallucination_rate:.3f} "
-        f"parse_success={parse_success_rate:.3f} "
-        f"overall={overall_tool_accuracy:.3f}",
+        "[tool-accuracy] "
+        f"tool_selection={tool_selection_accuracy if tool_selection_accuracy is None else f'{tool_selection_accuracy:.3f}'} "
+        f"param_accuracy={parameter_accuracy if parameter_accuracy is None else f'{parameter_accuracy:.3f}'} "
+        f"hallucination={parameter_hallucination_rate if parameter_hallucination_rate is None else f'{parameter_hallucination_rate:.3f}'} "
+        f"parse_success={parse_success_rate if parse_success_rate is None else f'{parse_success_rate:.3f}'} "
+        f"no_call={no_call_accuracy if no_call_accuracy is None else f'{no_call_accuracy:.3f}'} "
+        f"overall={overall_tool_accuracy if overall_tool_accuracy is None else f'{overall_tool_accuracy:.3f}'}",
         flush=True,
     )
 
@@ -473,6 +685,7 @@ def run_tool_accuracy(
         "parameter_accuracy": parameter_accuracy,
         "parameter_hallucination_rate": parameter_hallucination_rate,
         "parse_success_rate": parse_success_rate,
+        "no_call_accuracy": no_call_accuracy,
         "overall_tool_accuracy": overall_tool_accuracy,
         "n_cases": total,
         "n_bfcl": len(bfcl_cases),

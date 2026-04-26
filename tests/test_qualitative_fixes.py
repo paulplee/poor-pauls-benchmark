@@ -280,50 +280,6 @@ import json as _json
 import pytest
 
 
-def test_normalise_bfcl_row():
-    """Verify _normalise_bfcl_row handles all three documented input shapes."""
-    from ppb_tool_accuracy import _normalise_bfcl_row
-
-    # (a) function as JSON string, answer as plain dict
-    out_a = _normalise_bfcl_row(
-        {
-            "question": "search the web",
-            "function": '{"name": "search", "parameters": {}}',
-            "answer": {"name": "search", "arguments": {}},
-        }
-    )
-    assert isinstance(out_a["function"], dict)
-    assert out_a["function"]["name"] == "search"
-
-    # (b) function already a dict, answer as a single-item list
-    out_b = _normalise_bfcl_row(
-        {
-            "question": "search test",
-            "function": {"name": "search", "parameters": {}},
-            "answer": [{"name": "search", "arguments": {"q": "test"}}],
-        }
-    )
-    assert isinstance(out_b["answer"], dict)
-    assert out_b["answer"]["name"] == "search"
-    assert out_b["answer"]["arguments"] == {"q": "test"}
-
-    # (c) function as a list of two dicts (multiple_function), answer as JSON string
-    out_c = _normalise_bfcl_row(
-        {
-            "question": "do something",
-            "function": [
-                {"name": "search", "parameters": {}},
-                {"name": "lookup", "parameters": {}},
-            ],
-            "answer": '{"name": "lookup", "arguments": {"id": 1}}',
-        }
-    )
-    assert isinstance(out_c["function"], list)
-    assert len(out_c["function"]) == 2
-    assert isinstance(out_c["answer"], dict)
-    assert out_c["answer"]["name"] == "lookup"
-
-
 def test_score_response_context_rot():
     """Verify _score_response covers exact, case-insensitive, substring, empty, and wrong cases."""
     from ppb_context_rot import _score_response

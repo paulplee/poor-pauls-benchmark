@@ -161,6 +161,37 @@ on identical prompts. The cache file's SHA-256 is published in the row's
 | ------ | -------------- | ---------------------------------------------------------------------------------------------------------- |
 | `meta` | object \| null | Per-row reproducibility hints. Currently carries only `quality_prompts_cache_hash` (SHA-256 of the cache). |
 
+## Qualitative Evaluation (Tool-Call Accuracy)
+
+Phase 7 scores whether the model produces structurally valid, schema-correct
+tool calls.  Uses the Berkeley Function-Calling Leaderboard **v4** single-turn
+splits (`simple_python`, `multiple`, `parallel`, `irrelevance`) plus a
+PPB-native MCP ground-truth set.  Rows produced by this phase carry
+`runner_type = "tool-accuracy"`.
+
+| Field                          | Type          | Description                                                                                              |
+| ------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------- |
+| `tool_selection_accuracy`      | float \| null | Fraction of positive cases where the model selected the correct tool name                                |
+| `parameter_accuracy`           | float \| null | Fraction of positive cases where every required argument matched ground truth                            |
+| `parameter_hallucination_rate` | float \| null | Fraction of positive cases where the model invented an argument not in the schema                        |
+| `parse_success_rate`           | float \| null | Fraction of positive cases where the model emitted parseable JSON (or function-call syntax)              |
+| `no_call_accuracy`             | float \| null | Fraction of irrelevance-split cases where the model correctly declined to call any tool                  |
+| `overall_tool_accuracy`        | float \| null | Geometric mean of `tool_selection_accuracy` × `parameter_accuracy` (collapses to 0 if either is 0)       |
+
+> `no_call_accuracy` measures the fraction of cases where the model correctly
+> declined to call any tool.  It is populated only when
+> `BFCL_v4_irrelevance.json` is included in the evaluation (default).  A high
+> `parameter_hallucination_rate` alongside a low `no_call_accuracy` indicates
+> the model is both generating bad calls **and** failing to abstain when
+> abstention is correct.
+
+> `overall_tool_accuracy` deliberately excludes `no_call_accuracy` — abstention
+> and positive-call quality measure different (and partially anticorrelated)
+> capabilities, so they are reported separately rather than folded together.
+> Positive-case denominators (`tool_selection_accuracy`, `parameter_accuracy`,
+> `parameter_hallucination_rate`, `parse_success_rate`) exclude irrelevance
+> rows; only `no_call_accuracy` is computed over them.
+
 ## Composable Schema and Join Key
 
 PPB's three run modes (`all`, `quantitative`, `qualitative`) all emit rows
