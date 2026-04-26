@@ -3680,7 +3680,7 @@ def _find_resumable_results(config_path: Path) -> Path | None:
 
 def _detect_completed_models(
     results_path: Path,
-    sweep_cfg: "SweepConfig",
+    sweep_cfg: "SweepConfig | None",
     resolved_models: list[tuple[Path, str]],
     max_ctx_caps: dict[Path, int] | None,
 ) -> tuple[set[str] | None, str | None]:
@@ -3714,7 +3714,11 @@ def _detect_completed_models(
     if not model_counts:
         return None, existing_run_id
 
-    # Compute expected combos per model.
+    # Compute expected combos per model.  If sweep_cfg is None (qualitative-
+    # only mode), there are no sweep combos to count — return early.
+    if sweep_cfg is None:
+        return None, existing_run_id
+
     completed: set[str] = set()
     for model_path, hf_id in resolved_models:
         expected = (
@@ -3973,7 +3977,7 @@ def run_all(
     cached_models = [(p, hf_id) for p, hf_id, nd, _es in model_manifest if not nd]
     all_models_for_resume = [(p, hf_id) for p, hf_id, _nd, _es in model_manifest]
 
-    if resume_path is not None:
+    if resume_path is not None and sweep_cfg is not None:
         completed_models, existing_run_id = _detect_completed_models(
             resume_path,
             sweep_cfg,
