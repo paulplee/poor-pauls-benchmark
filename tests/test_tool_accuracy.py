@@ -148,6 +148,21 @@ def test_ast_match_wrong_type() -> None:
     assert name and not params
 
 
+def test_ast_match_empty_arguments() -> None:
+    """Zero-arg tools (e.g. ``list_tested_configs()``) score full credit.
+
+    Regression for Fix 8: ground-truth cases with empty argument dicts and
+    empty schemas must yield ``(name=True, params=True, hall=False)`` rather
+    than crash or undercount parameter accuracy.
+    """
+    truth = {"name": "list_tested_configs", "arguments": {}}
+    schema = {"type": "object", "properties": {}, "required": []}
+    name, params, hall = _ast_match(truth, truth, schema)
+    assert name is True
+    assert params is True
+    assert hall is False
+
+
 # ---------------------------------------------------------------------------
 # _expected_schema
 # ---------------------------------------------------------------------------

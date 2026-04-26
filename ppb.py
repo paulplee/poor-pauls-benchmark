@@ -2815,6 +2815,7 @@ def execute_sweep(
     suite_run_id: str | None = None,
     completed_models: set[str] | None = None,
     on_model_done: "Callable[[str, Path, int], None] | None" = None,
+    run_type: str | None = None,
 ) -> None:
     """Run a parameter sweep.
 
@@ -3175,6 +3176,8 @@ def execute_sweep(
                                 record[_key] = cfg.runner_params[_key]
                         if suite_run_id is not None:
                             record["suite_run_id"] = suite_run_id
+                        if run_type is not None:
+                            record["run_type"] = run_type
                         if avg_power_w is not None:
                             record["avg_power_w"] = avg_power_w
                             record["max_power_w"] = max_power_w
@@ -3990,6 +3993,68 @@ def run_all(
     pub_token = pub_cfg.get("token") or None
     do_upload = pub_cfg.get("upload", True) if "publish" in raw else False
 
+    # Per-model accumulator for qualitative phase results.  Keyed by
+    # ``model_hf_id``; each value is a dict like
+    # ``{"context_rot": {...} | None, "tool_accuracy": {...} | None}``.
+    # Populated by the per-model loop as qualitative phases complete;
+    # consumed by
+    # ``_on_model_done`` when assembling the published ``qualitative`` block.
+    _qual_state: dict[str, dict[str, Any]] = {}
+
+    # Diagnostic keys produced by run_tool_accuracy() that are useful for
+    # local debugging (results.jsonl) but must NOT appear in the published
+    # qualitative block — they would cause schema drift on Hugging Face.
+    _TOOL_ACCURACY_DIAGNOSTIC_KEYS = ("n_cases", "n_bfcl", "n_ppb_native")
+
+    def _build_qualitative_block(model_hf_id: str) -> dict[str, Any]:
+        """Assemble the canonical ``qualitative`` block for a model.
+
+        Reads any phase results accumulated in ``_qual_state[model_hf_id]``
+        and returns a dict with all canonical keys present (``None`` for
+        phases that did not run or are not yet implemented).
+        """
+        state = _qual_state.get(model_hf_id) or {}
+        cr = state.get("context_rot") or None
+        ta_full = state.get("tool_accuracy") or None
+        # Strip diagnostic-only keys before publish (Fix 6).
+        ta = (
+            {
+                k: v
+                for k, v in ta_full.items()
+                if k not in _TOOL_ACCURACY_DIAGNOSTIC_KEYS
+            }
+            if ta_full
+            else None
+        )
+        return {
+            # Context-Rot (Semantic NIAH)
+            "context_rot_score": (cr or {}).get("context_rot_score"),
+            "context_rot_accuracy_by_length": (cr or {}).get(
+                "context_rot_accuracy_by_length"
+            ),
+            "context_rot_accuracy_by_depth": (cr or {}).get(
+                "context_rot_accuracy_by_depth"
+            ),
+            # Tool-Call Accuracy (BFCL + PPB-native)
+            "tool_selection_accuracy": (ta or {}).get("tool_selection_accuracy"),
+            "parameter_accuracy": (ta or {}).get("parameter_accuracy"),
+            "parameter_hallucination_rate": (ta or {}).get(
+                "parameter_hallucination_rate"
+            ),
+            "parse_success_rate": (ta or {}).get("parse_success_rate"),
+            "overall_tool_accuracy": (ta or {}).get("overall_tool_accuracy"),
+            # Reserved for future phases — always null for now.
+            "faithfulness_mean": None,
+            "faithfulness_std": None,
+            "answer_relevancy_mean": None,
+            "coherence_mean": None,
+            "quality_composite_score": None,
+            "memory_accuracy": None,
+            "mt_bench_score": None,
+            "cases_evaluated": None,
+            "cases_skipped_context": None,
+        }
+
     def _on_model_done(model_hf_id: str, rfile: Path, line_offset: int) -> None:
         """Publish results incrementally after each model completes."""
         if "publish" not in raw:
@@ -4012,6 +4077,18 @@ def run_all(
                 flat["submission_id"] = suite_run_id
                 flat["submitted_at"] = datetime.now(timezone.utc).isoformat()
                 flat["source_file_sha256"] = compute_file_sha256(rfile)
+                # Composable schema: stamp run_type on every published row
+                # so downstream JOINs (in fetch_existing_quantitative_for
+                # and ppb-mcp) see the correct phase classification.
+                flat["run_type"] = mode
+                # Attach the per-model qualitative block.  Keys for phases
+                # that haven't run for this model are None.
+                flat["qualitative"] = _build_qualitative_block(model_hf_id)
+                # In qualitative-only runs, blank out the quantitative
+                # block so downstream consumers don't mistake a stale
+                # quant column for a fresh measurement.
+                if mode == "qualitative":
+                    flat["quantitative"] = None
                 new_flat.append(flat)
 
         if not new_flat:
@@ -4168,6 +4245,7 @@ def run_all(
                 max_ctx_caps=max_ctx_caps if max_ctx_caps else None,
                 suite_run_id=suite_run_id,
                 on_model_done=_on_model_done,
+                run_type=mode,
             )
 
         # -- qualitative / context-rot for this model ---------------------
@@ -4242,6 +4320,8 @@ def run_all(
                     "results": ctx_results,
                 }
                 _write_result(ctx_record, resolved_results)
+                # Stash for the composable qualitative block.
+                _qual_state.setdefault(hf_id, {})["context_rot"] = ctx_results
                 console.print(
                     f"  [success]✓ context-rot score:[/success] "
                     f"[bold green]{ctx_results['context_rot_score']:.3f}[/bold green]"
@@ -4313,6 +4393,8 @@ def run_all(
                     "results": tool_results,
                 }
                 _write_result(tool_record, resolved_results)
+                # Stash for the composable qualitative block.
+                _qual_state.setdefault(hf_id, {})["tool_accuracy"] = tool_results
                 console.print(
                     f"  [success]✓ overall tool accuracy:[/success] "
                     f"[bold green]"
@@ -4466,14 +4548,28 @@ def _flatten_results_file(
 
 
 def _write_csv(flat_rows: list[dict[str, Any]], output_path: Path) -> None:
-    """Write flat rows to a CSV file using the canonical COLUMN_ORDER."""
+    """Write flat rows to a CSV file using the canonical COLUMN_ORDER.
+
+    Dict-valued cells (e.g. the composable ``qualitative``/``quantitative``
+    blocks) are JSON-serialised so they round-trip cleanly through CSV.
+    """
     from utils.flattener import COLUMN_ORDER
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _csv_safe(row: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for k, v in row.items():
+            if isinstance(v, (dict, list)):
+                out[k] = json.dumps(v, default=str)
+            else:
+                out[k] = v
+        return out
+
     with output_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=COLUMN_ORDER, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(flat_rows)
+        writer.writerows(_csv_safe(r) for r in flat_rows)
 
 
 @app.command(name="export")

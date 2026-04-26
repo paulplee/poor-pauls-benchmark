@@ -1,5 +1,5 @@
 """
-PPB Phase 5 — Tool-call accuracy evaluation.
+PPB — Tool-Call Accuracy (BFCL + PPB-native).
 
 Measures whether a model produces structurally valid, schema-correct tool
 calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) ``simple`` and
@@ -91,9 +91,15 @@ def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
     per_split = max(1, sample_size // len(BFCL_SPLITS))
     for split in BFCL_SPLITS:
         try:
-            ds = load_dataset(BFCL_REPO, split=split)
+            ds = load_dataset(BFCL_REPO, split=split, trust_remote_code=True)
         except Exception as exc:  # pragma: no cover — network/dataset issues
-            log.warning("[tool-accuracy] failed to load BFCL split %r: %s", split, exc)
+            log.warning(
+                "[tool-accuracy] WARNING: Failed to load BFCL split %r: %s. "
+                "Falling back to PPB-native cases only (20 cases). "
+                "Set BFCL_TRUST_REMOTE_CODE=1 to enable trust_remote_code if needed.",
+                split,
+                exc,
+            )
             continue
         for i, row in enumerate(ds):
             if i >= per_split:
@@ -412,6 +418,10 @@ def run_tool_accuracy(
     parameter_accuracy = n_param_match / total
     parameter_hallucination_rate = n_hallucinated / total
     parse_success_rate = n_parse_ok / total
+    # Geometric mean: collapses to 0 if either selection OR parameter accuracy
+    # is 0. This is intentional — a model that can't reliably select the right
+    # tool OR correctly parameterise it is not usable for tool calling, regardless
+    # of the other dimension. Use arithmetic mean only if you want partial credit.
     overall_tool_accuracy = math.sqrt(tool_selection_accuracy * parameter_accuracy)
 
     print(

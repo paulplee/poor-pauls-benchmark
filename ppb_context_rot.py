@@ -1,5 +1,5 @@
 """
-PPB Phase 4 — Context-Rot evaluation (semantic Needle-in-a-Haystack).
+PPB — Context-Rot evaluation (semantic Needle-in-a-Haystack).
 
 This module measures how a model's answer accuracy degrades as context length
 increases.  It is inspired by NVIDIA's RULER benchmark and uses real ShareGPT

@@ -54,7 +54,7 @@ PPB automates the tedious parts of benchmarking so you can focus on studying the
 
 ```text
 ppb.py                 # CLI entry point (Typer app)
-ppb_context_rot.py     # Phase 4 — context-rot / NIAH qualitative evaluation
+ppb_context_rot.py     # context-rot / NIAH qualitative evaluation
 runners/
   __init__.py          # Runner registry (register_runner / get_runner)
   base.py              # BaseRunner ABC — contract for all backends
@@ -108,7 +108,7 @@ uv sync
 
 > **NVIDIA GPU detection:** `pynvml` is included in the dependencies and will be installed automatically. If no NVIDIA hardware is present it is simply unused. On systems without `pynvml`, PPB falls back to parsing `nvidia-smi` output.
 
-#### Phase 4 — context-rot (optional)
+#### Context-rot (optional)
 
 The qualitative context-rot evaluation (`ppb_context_rot.py`) requires `llama-cpp-python`, which is **not installed by default** because it needs a platform-specific GPU-enabled build. A plain `pip install llama-cpp-python` gives a CPU-only binary that is impractically slow for long-context evaluation.
 
@@ -185,6 +185,59 @@ and on [poorpaul.dev/insights](https://poorpaul.dev/insights) within minutes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide including hardware metadata
 best practices and the result schema.
+
+## Run Modes
+
+PPB has three top-level run modes that map directly to columns of the
+published HuggingFace dataset.
+
+### Commands
+
+```bash
+# Quantitative only — vram-cliff + parameter sweep (throughput, TTFT, VRAM).
+uv run ppb.py quantitative suites/my_gpu.toml
+
+# Qualitative only — context-rot + tool-call accuracy.
+uv run ppb.py qualitative suites/qualitative_example.toml
+
+# Everything — quantitative followed by qualitative for the same models.
+uv run ppb.py all suites/my_gpu.toml
+```
+
+### Composable join key
+
+Every published row carries the four-field join key
+**`(gpu_name, model_name, quantization, run_type)`**. Quantitative and
+qualitative runs are independent: you can publish a quant sweep today and a
+qualitative pass next week, and downstream consumers (`ppb-mcp`,
+[poorpaul.dev](https://poorpaul.dev/insights)) will JOIN them into a single
+model profile by matching on this tuple.
+
+### Qualitative block schema
+
+Every published row includes a nested `qualitative` JSON column. Phases that
+did not run for the row carry `null` for their respective keys.
+
+| Key                              | Owning phase                           | Type   |
+| -------------------------------- | -------------------------------------- | ------ |
+| `context_rot_score`              | Context-Rot (Semantic NIAH)            | float  |
+| `context_rot_accuracy_by_length` | Context-Rot (Semantic NIAH)            | object |
+| `context_rot_accuracy_by_depth`  | Context-Rot (Semantic NIAH)            | object |
+| `tool_selection_accuracy`        | Tool-Call Accuracy (BFCL + PPB-native) | float  |
+| `parameter_accuracy`             | Tool-Call Accuracy (BFCL + PPB-native) | float  |
+| `parameter_hallucination_rate`   | Tool-Call Accuracy (BFCL + PPB-native) | float  |
+| `parse_success_rate`             | Tool-Call Accuracy (BFCL + PPB-native) | float  |
+| `overall_tool_accuracy`          | Tool-Call Accuracy (BFCL + PPB-native) | float  |
+| `faithfulness_mean`              | Reserved (answer quality, future)      | float  |
+| `answer_relevancy_mean`          | Reserved (answer quality, future)      | float  |
+| `coherence_mean`                 | Reserved (answer quality, future)      | float  |
+| `quality_composite_score`        | Reserved (answer quality, future)      | float  |
+| `memory_accuracy`                | Reserved (multi-turn memory, future)   | float  |
+| `mt_bench_score`                 | Reserved (MT-Bench, future)            | float  |
+
+When `run_type == "qualitative"`, the sibling `quantitative` column is
+explicitly `null` so consumers don't conflate stale quant numbers with a
+fresh qualitative measurement.
 
 ## Usage Guide
 
@@ -574,7 +627,7 @@ The `all` command combines **vram-cliff**, **sweep**, and (optionally) **publish
 2. **Phase 1.5 — VRAM pre-flight check:** Before sweeping, PPB reads GGUF metadata from each model and estimates worst-case VRAM usage (max `n_ctx` × max `concurrent_users`). If any model is likely to OOM, a warning table is shown and you can choose to **a**uto-cap `n_ctx`, **p**roceed anyway, or **q**uit.
 3. **Phase 2 — sweep:** Runs the parameter sweep, automatically skipping any combo whose `n_ctx` exceeds the per-model limit found in Phase 1 (or the auto-cap from Phase 1.5).
 4. **Phase 3 — context-rot** _(optional)_: If the TOML has a `[qualitative]` section with `context_rot_enabled = true`, runs the semantic Needle-in-a-Haystack evaluation after each model's sweep. Results are appended to the same JSONL file with `runner_type = "context-rot"`. See [§5 — Context-Rot](#5-run-context-rot-qualitative) below.
-5. **Phase 4 — publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
+5. **Publish** _(optional)_: If the TOML has a `[publish]` section, flattens the results to a local CSV and (when `upload = true`) uploads them to the central PPB leaderboard on Hugging Face.
 
 > **Result rows:** `ppb all` writes _separate rows_ per phase to the same JSONL/CSV — one quantitative row (`runner_type = "llama-bench"`) per sweep configuration plus one qualitative row (`runner_type = "context-rot"`) per model. Every row carries the composite join key `(gpu_name, model_name, quant, run_type)` so downstream tools can stitch them together. The `run_type` column is `"all"` for rows produced by this command; the standalone `ppb quantitative` and `ppb qualitative` subcommands tag their rows `"quantitative"` and `"qualitative"` respectively.
 
@@ -709,7 +762,7 @@ PPB implements a semantic [Needle-in-a-Haystack (NIAH)](https://github.com/gkamr
 
 #### Prerequisites
 
-Install a GPU-enabled `llama-cpp-python` — see the [Phase 4 installation note above](#phase-4--context-rot-optional).
+Install a GPU-enabled `llama-cpp-python` — see the [context-rot installation note above](#context-rot-optional).
 
 #### Enabling context-rot in a suite
 

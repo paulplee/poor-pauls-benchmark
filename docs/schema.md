@@ -104,7 +104,7 @@ that list changes.
 | --------------- | ------------- | ----------------------------------------------------------------------------- |
 | `quality_score` | float \| null | Reserved for future quantitative quality evaluation (currently always `null`) |
 
-## Qualitative Evaluation (Phase 4 — Context-Rot)
+## Qualitative Evaluation (Context-Rot)
 
 The qualitative phase runs a semantic Needle-in-a-Haystack (NIAH) evaluation
 over a 6 × 5 grid of haystack lengths × needle depths. Rows produced by this

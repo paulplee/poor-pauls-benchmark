@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -13,6 +14,8 @@ from huggingface_hub import HfApi
 
 # Central leaderboard repository — all submissions land here.
 PPB_HF_REPO = "paulplee/ppb-results"
+
+log = logging.getLogger("ppb")
 
 
 def check_hf_token(token: str | None = None) -> None:
@@ -134,6 +137,13 @@ def _composable_key(model_hf_id: str, hardware: dict[str, Any]) -> tuple[str, st
         base, quant = stem.rsplit("-", 1)
     else:
         base, quant = stem, ""
+    if not quant:
+        log.warning(
+            "[publisher] Could not extract quantization tag from filename %r. "
+            "Join key will be incomplete \u2014 results may not stitch with other rows. "
+            "Rename your GGUF file to include a quant tag, e.g. model-Q4_K_M.gguf",
+            fname,
+        )
     gpus = (hardware or {}).get("gpus") or [{}]
     gpu_name = gpus[0].get("name", "") if gpus else ""
     return gpu_name, base, quant

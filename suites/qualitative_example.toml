@@ -47,7 +47,7 @@ n_batch  = [512]
 
 [qualitative]
 
-# -- Phase 4: Context-Rot (Semantic Needle-in-a-Haystack) --------------------
+# -- Context-Rot (Semantic Needle-in-a-Haystack) ----------------------------
 # Measures how answer accuracy degrades as context length increases.
 # 6 lengths × 5 depths = 30 test cases per model.
 # Set context_rot_enabled = true to activate this phase.
@@ -74,7 +74,7 @@ context_rot_enabled = true
 # n_gpu_layers = -1
 
 
-# -- Phase 5: Tool-Call Accuracy ---------------------------------------------
+# -- Tool-Call Accuracy (BFCL + PPB-native) ---------------------------------
 # Measures whether the model produces structurally valid, schema-correct
 # tool calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) plus
 # a PPB-native MCP ground-truth set covering the four ppb-mcp tools.

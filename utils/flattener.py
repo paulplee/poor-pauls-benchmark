@@ -88,7 +88,7 @@ COLUMN_ORDER: list[str] = [
     "p99_itl_ms",
     # Performance — quality
     "quality_score",
-    # Phase 4 — context-rot (semantic Needle-in-a-Haystack)
+    # Context-Rot (Semantic NIAH)
     "context_rot_score",
     "context_rot_accuracy_by_length",
     "context_rot_accuracy_by_depth",
@@ -105,6 +105,12 @@ COLUMN_ORDER: list[str] = [
     "quality_composite_score",
     "memory_accuracy",
     "mt_bench_score",
+    # Composable nested blocks (opaque JSON dicts written verbatim to
+    # JSONL; CSV writer JSON-stringifies them).  Downstream consumers
+    # (ppb-mcp, poorpaul.dev) read these to assemble model profiles by
+    # JOINing on (gpu_name, model_name, quantization, run_type).
+    "qualitative",
+    "quantitative",
     # OS / system context
     "os_system",
     "os_release",
