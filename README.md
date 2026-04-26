@@ -234,29 +234,34 @@ did not run for the row carry `null` for their respective keys. The schema
 below is the **canonical final shape** — do not add keys without a schema
 version bump.
 
-| Key                              | Owning phase                          | Type   |
-| -------------------------------- | ------------------------------------- | ------ |
-| `context_rot_score`              | Phase 4 — Context-Rot (Semantic NIAH) | float  |
-| `context_rot_accuracy_by_length` | Phase 4 — Context-Rot (Semantic NIAH) | object |
-| `context_rot_accuracy_by_depth`  | Phase 4 — Context-Rot (Semantic NIAH) | object |
-| `tool_selection_accuracy`        | Phase 5 — Tool-Call Accuracy          | float  |
-| `parameter_accuracy`             | Phase 5 — Tool-Call Accuracy          | float  |
-| `parameter_hallucination_rate`   | Phase 5 — Tool-Call Accuracy          | float  |
-| `parse_success_rate`             | Phase 5 — Tool-Call Accuracy          | float  |
-| `overall_tool_accuracy`          | Phase 5 — Tool-Call Accuracy          | float  |
-| `faithfulness_mean`              | Phase 6 — Answer Quality              | float  |
-| `faithfulness_std`               | Phase 6 — Answer Quality              | float  |
-| `answer_relevancy_mean`          | Phase 6 — Answer Quality              | float  |
-| `coherence_mean`                 | Phase 6 — Answer Quality              | float  |
-| `quality_composite_score`        | Phase 6 — Answer Quality              | float  |
-| `memory_accuracy`                | Phase 7 — Multi-Turn (LongMemEval)    | float  |
-| `mt_bench_score`                 | Phase 7 — Multi-Turn (MT-Bench quick) | float  |
-| `cases_evaluated`                | Phase 7 — Multi-Turn                  | int    |
-| `cases_skipped_context`          | Phase 7 — Multi-Turn                  | int    |
+| Key                              | Owning phase                          | Type         |
+| -------------------------------- | ------------------------------------- | ------------ |
+| `context_rot_score`              | Phase 4 — Context-Rot (Semantic NIAH) | float        |
+| `context_rot_accuracy_by_length` | Phase 4 — Context-Rot (Semantic NIAH) | object       |
+| `context_rot_accuracy_by_depth`  | Phase 4 — Context-Rot (Semantic NIAH) | object       |
+| `tool_selection_accuracy`        | Phase 5 — Tool-Call Accuracy          | float        |
+| `parameter_accuracy`             | Phase 5 — Tool-Call Accuracy          | float        |
+| `parameter_hallucination_rate`   | Phase 5 — Tool-Call Accuracy          | float        |
+| `parse_success_rate`             | Phase 5 — Tool-Call Accuracy          | float        |
+| `overall_tool_accuracy`          | Phase 5 — Tool-Call Accuracy          | float        |
+| `faithfulness_mean`              | Phase 6 — Answer Quality              | float        |
+| `faithfulness_std`               | Phase 6 — Answer Quality              | float        |
+| `answer_relevancy_mean`          | Phase 6 — Answer Quality              | float        |
+| `coherence_mean`                 | Phase 6 — Answer Quality              | float        |
+| `quality_composite_score`        | Phase 6 — Answer Quality              | float        |
+| `memory_accuracy`                | Phase 7 — Multi-Turn (LongMemEval)    | float        |
+| `mt_bench_score`                 | Phase 7 — Multi-Turn (MT-Bench quick) | float (1–10) |
+| `cases_evaluated`                | Phase 7 — Multi-Turn                  | int          |
+| `cases_skipped_context`          | Phase 7 — Multi-Turn                  | int          |
 
 In each multi-turn run only one of `memory_accuracy` / `mt_bench_score`
 is populated — the other is `null` — according to which `multiturn_mode`
 was selected.
+
+> **Note:** `mt_bench_score` is on a 1–10 scale (MT-Bench community
+> standard). All other float metrics are in the range 0–1. Downstream
+> consumers should normalise before building composite scores:
+> `mt_bench_score_norm = (mt_bench_score - 1) / 9`.
 
 ### Setting up a judge model
 

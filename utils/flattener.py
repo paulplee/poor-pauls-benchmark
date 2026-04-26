@@ -105,7 +105,14 @@ COLUMN_ORDER: list[str] = [
     "coherence_mean",
     "quality_composite_score",
     "memory_accuracy",
+    # ``mt_bench_score`` is on a 1–10 scale (MT-Bench community
+    # standard) so PPB results stay directly comparable to published
+    # MT-Bench leaderboards. All other float metrics in this block are
+    # 0–1. Downstream consumers should normalise before building a
+    # composite score: ``mt_bench_score_norm = (mt_bench_score - 1) / 9``.
     "mt_bench_score",
+    "cases_evaluated",
+    "cases_skipped_context",
     # Composable nested blocks (opaque JSON dicts written verbatim to
     # JSONL; CSV writer JSON-stringifies them).  Downstream consumers
     # (ppb-mcp, poorpaul.dev) read these to assemble model profiles by
@@ -426,6 +433,8 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         flat.update(hw_fields)
         flat["memory_accuracy"] = results.get("memory_accuracy")
         flat["mt_bench_score"] = results.get("mt_bench_score")
+        flat["cases_evaluated"] = results.get("cases_evaluated")
+        flat["cases_skipped_context"] = results.get("cases_skipped_context")
         flat["raw_payload"] = raw_payload
         _stamp_provenance(flat)
         rows = [flat]

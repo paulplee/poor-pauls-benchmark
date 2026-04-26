@@ -148,10 +148,12 @@ tool_accuracy_enabled = true
 # mode where the 80 MT-Bench questions are fixed).  Default: 50.
 # multiturn_sample_size = 50
 
-# Generator context window.  Default: max(vram_cliff_tokens, 8192).
-# Set this large enough to fit the longest LongMemEval session history
-# you intend to evaluate; cases that still exceed the VRAM cliff are
-# skipped automatically.
+# Context window used to load the generator for multi-turn evaluation.
+# IMPORTANT: LongMemEval session histories are 50K–115K tokens. If this is
+# set below the session history length, cases will be skipped as VRAM-cliff
+# violations. Recommended: set to your measured vram_cliff_tokens, or omit
+# and run `ppb quantitative` first so the orchestrator can look it up.
+# Default when no VRAM cliff is known: 8192 (most LongMemEval cases will skip).
 # multiturn_n_ctx = 32768
 
 # Judge context window / GPU offload (judge is reused from

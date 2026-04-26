@@ -4600,16 +4600,69 @@ def run_all(
                     except Exception:
                         pass
 
-                mt_n_ctx = int(qual_cfg.get("multiturn_n_ctx", mt_cap or 8192))
-                mt_results = run_multiturn_for_model(
-                    mp,
-                    mt_judge_path_cfg,
-                    suite_config=qual_cfg,
-                    model_config={"vram_cliff_tokens": mt_cap},
-                    n_ctx=mt_n_ctx,
-                    n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
-                    verbose=False,
-                )
+                mt_n_ctx_cfg = qual_cfg.get("multiturn_n_ctx")
+                if mt_n_ctx_cfg is not None:
+                    mt_n_ctx = int(mt_n_ctx_cfg)
+                elif mt_cap is not None:
+                    mt_n_ctx = int(mt_cap)
+                else:
+                    mt_n_ctx = 8192
+                    console.print(
+                        "  [warning]⚠ multiturn_n_ctx not set and no VRAM "
+                        "cliff found. Defaulting to 8192 tokens — most "
+                        "LongMemEval cases will be skipped. Set "
+                        "multiturn_n_ctx in your suite TOML or run the "
+                        "vram-cliff phase first.[/warning]"
+                    )
+
+                # Reuse the Phase 6 judge across Phase 7 when both phases
+                # are enabled and configured to use the same judge GGUF —
+                # otherwise we'd pay double VRAM and risk OOM on 16 GB
+                # GPUs.  The single shared instance is disposed below.
+                _shared_judge_llm: Any | None = None
+                _aq_judge_path = qual_cfg.get("judge_model_path")
+                if (
+                    qual_cfg.get("answer_quality_enabled")
+                    and qual_cfg.get("multiturn_enabled")
+                    and _aq_judge_path
+                    and _aq_judge_path == mt_judge_path_cfg
+                    and mode in ("all", "qualitative")
+                ):
+                    try:
+                        from llama_cpp import Llama as _Llama
+
+                        console.print(
+                            "  [info]ℹ Reusing Phase 6 judge for Phase 7 "
+                            "(judge loaded once).[/info]"
+                        )
+                        _shared_judge_llm = _Llama(
+                            model_path=str(Path(_aq_judge_path).expanduser()),
+                            n_ctx=int(qual_cfg.get("multiturn_judge_n_ctx", 4096)),
+                            n_gpu_layers=int(qual_cfg.get("n_gpu_layers", -1)),
+                            verbose=False,
+                        )
+                    except Exception as exc:
+                        console.print(
+                            f"  [warning]⚠ Could not preload shared judge: "
+                            f"{exc} — multiturn will load its own.[/warning]"
+                        )
+                        _shared_judge_llm = None
+
+                try:
+                    mt_results = run_multiturn_for_model(
+                        mp,
+                        mt_judge_path_cfg,
+                        suite_config=qual_cfg,
+                        model_config={"vram_cliff_tokens": mt_cap},
+                        n_ctx=mt_n_ctx,
+                        n_gpu_layers=qual_cfg.get("n_gpu_layers", -1),
+                        verbose=False,
+                        reuse_judge_llm=_shared_judge_llm,
+                    )
+                finally:
+                    if _shared_judge_llm is not None:
+                        del _shared_judge_llm
+                        _shared_judge_llm = None
                 from utils.flattener import _parse_model_filename as _pmf4
 
                 _hw_snap4 = _hw_sniffer.snapshot()

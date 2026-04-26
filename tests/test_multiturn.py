@@ -303,3 +303,44 @@ def test_flatten_multiturn_default_run_type_is_qualitative() -> None:
     }
     flat = flatten_benchmark_row(row)[0]
     assert flat["run_type"] == "qualitative"
+
+
+def test_flatten_multiturn_row_includes_case_counts() -> None:
+    """cases_evaluated and cases_skipped_context must survive flattening."""
+    row = {
+        "timestamp": "2026-04-26T00:00:00+00:00",
+        "runner_type": "multiturn",
+        "run_type": "qualitative",
+        "model": "unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf",
+        "n_ctx": 32768,
+        "hardware": {
+            "gpus": [{"name": "RTX 4090", "vram_gb": 24.0}],
+            "os": {},
+            "cpu": {},
+            "ram": {},
+            "runtime": {},
+        },
+        "results": {
+            "memory_accuracy": 0.72,
+            "mt_bench_score": None,
+            "cases_evaluated": 47,
+            "cases_skipped_context": 3,
+        },
+    }
+    flat = flatten_benchmark_row(row)[0]
+    assert flat["cases_evaluated"] == 47
+    assert flat["cases_skipped_context"] == 3
+
+
+def test_flatten_multiturn_case_counts_default_to_none() -> None:
+    """Rows without case counts flatten to None, not KeyError."""
+    row = {
+        "timestamp": "2026-04-26T00:00:00+00:00",
+        "runner_type": "multiturn",
+        "model": "x/y/Foo-Q4_K_M.gguf",
+        "hardware": {"gpus": [], "os": {}, "cpu": {}, "ram": {}, "runtime": {}},
+        "results": {"memory_accuracy": 0.5},
+    }
+    flat = flatten_benchmark_row(row)[0]
+    assert flat["cases_evaluated"] is None
+    assert flat["cases_skipped_context"] is None

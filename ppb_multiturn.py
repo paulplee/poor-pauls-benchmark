@@ -338,13 +338,17 @@ def _load_mtbench() -> list[dict[str, Any]]:
     ds = load_dataset(MTBENCH_REPO, split="human")
     seen: set[Any] = set()
     cases: list[dict[str, Any]] = []
-    for row in ds:
+    for idx, row in enumerate(ds):
         if not isinstance(row, dict):
             continue
         qid = row.get("question_id")
-        if qid in seen:
+        # When ``question_id`` is None for multiple rows, fall back to a
+        # per-row synthetic key so we don't silently collapse them all
+        # into a single "seen" bucket.
+        dedup_key = qid if qid is not None else f"__idx_{idx}"
+        if dedup_key in seen:
             continue
-        seen.add(qid)
+        seen.add(dedup_key)
         body = row.get("question_body") or row.get("conversation_a") or []
         # ``question_body`` is typically a list of two user-turn strings.
         turns: list[str] = []
