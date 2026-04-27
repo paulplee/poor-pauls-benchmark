@@ -5022,7 +5022,7 @@ def export_cmd(
 def publish_cmd(
     results: list[Path] = typer.Argument(
         ...,
-        help="One or more raw JSONL results files (shell globs supported)",
+        help="One or more raw JSONL results files or TOML suite files (shell globs supported)",
         exists=True,
         readable=True,
     ),
@@ -5041,9 +5041,11 @@ def publish_cmd(
 ) -> None:
     """Flatten results to a local CSV and optionally upload to the PPB leaderboard.
 
-    Accepts one or more JSONL result files (shell globs like ``results/*.jsonl``
-    are expanded by the shell).  A CSV is written alongside each input file.
-    Add ``--upload`` to push all rows to Hugging Face in one batch.
+    Accepts one or more JSONL result files or TOML suite files (shell globs like
+    ``results/*.jsonl`` are expanded by the shell).  When a ``.toml`` suite file
+    is passed its configured results path is resolved automatically.  A CSV is
+    written alongside each input file.  Add ``--upload`` to push all rows to
+    Hugging Face in one batch.
     """
     submitter = typer.prompt(
         "Display name for the leaderboard (leave blank to skip)",
@@ -5053,7 +5055,22 @@ def publish_cmd(
 
     all_flat_rows: list[dict[str, Any]] = []
 
-    for results_file in results:
+    # Resolve any TOML suite files to their corresponding JSONL results path.
+    resolved_files: list[Path] = []
+    for p in results:
+        if p.suffix == ".toml":
+            _, default_results = load_suite_config(p)
+            if not default_results.exists():
+                console.print(
+                    f"[warning]No results file found for suite {p.name} "
+                    f"(expected {default_results}) — skipping.[/warning]"
+                )
+                continue
+            resolved_files.append(default_results)
+        else:
+            resolved_files.append(p)
+
+    for results_file in resolved_files:
         console.print(f"[info]Reading and flattening {results_file.name}…[/info]")
         flat_rows = _flatten_results_file(results_file, submitter=submitter)
 
@@ -5078,7 +5095,7 @@ def publish_cmd(
         raise typer.Exit(code=1)
 
     console.print(
-        f"\n  📊 {len(all_flat_rows)} total row(s) across {len(results)} file(s) — Excel-ready!"
+        f"\n  📊 {len(all_flat_rows)} total row(s) across {len(resolved_files)} file(s) — Excel-ready!"
     )
 
     # -- Upload to HF (opt-in) ---------------------------------------------

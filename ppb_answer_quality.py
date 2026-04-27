@@ -347,11 +347,20 @@ def run_answer_quality(
     judge_llm: Any,
     model_config: dict[str, Any] | None = None,
     suite_config: dict[str, Any] | None = None,
+    *,
+    pregenerated_responses: list[str] | None = None,
 ) -> dict[str, Any]:
     """Score the generator on knowledge accuracy, relevancy, and coherence.
 
     Both ``generator_llm`` and ``judge_llm`` must be *separate*
     ``llama_cpp.Llama`` instances — the spec forbids self-grading.
+
+    When *pregenerated_responses* is provided (a list of raw response strings
+    already produced by the generator), the generation step is skipped and
+    ``generator_llm`` may be ``None``.  This enables the two-phase flow in
+    :func:`run_answer_quality_for_model` where the generator is unloaded from
+    VRAM before the judge is loaded, avoiding simultaneous dual-model OOM on
+    systems with limited GPU memory.
 
     Returns a dict whose top-level keys slot directly into the
     ``qualitative`` block of the composable schema, plus a ``meta``
@@ -363,7 +372,7 @@ def run_answer_quality(
         suite_config.get("answer_quality_sample_size", DEFAULT_SAMPLE_SIZE)
     )
 
-    if generator_llm is judge_llm:
+    if pregenerated_responses is None and generator_llm is judge_llm:
         raise ValueError(
             "answer_quality: generator_llm and judge_llm must be different "
             "Llama instances (the judge must not grade itself)."
@@ -383,12 +392,15 @@ def run_answer_quality(
 
     for i, prompt in enumerate(prompts, start=1):
         t0 = time.time()
-        response = _llm_complete(
-            generator_llm,
-            prompt,
-            max_tokens=DEFAULT_GEN_MAX_TOKENS,
-            temperature=DEFAULT_GEN_TEMPERATURE,
-        )
+        if pregenerated_responses is not None:
+            response = pregenerated_responses[i - 1]
+        else:
+            response = _llm_complete(
+                generator_llm,
+                prompt,
+                max_tokens=DEFAULT_GEN_MAX_TOKENS,
+                temperature=DEFAULT_GEN_TEMPERATURE,
+            )
         if not response.strip():
             # Empty generation — record a 0 across the board, but no
             # claims to verify, so knowledge accuracy is undefined for
@@ -490,10 +502,15 @@ def run_answer_quality_for_model(
     judge_n_gpu_layers: int = -1,
     verbose: bool = False,
 ) -> dict[str, Any]:
-    """Load generator + judge, score answer quality, dispose of judge.
+    """Load generator + judge sequentially, score answer quality.
 
-    The judge ``Llama`` is instantiated only for the duration of this
-    call so the next qualitative phase doesn't pay double VRAM.
+    Uses a two-phase approach to avoid keeping both models in VRAM at the
+    same time — critical when the generator is large:
+
+    1. Load **generator** → produce all responses → unload generator.
+    2. Load **judge** → score all pre-generated responses → unload judge.
+
+    Peak VRAM usage is ``max(generator, judge)`` rather than their sum.
     """
     if not judge_model_path:
         raise ValueError(
@@ -518,6 +535,12 @@ def run_answer_quality_for_model(
             "Install with: pip install llama-cpp-python"
         ) from exc
 
+    suite_cfg = suite_config or {}
+    sample_size = int(suite_cfg.get("answer_quality_sample_size", DEFAULT_SAMPLE_SIZE))
+
+    # ------------------------------------------------------------------
+    # Phase 1: generate all responses with the generator, then unload it.
+    # ------------------------------------------------------------------
     print(
         f"[answer-quality] loading generator {Path(generator_path).name} "
         f"(n_ctx={n_ctx}, n_gpu_layers={n_gpu_layers})",
@@ -530,28 +553,47 @@ def run_answer_quality_for_model(
         verbose=verbose,
     )
     try:
+        prompts, _cache_hash = _load_or_build_prompt_cache(sample_size)
         print(
-            f"[answer-quality] loading judge {judge_path.name} "
-            f"(n_ctx={judge_n_ctx}, n_gpu_layers={judge_n_gpu_layers})",
+            f"[answer-quality] generating {len(prompts)} response(s)…",
             flush=True,
         )
-        judge = Llama(
-            model_path=str(judge_path),
-            n_ctx=judge_n_ctx,
-            n_gpu_layers=judge_n_gpu_layers,
-            verbose=verbose,
-        )
-        try:
-            return run_answer_quality(
+        pregenerated: list[str] = [
+            _llm_complete(
                 generator,
-                judge,
-                model_config=None,
-                suite_config=suite_config or {},
+                p,
+                max_tokens=DEFAULT_GEN_MAX_TOKENS,
+                temperature=DEFAULT_GEN_TEMPERATURE,
             )
-        finally:
-            del judge
+            for p in prompts
+        ]
     finally:
         del generator
+
+    # ------------------------------------------------------------------
+    # Phase 2: load judge and score the pre-generated responses.
+    # ------------------------------------------------------------------
+    print(
+        f"[answer-quality] loading judge {judge_path.name} "
+        f"(n_ctx={judge_n_ctx}, n_gpu_layers={judge_n_gpu_layers})",
+        flush=True,
+    )
+    judge = Llama(
+        model_path=str(judge_path),
+        n_ctx=judge_n_ctx,
+        n_gpu_layers=judge_n_gpu_layers,
+        verbose=verbose,
+    )
+    try:
+        return run_answer_quality(
+            None,
+            judge,
+            model_config=None,
+            suite_config=suite_config,
+            pregenerated_responses=pregenerated,
+        )
+    finally:
+        del judge
 
 
 __all__ = [

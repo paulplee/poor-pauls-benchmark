@@ -198,6 +198,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Downloaded datasets (large files, fetched automatically at runtime)
+datasets/
+
 # --- PPB runtime-generated files ---
 
 # Crash-recovery staging files (created by batched qualitative submission)
