@@ -307,9 +307,21 @@ class HardwareSniffer:
                         "index": i,
                         "name": name,
                         "driver": driver_str,
-                        "vram_total_bytes": mem.total,
-                        "vram_total_gb": round(float(mem.total) / (1024**3), 1),
                     }
+                    if mem.total > 0:
+                        gpu["vram_total_bytes"] = mem.total
+                        gpu["vram_total_gb"] = round(float(mem.total) / (1024**3), 1)
+                    else:
+                        # Unified memory architecture (e.g. NVIDIA GB10 Grace Blackwell,
+                        # AMD Ryzen AI Max): GPU and system RAM are the same physical pool.
+                        # Use system RAM as the effective VRAM budget.
+                        gpu["unified_memory"] = True
+                        with contextlib.suppress(Exception):
+                            ram_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf(
+                                "SC_PHYS_PAGES"
+                            )
+                            gpu["vram_total_bytes"] = ram_bytes
+                            gpu["vram_total_gb"] = round(ram_bytes / (1024**3), 1)
 
                     if cuda_ver:
                         gpu["cuda_version"] = cuda_ver
@@ -365,13 +377,22 @@ class HardwareSniffer:
                             "driver": parts[2],
                         }
                         # memory.total is "[N/A]" on unified-memory GPUs (e.g.
-                        # NVIDIA GB10 Grace Blackwell) — treat system RAM as VRAM.
+                        # NVIDIA GB10 Grace Blackwell, AMD Ryzen AI Max) — use
+                        # system RAM as the effective VRAM budget.
                         vram_str = parts[3]
                         if vram_str and vram_str not in ("[N/A]", "N/A"):
                             with contextlib.suppress(ValueError):
                                 vram_mb = float(vram_str)
                                 gpu["vram_total_bytes"] = int(vram_mb * 1024**2)
                                 gpu["vram_total_gb"] = round(vram_mb / 1024, 1)
+                        else:
+                            gpu["unified_memory"] = True
+                            with contextlib.suppress(Exception):
+                                ram_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf(
+                                    "SC_PHYS_PAGES"
+                                )
+                                gpu["vram_total_bytes"] = ram_bytes
+                                gpu["vram_total_gb"] = round(ram_bytes / (1024**3), 1)
                         if len(parts) > 4 and parts[4] not in ("[N/A]", "N/A", ""):
                             gpu["compute_capability"] = parts[4]
                         if len(parts) > 5 and parts[5] not in ("[N/A]", "N/A", ""):
@@ -414,9 +435,11 @@ class HardwareSniffer:
                         # GPU cores on Apple Silicon
                         current["gpu_cores"] = line.split(":", 1)[1].strip()
                 if current:
-                    # Apple Silicon uses unified memory — no dedicated VRAM line.
-                    # Fall back to total system RAM as the GPU memory budget.
+                    # Apple Silicon / discrete Mac GPU: check for dedicated VRAM.
+                    # If absent, this is a unified memory architecture (Apple Silicon,
+                    # AMD Ryzen AI Max) — use system RAM as the effective VRAM budget.
                     if "vram_total_gb" not in current:
+                        current["unified_memory"] = True
                         try:
                             mem_out = subprocess.check_output(
                                 ["sysctl", "-n", "hw.memsize"],

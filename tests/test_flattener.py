@@ -390,9 +390,16 @@ class TestLlamaServer:
 
 
 class TestLoadtest:
-    def test_single_row(self):
+    def test_one_row_per_curve_level(self):
+        """Loadtest runner emits one row per concurrency level in the curve."""
         rows = flatten_benchmark_row(LOADTEST_ROW)
-        assert len(rows) == 1
+        assert len(rows) == 4  # one per curve entry
+
+    def test_concurrent_users_from_curve(self):
+        """Each row's concurrent_users comes from its curve level."""
+        rows = flatten_benchmark_row(LOADTEST_ROW)
+        cu_values = [r["concurrent_users"] for r in rows]
+        assert cu_values == [1, 2, 4, 8]
 
     def test_max_sustainable_users_absent(self):
         """max_sustainable_users was removed from the schema in v2."""
@@ -400,9 +407,13 @@ class TestLoadtest:
         assert "max_sustainable_users" not in row
         assert "max_concurrent_users" not in row
 
-    def test_best_throughput_from_curve(self):
-        row = flatten_benchmark_row(LOADTEST_ROW)[0]
-        assert row["throughput_tok_s"] == 200.0
+    def test_throughput_per_level(self):
+        """Each row carries the throughput for its concurrency level."""
+        rows = flatten_benchmark_row(LOADTEST_ROW)
+        assert rows[0]["throughput_tok_s"] == 55.0
+        assert rows[1]["throughput_tok_s"] == 100.0
+        assert rows[2]["throughput_tok_s"] == 180.0
+        assert rows[3]["throughput_tok_s"] == 200.0
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +497,7 @@ class TestUnifiedSchema:
 class TestProvenance:
     def test_schema_version(self):
         flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]
-        assert flat["schema_version"] == "0.1.0"
+        assert flat["schema_version"] == "0.9.0"
 
     def test_benchmark_version_present(self):
         flat = flatten_benchmark_row(LLAMA_SERVER_ROW)[0]

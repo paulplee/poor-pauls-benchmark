@@ -9,7 +9,7 @@ The authoritative source is `COLUMN_ORDER` in
 [`utils/flattener.py`](../utils/flattener.py). Update this file whenever
 that list changes.
 
-- **Schema version:** `0.1.0`
+- **Schema version:** `0.9.0`
 - **Format:** JSON Lines (one record per row)
 - **Field convention:** keys not applicable to a given runner are `null`
 
@@ -33,26 +33,31 @@ that list changes.
 
 ## Hardware
 
-| Field               | Type           | Description                                                                                      |
-| ------------------- | -------------- | ------------------------------------------------------------------------------------------------ |
-| `gpu_name`          | string \| null | Primary GPU model name (e.g. `NVIDIA GeForce RTX 4090`)                                          |
-| `gpu_vram_gb`       | float \| null  | Primary GPU VRAM in GB                                                                           |
-| `gpu_driver`        | string \| null | Primary GPU driver version                                                                       |
-| `gpu_count`         | integer        | Number of GPUs detected                                                                          |
-| `gpu_names`         | string \| null | Comma-separated list of all detected GPU names                                                   |
-| `gpu_total_vram_gb` | float \| null  | Total VRAM across all GPUs in GB                                                                 |
-| `backends`          | string \| null | Compute backend(s), enriched with CUDA version when available (e.g. `CUDA 13.0`, `Metal`, `CPU`) |
-| `cpu_model`         | string \| null | CPU model string                                                                                 |
+| Field                    | Type            | Description                                                                                      |
+| ------------------------ | --------------- | ------------------------------------------------------------------------------------------------ |
+| `gpu_name`               | string \| null  | Primary GPU model name (e.g. `NVIDIA GeForce RTX 4090`)                                          |
+| `gpu_vram_gb`            | float \| null   | Primary GPU VRAM in GB                                                                           |
+| `gpu_driver`             | string \| null  | Primary GPU driver version                                                                       |
+| `gpu_count`              | integer         | Number of GPUs detected                                                                          |
+| `gpu_names`              | string \| null  | Comma-separated list of all detected GPU names                                                   |
+| `gpu_total_vram_gb`      | float \| null   | Total VRAM across all GPUs in GB                                                                 |
+| `unified_memory`         | boolean \| null | `true` for Apple Silicon — GPU and CPU share the same memory pool                                |
+| `gpu_compute_capability` | string \| null  | CUDA compute capability (e.g. `"9.0"` for Blackwell); `null` for non-CUDA hardware               |
+| `gpu_pcie_gen`           | integer \| null | PCIe generation (e.g. `5`) of the primary GPU slot; `null` for unified-memory platforms          |
+| `gpu_pcie_width`         | integer \| null | PCIe link width in lanes (e.g. `16`); `null` for unified-memory platforms                        |
+| `gpu_power_limit_w`      | float \| null   | Configured TDP limit for the primary GPU in Watts (from NVML); `null` for non-NVIDIA hardware    |
+| `backends`               | string \| null  | Compute backend(s), enriched with CUDA version when available (e.g. `CUDA 13.0`, `Metal`, `CPU`) |
+| `cpu_model`              | string \| null  | CPU model string                                                                                 |
 
 ## Configuration
 
-| Field              | Type            | Description                                            |
-| ------------------ | --------------- | ------------------------------------------------------ |
-| `n_ctx`            | integer \| null | Context window size (tokens)                           |
-| `n_batch`          | integer \| null | Prompt-processing batch size                           |
-| `split_mode`       | string \| null  | Multi-GPU split strategy (e.g. `none`, `layer`, `row`) |
-| `tensor_split`     | string \| null  | GPU weight ratios for multi-GPU (e.g. `"1,1"`)         |
-| `concurrent_users` | integer \| null | Simultaneous inference requests (server runners only)  |
+| Field              | Type            | Description                                                                                                                                                                   |
+| ------------------ | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `n_ctx`            | integer \| null | Context window size (tokens)                                                                                                                                                  |
+| `n_batch`          | integer \| null | Prompt-processing batch size                                                                                                                                                  |
+| `split_mode`       | string \| null  | Multi-GPU split strategy (e.g. `none`, `layer`, `row`)                                                                                                                        |
+| `tensor_split`     | string \| null  | GPU weight ratios for multi-GPU (e.g. `"1,1"`)                                                                                                                                |
+| `concurrent_users` | integer \| null | Simultaneous inference requests (server runners only). For `llama-server-loadtest`, each row in the dataset corresponds to **one concurrency level** from the measured curve. |
 
 ## Workload
 
@@ -104,6 +109,12 @@ that list changes.
 | --------------- | ------------- | ----------------------------------------------------------------------------- |
 | `quality_score` | float \| null | Reserved for future quantitative quality evaluation (currently always `null`) |
 
+## Performance — VRAM Cliff
+
+| Field               | Type            | Description                                                                                            |
+| ------------------- | --------------- | ------------------------------------------------------------------------------------------------------ |
+| `vram_cliff_tokens` | integer \| null | Largest `n_ctx` value that loaded without OOM during the pre-flight VRAM cliff discovery binary search |
+
 ## Qualitative Evaluation (Context-Rot)
 
 The qualitative phase runs a semantic Needle-in-a-Haystack (NIAH) evaluation
@@ -129,6 +140,20 @@ phase carry `runner_type = "context-rot"` and `run_type = "qualitative"` (or
 Lengths exceeding the model's measured `vram_cliff_tokens` are skipped and
 recorded as `null` in `context_rot_accuracy_by_length` rather than failing the
 run.
+
+## Qualitative Evaluation (Multi-Turn Memory)
+
+Phase 8 scores multi-turn conversation quality using either LongMemEval (deep long-context recall) or MT-Bench (fast development signal). Rows produced by this phase carry `runner_type = "multiturn"` or `runner_type = "mt-bench"`. Rows where these were not run carry `null`.
+
+| Field                   | Type            | Description                                                                          |
+| ----------------------- | --------------- | ------------------------------------------------------------------------------------ |
+| `memory_accuracy`       | float \| null   | LongMemEval recall accuracy (0–1), `null` when MT-Bench mode was selected            |
+| `mt_bench_score`        | float \| null   | MT-Bench score on the standard 1–10 scale; `null` when LongMemEval mode was selected |
+| `cases_evaluated`       | integer \| null | Number of evaluation cases that completed                                            |
+| `cases_skipped_context` | integer \| null | Cases skipped because the required context exceeded `vram_cliff_tokens`              |
+
+> `mt_bench_score` uses the 1–10 MT-Bench scale. All other float metrics are 0–1.
+> To normalise: `mt_bench_score_norm = (mt_bench_score − 1) / 9`.
 
 ## Qualitative Evaluation (Answer Knowledge-Accuracy & Quality)
 
@@ -233,7 +258,7 @@ a unified profile without re-running expensive perf sweeps.
 
 | Field                 | Type           | Description                                                                 |
 | --------------------- | -------------- | --------------------------------------------------------------------------- |
-| `schema_version`      | string         | Version of this schema (currently `0.1.0`)                                  |
+| `schema_version`      | string         | Version of this schema (currently `0.9.0`)                                  |
 | `benchmark_version`   | string         | Version of `poor-pauls-benchmark` that produced the row                     |
 | `suite_run_id`        | string \| null | UUID shared by all rows produced by the same suite invocation               |
 | `submission_id`       | string \| null | UUID set by the publisher for one upload batch                              |

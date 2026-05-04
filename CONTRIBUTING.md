@@ -94,8 +94,10 @@ field names, types, and semantics for every column written to `results.jsonl`.
 ## Code Contributions
 
 1. Open an issue first to discuss significant changes.
-2. Run `python -m pytest tests/ -v` before submitting a PR.
+2. Run `uv run pytest tests/ -v` before submitting a PR.
 3. New runners must inherit from `BaseRunner` (see `runners/base.py`) and
    include tests in `tests/`.
 4. New result schema fields must be added to both `utils/flattener.py` and
    `docs/schema.md`.
+5. New aggregation logic belongs in `scripts/aggregate_results.py`; all other
+   data pipeline changes should update `utils/flattener.py`.

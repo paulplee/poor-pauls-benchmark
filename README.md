@@ -409,14 +409,16 @@ ppb_datasets/
   data/
     mt_bench_questions.json   # 80 canonical MT-Bench questions (MIT licence)
 utils/
-  flattener.py                # Normalise nested JSONL → flat Arrow-friendly dicts
+  flattener.py                # Normalise nested JSONL → flat Arrow-friendly dicts (schema v0.9.0)
   gguf_metadata.py            # Read GGUF headers for VRAM estimation
   publisher.py                # Push results to HuggingFace
+scripts/
+  aggregate_results.py        # Group Parquet rows by key dimensions; compute mean/CI95; optional HF upload
 suites/
   suite.example.toml          # Starter performance suite
   qualitative_example.toml    # Starter quality suite
 docs/
-  schema.md                   # Full results schema reference
+  schema.md                   # Full results schema reference (v0.9.0)
   qualitative-methodology.md  # Knowledge accuracy vs. reference-grounded faithfulness
   building-llama-cpp.md       # Build llama.cpp for CUDA / Metal / ROCm
 tests/                        # pytest suite (no GPU required for unit tests)

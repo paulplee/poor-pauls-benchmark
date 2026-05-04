@@ -25,13 +25,8 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 COLUMN_ORDER: list[str] = [
-    # Composable-schema join key (added 2026-04 — nullable on legacy rows).
-    # Together (gpu_name, model_name, quantization, run_type) are the
-    # primary key used by downstream consumers (ppb-mcp, poorpaul.dev) to
-    # JOIN quantitative- and qualitative-only rows into a single profile.
+    # Run classification
     "run_type",  # "all" | "quantitative" | "qualitative"
-    "model_name",  # alias of model_base — duplicated for the composable key
-    "quantization",  # alias of quant     — duplicated for the composable key
     # Benchmark identity
     "model",
     "model_base",
@@ -49,6 +44,11 @@ COLUMN_ORDER: list[str] = [
     "gpu_count",
     "gpu_names",
     "gpu_total_vram_gb",
+    "unified_memory",
+    "gpu_compute_capability",
+    "gpu_pcie_gen",
+    "gpu_pcie_width",
+    "gpu_power_limit_w",
     "backends",
     "cpu_model",
     # Configuration
@@ -65,10 +65,7 @@ COLUMN_ORDER: list[str] = [
     # Performance — raw speed
     "throughput_tok_s",
     # Quantitative composable block (nullable on qualitative-only rows).
-    "vram_used_gb",
     "vram_cliff_tokens",
-    "tokens_per_sec_prompt",
-    "tokens_per_sec_generation",
     # Performance — power efficiency
     "avg_power_w",
     "max_power_w",
@@ -156,7 +153,7 @@ MASTER_SCHEMA: dict[str, None] = dict.fromkeys(COLUMN_ORDER + ["raw_payload"])
 # Provenance / fingerprint helpers
 # ---------------------------------------------------------------------------
 
-_SCHEMA_VERSION = "0.1.0"
+_SCHEMA_VERSION = "0.9.0"
 
 
 def _get_benchmark_version() -> str:
@@ -205,6 +202,8 @@ def _compute_machine_fingerprint(flat: dict[str, Any]) -> str:
             "ram_total_gb": flat.get("ram_total_gb"),
             "gpu_name": _norm(flat.get("gpu_name")),
             "gpu_vram_gb": flat.get("gpu_vram_gb"),
+            "gpu_count": flat.get("gpu_count"),
+            "gpu_total_vram_gb": flat.get("gpu_total_vram_gb"),
             "os_release": _norm(flat.get("os_release")),
         }
     )
@@ -224,6 +223,8 @@ def _compute_run_fingerprint(
             "n_ctx": flat.get("n_ctx"),
             "n_batch": flat.get("n_batch"),
             "concurrent_users": flat.get("concurrent_users"),
+            "split_mode": _norm(flat.get("split_mode")),
+            "tensor_split": flat.get("tensor_split"),
             "machine_fingerprint": machine_fp,
             "benchmark_version": _norm(benchmark_version),
         }
@@ -280,8 +281,9 @@ def _stamp_provenance(flat: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 # Regex to capture a quantisation suffix before .gguf.
-# e.g. "Qwen3.5-9B-Q8_0.gguf" → separator="-", quant="Q8_0"
-_QUANT_SUFFIX_RE = re.compile(r"[-_]([QqFfIiBb][A-Za-z0-9_]*)\.gguf$")
+# Handles both dash-separator (Qwen3.5-9B-Q8_0.gguf) and
+# dot-separator historical format (Qwen3.5-27B.Q2_K.gguf).
+_QUANT_SUFFIX_RE = re.compile(r"[-_.]([QqFfIiBb][A-Za-z0-9_]*)\.gguf$")
 
 
 def _parse_model_provenance(model: str | None) -> tuple[str | None, str | None]:
@@ -380,9 +382,7 @@ def flatten_benchmark_row(row: dict[str, Any]) -> list[dict[str, Any]]:
             )
         ]
     elif runner_type == "llama-server-loadtest" and isinstance(results, dict):
-        rows = [
-            _flatten_llama_server_loadtest(envelope, hw_fields, results, raw_payload)
-        ]
+        rows = _flatten_llama_server_loadtest(envelope, hw_fields, results, raw_payload)
     elif runner_type == "context-rot" and isinstance(results, dict):
         flat = _new_row()
         flat.update(envelope)
@@ -596,6 +596,11 @@ def _extract_hardware(hw: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         "gpu_name": gpu0.get("name"),
         "gpu_vram_gb": gpu0.get("vram_total_gb"),
         "gpu_driver": gpu0.get("driver"),
+        "unified_memory": gpu0.get("unified_memory"),
+        "gpu_compute_capability": gpu0.get("compute_capability"),
+        "gpu_pcie_gen": gpu0.get("pcie_gen"),
+        "gpu_pcie_width": gpu0.get("pcie_width"),
+        "gpu_power_limit_w": gpu0.get("power_limit_w"),
         # Multi-GPU fields (backward-compat: single-GPU runs still populate these)
         "gpu_count": len(gpus),
         "gpu_names": ", ".join(g["name"] for g in gpus if g.get("name")) or None,
@@ -678,20 +683,199 @@ def _flatten_llama_server_loadtest(
     hw_fields: dict[str, Any],
     results: dict[str, Any],
     raw_payload: str,
-) -> dict[str, Any]:
-    """Flatten a single llama-server-loadtest results dict."""
-    flat = _new_row()
-    flat.update(envelope)
-    flat.update(hw_fields)
-    # max_sustainable_users is not in the public schema; derive concurrent_users
-    # from the highest tested level in the concurrency curve instead.
+) -> list[dict[str, Any]]:
+    """Flatten a llama-server-loadtest results dict into one row per concurrency level.
+
+    The loadtest runner records a full ``concurrency_curve`` — one measurement
+    per tested user count.  Each level is promoted to its own flat row so the
+    dataset has the same per-(model, concurrency) shape as llama-server rows.
+    """
     curve = results.get("concurrency_curve") or []
-    best_throughput = None
+    if not curve:
+        # Fallback: emit a single empty row so the row is not silently lost.
+        flat = _new_row()
+        flat.update(envelope)
+        flat.update(hw_fields)
+        flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
+        return [flat]
+
+    rows: list[dict[str, Any]] = []
     for level in curve:
-        val = level.get("aggregate_throughput_tok_s")
-        if val is not None:
-            best_throughput = val
-    flat["throughput_tok_s"] = best_throughput
-    flat["raw_payload"] = raw_payload
-    _stamp_provenance(flat)
-    return flat
+        flat = _new_row()
+        flat.update(envelope)
+        flat.update(hw_fields)
+        # Override concurrent_users from the curve level (envelope may be None
+        # when the top-level row predates the concurrent_users top-level field).
+        cu = level.get("concurrent_users")
+        if cu is not None:
+            flat["concurrent_users"] = cu
+        # Aggregate throughput — total tokens / total duration across all users.
+        flat["throughput_tok_s"] = level.get("aggregate_throughput_tok_s")
+        # Latency percentiles — TTFT
+        flat["avg_ttft_ms"] = level.get("avg_ttft_ms")
+        flat["p50_ttft_ms"] = level.get("p50_ttft_ms")
+        flat["p99_ttft_ms"] = level.get("p99_ttft_ms")
+        # Latency percentiles — ITL (inter-token latency)
+        flat["avg_itl_ms"] = level.get("avg_itl_ms")
+        flat["p50_itl_ms"] = level.get("p50_itl_ms")
+        flat["p99_itl_ms"] = level.get("p99_itl_ms")
+        # Prompt / token counts
+        flat["num_prompts"] = level.get("num_prompts_succeeded")
+        flat["raw_payload"] = raw_payload
+        _stamp_provenance(flat)
+        rows.append(flat)
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Schema validation helpers
+# ---------------------------------------------------------------------------
+
+_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "runner_type",
+        "hardware",
+        "results",
+    }
+)
+
+_SUPPORTED_RUNNER_TYPES: frozenset[str] = frozenset(
+    {
+        "llama-bench",
+        "llama-server",
+        "llama-server-loadtest",
+        "context-rot",
+        "tool-accuracy",
+        "qualitative",
+        "answer-quality",
+        "multiturn",
+    }
+)
+
+
+def validate_jsonl_rows(
+    rows: list[dict[str, Any]],
+    source_label: str = "<unknown>",
+) -> dict[str, Any]:
+    """Validate a list of raw JSONL rows against the ppb schema.
+
+    Returns a report dict::
+
+        {
+            "source": str,
+            "total": int,
+            "valid": int,
+            "errors": [{"row_index": int, "kind": str, "detail": str}, ...],
+        }
+
+    This is a *soft* validator — it reports issues without raising exceptions,
+    so callers can decide whether to abort or log-and-continue.
+    """
+    errors: list[dict[str, Any]] = []
+
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            errors.append(
+                {"row_index": idx, "kind": "not_a_dict", "detail": repr(row)[:120]}
+            )
+            continue
+
+        # --- required top-level keys ----------------------------------------
+        for field in _REQUIRED_FIELDS:
+            if field not in row:
+                errors.append(
+                    {
+                        "row_index": idx,
+                        "kind": "missing_field",
+                        "detail": f"field '{field}' absent",
+                    }
+                )
+
+        # --- runner_type whitelist -------------------------------------------
+        rt = row.get("runner_type")
+        if rt is not None and rt not in _SUPPORTED_RUNNER_TYPES:
+            errors.append(
+                {
+                    "row_index": idx,
+                    "kind": "unknown_runner_type",
+                    "detail": f"runner_type='{rt}'",
+                }
+            )
+
+        # --- hardware block --------------------------------------------------
+        hw = row.get("hardware")
+        if hw is not None and not isinstance(hw, dict):
+            errors.append(
+                {
+                    "row_index": idx,
+                    "kind": "invalid_hardware",
+                    "detail": f"hardware is {type(hw).__name__}",
+                }
+            )
+
+        # --- results block ---------------------------------------------------
+        res = row.get("results")
+        if res is not None:
+            if rt in ("llama-bench", "qualitative", "answer-quality", "multiturn"):
+                if not isinstance(res, list):
+                    errors.append(
+                        {
+                            "row_index": idx,
+                            "kind": "invalid_results",
+                            "detail": f"expected list for {rt}",
+                        }
+                    )
+            elif rt in (
+                "llama-server",
+                "llama-server-loadtest",
+                "context-rot",
+                "tool-accuracy",
+            ):
+                if not isinstance(res, dict):
+                    errors.append(
+                        {
+                            "row_index": idx,
+                            "kind": "invalid_results",
+                            "detail": f"expected dict for {rt}",
+                        }
+                    )
+            # loadtest-specific: verify concurrency_curve has entries
+            if rt == "llama-server-loadtest" and isinstance(res, dict):
+                curve = res.get("concurrency_curve")
+                if not curve:
+                    errors.append(
+                        {
+                            "row_index": idx,
+                            "kind": "empty_concurrency_curve",
+                            "detail": "concurrency_curve is absent or empty",
+                        }
+                    )
+
+    valid = len(rows) - len({e["row_index"] for e in errors})
+    return {
+        "source": source_label,
+        "total": len(rows),
+        "valid": valid,
+        "errors": errors,
+    }
+
+
+def validate_jsonl_file(path: str | Path) -> dict[str, Any]:
+    """Read a JSONL file and validate all rows.  Returns the validation report."""
+    path = Path(path)
+    rows: list[dict[str, Any]] = []
+    parse_errors: list[dict[str, Any]] = []
+    for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            parse_errors.append(
+                {"row_index": idx, "kind": "json_parse_error", "detail": str(exc)}
+            )
+    report = validate_jsonl_rows(rows, source_label=str(path))
+    report["errors"] = parse_errors + report["errors"]
+    return report
