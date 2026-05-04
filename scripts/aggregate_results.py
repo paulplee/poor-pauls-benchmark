@@ -288,6 +288,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.upload:
         upload_to_hf(out_path, args.dataset, args.output)
 
+        # Keep the dataset README in sync with the schema source of truth
+        readme_src = Path(__file__).parent / "hf_dataset_readme.md"
+        if readme_src.exists():
+            upload_to_hf(readme_src, args.dataset, "README.md")
+        else:
+            logger.warning("hf_dataset_readme.md not found — skipping README upload")
+
 
 if __name__ == "__main__":
     main()
