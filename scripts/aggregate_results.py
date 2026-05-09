@@ -44,8 +44,13 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import os
 import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import pandas as pd
 
@@ -209,7 +214,15 @@ def upload_to_hf(local_path: Path, dataset: str, filename: str) -> None:
         logger.error("huggingface_hub is not installed.")
         sys.exit(1)
 
-    api = HfApi()
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        logger.error(
+            "HF_TOKEN is not set. Set it in your environment or a .env file "
+            "before using --upload."
+        )
+        sys.exit(1)
+
+    api = HfApi(token=token)
     logger.info("Uploading %s to %s/%s …", local_path, dataset, filename)
     api.upload_file(
         path_or_fileobj=str(local_path),
