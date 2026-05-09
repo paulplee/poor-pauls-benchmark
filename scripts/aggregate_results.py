@@ -42,6 +42,7 @@ via the scheduled GitHub Actions workflow, which serialises all writes.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -186,6 +187,15 @@ def aggregate_df(df: pd.DataFrame) -> pd.DataFrame:
 # I/O helpers
 # ---------------------------------------------------------------------------
 
+SHARD_PREFIX = "data/results_"  # prefix for per-run JSONL shards on HF
+
+
+def _get_api() -> "HfApi":
+    from huggingface_hub import HfApi
+
+    token = os.environ.get("HF_TOKEN") or None
+    return HfApi(token=token)
+
 
 def load_from_hf(dataset: str, filename: str) -> pd.DataFrame:
     """Download the parquet file from HuggingFace and return a DataFrame."""
@@ -198,30 +208,119 @@ def load_from_hf(dataset: str, filename: str) -> pd.DataFrame:
         sys.exit(1)
 
     logger.info("Downloading %s from %s …", filename, dataset)
+    token = os.environ.get("HF_TOKEN") or None
     local_path = hf_hub_download(
         repo_id=dataset,
         filename=filename,
         repo_type="dataset",
+        token=token,
     )
     return pd.read_parquet(local_path)
+
+
+def consolidate_shards(dataset: str, parquet_filename: str, *, dry_run: bool = False) -> int:
+    """Download all pending JSONL shards, merge into the base parquet, re-upload, then delete shards.
+
+    Returns the number of shards consumed.
+    """
+    import tempfile
+
+    from huggingface_hub import hf_hub_download
+
+    api = _get_api()
+    token = os.environ.get("HF_TOKEN") or None
+
+    # List all shard files
+    all_files = [
+        f
+        for f in api.list_repo_files(dataset, repo_type="dataset")
+        if f.startswith(SHARD_PREFIX) and f.endswith(".jsonl")
+    ]
+
+    if not all_files:
+        logger.info("No JSONL shards found — nothing to consolidate.")
+        return 0
+
+    logger.info("Found %d JSONL shard(s) to consolidate.", len(all_files))
+
+    # Download and parse each shard
+    shard_frames: list[pd.DataFrame] = []
+    for shard_path in sorted(all_files):
+        local = hf_hub_download(
+            repo_id=dataset,
+            filename=shard_path,
+            repo_type="dataset",
+            token=token,
+        )
+        rows = []
+        with open(local, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        if rows:
+            shard_frames.append(pd.DataFrame(rows))
+            logger.info("  %s — %d row(s)", shard_path, len(rows))
+
+    if not shard_frames:
+        logger.warning("All shards were empty — nothing to merge.")
+        return 0
+
+    new_rows = pd.concat(shard_frames, ignore_index=True)
+    logger.info("New rows from shards: %d", len(new_rows))
+
+    # Download existing parquet and merge
+    try:
+        existing = load_from_hf(dataset, parquet_filename)
+        logger.info("Existing parquet rows: %d", len(existing))
+        merged = pd.concat([existing, new_rows], ignore_index=True)
+    except Exception:
+        logger.warning("Could not load existing parquet — starting fresh from shards only.")
+        merged = new_rows
+
+    # Deduplicate on row_id if present
+    if "row_id" in merged.columns:
+        before = len(merged)
+        merged = merged.drop_duplicates(subset=["row_id"], keep="last")
+        dupes = before - len(merged)
+        if dupes:
+            logger.info("Removed %d duplicate row(s) by row_id.", dupes)
+
+    logger.info("Merged total: %d rows", len(merged))
+
+    if dry_run:
+        logger.info("[dry-run] Would upload updated parquet and delete %d shards.", len(all_files))
+        return len(all_files)
+
+    # Write updated parquet locally and upload
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        merged.to_parquet(tmp_path, index=False)
+        upload_to_hf(Path(tmp_path), dataset, parquet_filename)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    # Delete shards from HF
+    api.delete_files(
+        repo_id=dataset,
+        repo_type="dataset",
+        delete_patterns=all_files,
+    )
+    logger.info("Deleted %d shard(s) from %s.", len(all_files), dataset)
+
+    return len(all_files)
 
 
 def upload_to_hf(local_path: Path, dataset: str, filename: str) -> None:
     """Upload a local file to HuggingFace as a dataset file."""
     try:
-        from huggingface_hub import HfApi
+        from huggingface_hub import HfApi  # noqa: F401
     except ImportError:
         logger.error("huggingface_hub is not installed.")
         sys.exit(1)
 
-    token = os.environ.get("HF_TOKEN") or None
-    if not token:
-        logger.warning(
-            "HF_TOKEN is not set — attempting upload with cached credentials. "
-            "Set HF_TOKEN in your environment or a .env file for reliable uploads."
-        )
-
-    api = HfApi(token=token)
+    api = _get_api()
     logger.info("Uploading %s to %s/%s …", local_path, dataset, filename)
     api.upload_file(
         path_or_fileobj=str(local_path),
@@ -263,12 +362,33 @@ def main(argv: list[str] | None = None) -> None:
         help="Upload the aggregated file to HuggingFace after writing it locally",
     )
     parser.add_argument(
+        "--no-consolidate",
+        action="store_true",
+        help="Skip the shard-consolidation step (do not merge JSONL shards into the base parquet)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what consolidation would do without uploading or deleting anything",
+    )
+    parser.add_argument(
         "--min-samples",
         type=int,
         default=1,
         help="Drop groups with fewer than this many samples (default: 1 = keep all)",
     )
     args = parser.parse_args(argv)
+
+    # --- Consolidate JSONL shards into base parquet --------------------------
+    # This runs whenever --upload is set (i.e. in CI / maintainer runs).
+    # It merges all pending data/results_*.jsonl shards into ppb_results_v090.parquet
+    # and deletes the shards from HF, keeping the dataset tidy.
+    if args.upload and not args.no_consolidate:
+        consolidate_shards(
+            args.dataset,
+            DEFAULT_INPUT_FILENAME,
+            dry_run=args.dry_run,
+        )
 
     # --- Load raw data -------------------------------------------------------
     if args.input:
