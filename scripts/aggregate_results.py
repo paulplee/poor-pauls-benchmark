@@ -56,8 +56,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_DATASET = "paulplee/ppb-results"
-DEFAULT_INPUT_FILENAME = "ppb_results_v090.parquet"
-DEFAULT_OUTPUT_FILENAME = "ppb_results_aggregated.parquet"
+DEFAULT_INPUT_FILENAME = "data/ppb_results_v090.parquet"
+DEFAULT_OUTPUT_FILENAME = "data/ppb_results_aggregated.parquet"
 
 GROUP_KEYS = [
     "gpu_name",
@@ -281,12 +281,12 @@ def main(argv: list[str] | None = None) -> None:
     logger.info("Aggregated: %d groups", len(agg))
 
     # --- Write ---------------------------------------------------------------
-    out_path = Path(args.output)
+    out_path = Path(args.output).name  # local file: just the basename
     agg.to_parquet(out_path, index=False)
     logger.info("Written to %s", out_path)
 
     if args.upload:
-        upload_to_hf(out_path, args.dataset, args.output)
+        upload_to_hf(Path(out_path), args.dataset, args.output)
 
         # Keep the dataset README in sync with the schema source of truth
         readme_src = Path(__file__).parent / "hf_dataset_readme.md"
