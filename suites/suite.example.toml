@@ -125,6 +125,16 @@ runner_type = "llama-bench"
 # cooldown_s = 0
 
 # -------------------------------------------------------------------
+# preflight_timeout_s (optional — default: 300)
+#   Seconds to wait for a response to the VRAM Pre-Flight Check prompt
+#   before automatically applying the safe default (auto-cap n_ctx).
+#   Useful for unattended / overnight runs where no one is watching.
+#
+#   Set to 0 to skip the interactive prompt entirely (always auto-cap).
+# -------------------------------------------------------------------
+# preflight_timeout_s = 300
+
+# -------------------------------------------------------------------
 # n_ctx (required)
 #   List of prompt token counts to benchmark.
 #   Passed to llama-bench as -p (--n-prompt), which drives the KV cache

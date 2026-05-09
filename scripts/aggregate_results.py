@@ -214,13 +214,12 @@ def upload_to_hf(local_path: Path, dataset: str, filename: str) -> None:
         logger.error("huggingface_hub is not installed.")
         sys.exit(1)
 
-    token = os.environ.get("HF_TOKEN")
+    token = os.environ.get("HF_TOKEN") or None
     if not token:
-        logger.error(
-            "HF_TOKEN is not set. Set it in your environment or a .env file "
-            "before using --upload."
+        logger.warning(
+            "HF_TOKEN is not set — attempting upload with cached credentials. "
+            "Set HF_TOKEN in your environment or a .env file for reliable uploads."
         )
-        sys.exit(1)
 
     api = HfApi(token=token)
     logger.info("Uploading %s to %s/%s …", local_path, dataset, filename)

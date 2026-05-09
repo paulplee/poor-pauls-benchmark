@@ -2025,6 +2025,10 @@ class SweepConfig(BaseModel):
     cpu_temp_limit_c: float = 90.0
     cooldown_s: float = 0.0
 
+    # Seconds to wait for VRAM pre-flight confirmation before auto-capping.
+    # Set to 0 to disable the prompt entirely (always auto-cap).
+    preflight_timeout_s: float = 300.0
+
     # Populated externally by _ensure_models(); not read from TOML.
     resolved_models: list[tuple[Path, str]] = Field(default_factory=list)
 
@@ -2972,14 +2976,38 @@ def execute_sweep(
     vram_warnings = _preflight_vram_check(cfg.resolved_models, cfg)
     if vram_warnings:
         _print_vram_warnings(vram_warnings)
-        choice = Prompt.ask(
-            "[bold yellow]Action?[/bold yellow]  "
-            "[bold]a[/bold]uto-cap n_ctx  |  "
-            "[bold]p[/bold]roceed anyway  |  "
-            "[bold]q[/bold]uit",
-            choices=["a", "p", "q"],
-            default="a",
-        )
+        _timeout = cfg.preflight_timeout_s
+        choice: str | None = None
+        if _timeout <= 0:
+            # Non-interactive mode: always auto-cap without prompting.
+            choice = "a"
+        else:
+            import sys as _sys
+            _result: list[str] = []
+            def _prompt_thread() -> None:
+                try:
+                    _result.append(
+                        Prompt.ask(
+                            "[bold yellow]Action?[/bold yellow]  "
+                            "[bold]a[/bold]uto-cap n_ctx  |  "
+                            "[bold]p[/bold]roceed anyway  |  "
+                            "[bold]q[/bold]uit",
+                            choices=["a", "p", "q"],
+                            default="a",
+                        )
+                    )
+                except (EOFError, OSError):
+                    _result.append("a")
+            _t = threading.Thread(target=_prompt_thread, daemon=True)
+            _t.start()
+            _t.join(timeout=_timeout)
+            if _result:
+                choice = _result[0]
+            else:
+                console.print(
+                    f"  [warning]No response in {_timeout:.0f}s — defaulting to [bold]auto-cap[/bold][/warning]"
+                )
+                choice = "a"
         if choice == "q":
             raise typer.Exit(code=0)
         if choice == "a":
