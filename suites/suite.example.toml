@@ -161,6 +161,64 @@ n_batch = [512, 1024]
 concurrent_users = [1, 2, 4]
 
 # -------------------------------------------------------------------
+# llama_cpp_args (optional — default: [{}])
+#   List of llama.cpp flag-set dicts to sweep.  Each dict is one
+#   point in the flag dimension added to the Cartesian product:
+#     models × n_ctx × n_batch × concurrent_users × llama_cpp_args
+#
+#   Special keys inside each dict:
+#     _label      — optional human-readable label stored in results
+#                   (llm_flags_label column) for easy filtering
+#     extra_flags — verbatim CLI flags appended after structured flags
+#
+#   Flag conversion rules:
+#     Known short flags (ncmoe, cmoe, fa, ngl, …) → single-dash  (-ncmoe 20)
+#     Other keys → double-dash, underscore→dash    (--flash-attn)
+#     Boolean true  → flag token only              (-cmoe)
+#     Boolean false → flag omitted entirely
+#
+#   Include {} as the first entry to preserve a baseline (all defaults)
+#   so you can measure the delta from each flag variant.
+#
+#   MoE example (Mixture-of-Experts models like Qwen3.6-35B-A3B):
+#     llama_cpp_args = [
+#         {},
+#         {ncmoe = 20, _label = "ncmoe_20"},
+#         {ncmoe = 40, _label = "ncmoe_40"},
+#         {cmoe = true, _label = "cmoe"},
+#         {cmoe = true, ncmoe = 40, _label = "cmoe_ncmoe_40"},
+#         {extra_flags = "-rtr", _label = "rtr"},
+#     ]
+#
+#   The default [{} ] means one baseline point — existing suites work
+#   unchanged without this key.
+# -------------------------------------------------------------------
+# llama_cpp_args = [{}]
+
+# -------------------------------------------------------------------
+# [sweep.llama_cpp_args_range] (optional)
+#   Range shorthand for sweeping a single flag over many values.
+#   Generates flag-set dicts {flag: value} for each value in the
+#   range and appends them AFTER any explicit llama_cpp_args entries.
+#
+#   Each flag key maps to a {from, to, step} spec:
+#     from  — starting value (inclusive)
+#     to    — ending value   (inclusive if step lands on it)
+#     step  — increment      (default: 1)
+#
+#   Multiple keys produce a Cartesian product of their ranges.
+#
+#   Example — sweep -ncmoe from 20 to 90 in steps of 10:
+#
+# [sweep.llama_cpp_args_range]
+# ncmoe = {from = 20, to = 90, step = 10}
+#
+#   Combined with llama_cpp_args = [{}], this produces:
+#     {}, {ncmoe=20}, {ncmoe=30}, ..., {ncmoe=90}
+#   giving 9 flag-set points per (model × n_ctx × n_batch × users).
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
 # min_ctx_per_slot (optional — default: 512)
 #   Minimum context tokens per parallel slot.  When llama-server runs
 #   with --parallel N, total n_ctx is divided among N slots.  Combos

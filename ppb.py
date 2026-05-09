@@ -22,7 +22,7 @@ import threading
 import time
 import tomllib
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -55,6 +55,7 @@ from ppb_datasets import download_dataset
 from ppb_datasets.sharegpt import SHAREGPT_FILENAME, SHAREGPT_REPO
 from runners import get_runner
 from runners._server_mixin import ServerMixin
+from utils.flag_utils import expand_llama_cpp_args, parse_flag_entry
 from utils.flattener import compute_file_sha256, flatten_benchmark_row
 from utils.gguf_metadata import (
     estimate_total_vram_bytes,
@@ -2009,6 +2010,16 @@ class SweepConfig(BaseModel):
     runner_type: str = "llama-bench"
     runner_params: dict[str, Any] = Field(default_factory=dict)
 
+    # llama.cpp flag sweep dimensions (new in schema v0.10.0)
+    # Each entry is a dict of flag key→value pairs.  Special keys:
+    #   _label      — human-readable variant label (stored in llm_flags_label)
+    #   extra_flags — verbatim CLI tokens appended after structured flags
+    # Defaults to [{}] (one baseline point, all llama.cpp defaults).
+    llama_cpp_args: list[dict] = Field(default_factory=lambda: [{}])
+    # Range expansion: {"ncmoe": {"from": 20, "to": 99, "step": 10}}
+    # Generates flag-set dicts and appends them to llama_cpp_args.
+    llama_cpp_args_range: dict = Field(default_factory=dict)
+
     # Thermal / power safety limits (inter-run cooldown)
     gpu_temp_limit_c: float = 85.0
     cpu_temp_limit_c: float = 90.0
@@ -2021,14 +2032,22 @@ class SweepConfig(BaseModel):
         arbitrary_types_allowed = True
 
     def combos(self) -> list["BenchCombo"]:
-        """Return the full Cartesian product of models × n_ctx × n_batch × concurrent_users.
+        """Return the full Cartesian product of models × n_ctx × n_batch × concurrent_users × llama_cpp_args.
 
         Combos are ordered so that ``concurrent_users`` is **descending**
-        within each ``(model, n_ctx)`` group.  This maximises server
+        within each ``(model, n_ctx, flags)`` group.  This maximises server
         reuse: :meth:`ensure_server` keeps the running server when
-        ``managed_parallel >= parallel``, so starting from the highest
-        concurrency avoids unnecessary restarts when sweeping down.
+        ``managed_parallel >= parallel`` and flags match, so starting from
+        the highest concurrency avoids unnecessary restarts when sweeping down.
+
+        Within a flag variant, all (model, n_ctx, n_batch) combos sharing the
+        same flags are grouped together to further minimise server restarts.
         """
+        # Expand range spec into individual flag-set dicts
+        all_flag_sets = expand_llama_cpp_args(
+            self.llama_cpp_args, self.llama_cpp_args_range
+        )
+
         combos = [
             BenchCombo(
                 model_path=local,
@@ -2036,26 +2055,34 @@ class SweepConfig(BaseModel):
                 n_ctx=ctx,
                 n_batch=batch,
                 concurrent_users=users,
+                llm_flags=flags,
+                llm_flags_label=label,
+                extra_flags_raw=efr,
             )
-            for (local, hf_id), ctx, batch, users in itertools.product(
+            for (local, hf_id), ctx, batch, flag_entry, users in itertools.product(
                 self.resolved_models,
                 self.n_ctx,
                 self.n_batch,
+                all_flag_sets,
                 sorted(self.concurrent_users, reverse=True),
             )
+            for flags, label, efr in (parse_flag_entry(flag_entry),)
         ]
         return combos
 
 
 @dataclass
 class BenchCombo:
-    """A single (model, n_ctx, n_batch, concurrent_users) parameter combination."""
+    """A single (model, n_ctx, n_batch, concurrent_users, llm_flags) parameter combination."""
 
     model_path: Path
     model: str  # HF identifier: repo_id/filename
     n_ctx: int
     n_batch: int
     concurrent_users: int = 1
+    llm_flags: dict = field(default_factory=dict)
+    llm_flags_label: str | None = None
+    extra_flags_raw: str | None = None
 
 
 class VramCliffConfig(BaseModel):
@@ -3051,6 +3078,17 @@ def execute_sweep(
     )
     if cfg.concurrent_users != [1]:
         sweep_info += f"  Users   : {cfg.concurrent_users}\n"
+    _eff_flags = expand_llama_cpp_args(cfg.llama_cpp_args, cfg.llama_cpp_args_range)
+    if _eff_flags != [{}]:
+        def _fmt_flag_set(fd: dict) -> str:
+            flags, _lbl, efr = parse_flag_entry(fd)
+            if _lbl:
+                return _lbl
+            parts = [k if v is True else f"{k}={v}" for k, v in flags.items()]
+            if efr:
+                parts.append(efr)
+            return "{" + ", ".join(parts) + "}" if parts else "{}"
+        sweep_info += f"  flags   : {', '.join(_fmt_flag_set(f) for f in _eff_flags)}\n"
     sweep_info += f"  Results : [bold]{results_file.resolve()}[/bold]"
     console.print(sweep_info)
 
@@ -3125,6 +3163,16 @@ def execute_sweep(
                     label = f"{combo.model_path.name} ctx={combo.n_ctx} batch={combo.n_batch}"
                     if combo.concurrent_users > 1:
                         label += f" users={combo.concurrent_users}"
+                    if combo.llm_flags_label:
+                        label += f" flags={combo.llm_flags_label}"
+                    elif combo.llm_flags or combo.extra_flags_raw:
+                        _fparts = [
+                            k if v is True else f"{k}={v}"
+                            for k, v in combo.llm_flags.items()
+                        ]
+                        if combo.extra_flags_raw:
+                            _fparts.append(combo.extra_flags_raw)
+                        label += f" flags={{{','.join(_fparts)}}}"
                     progress.update(task, combo=label)
 
                     run_config: dict[str, Any] = {
@@ -3132,6 +3180,8 @@ def execute_sweep(
                         "n_ctx": combo.n_ctx,
                         "n_batch": combo.n_batch,
                         "concurrent_users": combo.concurrent_users,
+                        "llm_flags": combo.llm_flags,
+                        "extra_flags_raw": combo.extra_flags_raw,
                     }
 
                     # --- Thermal guard: wait if system is too hot ---------
@@ -3146,11 +3196,13 @@ def execute_sweep(
 
                     # Use server reuse when available: the orchestrator
                     # manages the server lifecycle so the model is loaded
-                    # once per (model, n_ctx) rather than once per combo.
+                    # once per (model, n_ctx, flags) rather than once per combo.
                     if _use_server_reuse:
                         try:
                             runner.ensure_server(
-                                combo.model_path, combo.n_ctx, combo.concurrent_users
+                                combo.model_path, combo.n_ctx, combo.concurrent_users,
+                                llm_flags=combo.llm_flags,
+                                extra_flags_raw=combo.extra_flags_raw,
                             )
                             raw_result = runner.run_on_server(run_config)
                         except (TimeoutError, OSError) as exc:
@@ -3181,6 +3233,10 @@ def execute_sweep(
                         _meta = runner.metadata()
                         record["llm_engine_name"] = _meta.get("llm_engine_name")
                         record["llm_engine_version"] = _meta.get("llm_engine_version")
+                        # llama.cpp flag variant metadata
+                        record["llm_flags"] = json.dumps(combo.llm_flags, sort_keys=True)
+                        record["llm_flags_label"] = combo.llm_flags_label
+                        record["extra_flags_raw"] = combo.extra_flags_raw
                         # Workload classification
                         record["task_type"] = cfg.runner_params.get(
                             "task_type", "text-generation"

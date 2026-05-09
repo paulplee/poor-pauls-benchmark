@@ -57,6 +57,10 @@ COLUMN_ORDER: list[str] = [
     "split_mode",
     "tensor_split",
     "concurrent_users",
+    # llama.cpp flag variants (new in schema v0.10.0)
+    "llm_flags",        # JSON dict of structured flags (e.g. '{"ncmoe": 20}')
+    "llm_flags_label",  # Optional human-readable label for this variant
+    "extra_flags_raw",  # Verbatim extra CLI flags appended after structured flags
     # Workload
     "task_type",
     "prompt_dataset",
@@ -153,7 +157,7 @@ MASTER_SCHEMA: dict[str, None] = dict.fromkeys(COLUMN_ORDER + ["raw_payload"])
 # Provenance / fingerprint helpers
 # ---------------------------------------------------------------------------
 
-_SCHEMA_VERSION = "0.9.0"
+_SCHEMA_VERSION = "0.10.0"
 
 
 def _get_benchmark_version() -> str:
@@ -225,6 +229,7 @@ def _compute_run_fingerprint(
             "concurrent_users": flat.get("concurrent_users"),
             "split_mode": _norm(flat.get("split_mode")),
             "tensor_split": flat.get("tensor_split"),
+            "llm_flags": _norm(flat.get("llm_flags")),
             "machine_fingerprint": machine_fp,
             "benchmark_version": _norm(benchmark_version),
         }
@@ -545,6 +550,10 @@ def _extract_envelope(row: dict[str, Any]) -> dict[str, Any]:
         "split_mode": row.get("split_mode"),
         "tensor_split": row.get("tensor_split"),
         "concurrent_users": row.get("concurrent_users"),
+        # llama.cpp flag variants
+        "llm_flags": row.get("llm_flags"),
+        "llm_flags_label": row.get("llm_flags_label"),
+        "extra_flags_raw": row.get("extra_flags_raw"),
         # Workload
         "task_type": row.get("task_type"),
         "prompt_dataset": row.get("prompt_dataset"),

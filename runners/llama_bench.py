@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import BaseRunner
+from utils.flag_utils import build_extra_cli_args
 
 log = logging.getLogger("ppb")
 
@@ -143,6 +144,11 @@ class LlamaBenchRunner(BaseRunner):
             cmd += ["--split-mode", self._split_mode]
         if self._main_gpu is not None:
             cmd += ["--main-gpu", str(self._main_gpu)]
+        # Per-run llama.cpp flag variants
+        llm_flags: dict = config.get("llm_flags") or {}
+        extra_flags_raw: str | None = config.get("extra_flags_raw")
+        if llm_flags or extra_flags_raw:
+            cmd += build_extra_cli_args(llm_flags, extra_flags_raw)
 
         log.debug("Running: %s", " ".join(cmd))
 

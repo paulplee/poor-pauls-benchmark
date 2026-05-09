@@ -229,10 +229,15 @@ class LlamaServerLoadTestRunner(ServerMixin, BaseRunner):
         """
         model_path = config["model_path"]
         n_ctx = config["n_ctx"]
+        llm_flags: dict = config.get("llm_flags") or {}
+        extra_flags_raw: str | None = config.get("extra_flags_raw")
 
         # Start server once for the whole escalation
         try:
-            proc = self.start_server(Path(model_path), n_ctx)
+            proc = self.start_server(
+                Path(model_path), n_ctx,
+                llm_flags=llm_flags, extra_flags_raw=extra_flags_raw,
+            )
         except TimeoutError as exc:
             log.error("Server health-check timed out: %s", exc)
             return None

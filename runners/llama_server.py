@@ -148,6 +148,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._managed_model: str | None = None
         self._managed_n_ctx: int | None = None
         self._managed_parallel: int = 0
+        self._managed_llm_flags: dict = {}
+        self._managed_extra_flags_raw: str | None = None
         # Per-run error counters (reset before each run).
         self._ctx_exceeded_count: int = 0
         self._disconnect_count: int = 0
@@ -255,11 +257,14 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         model_path = config["model_path"]
         n_ctx = config["n_ctx"]
         concurrent_users = int(config.get("concurrent_users", 1))
+        llm_flags: dict = config.get("llm_flags") or {}
+        extra_flags_raw: str | None = config.get("extra_flags_raw")
 
         # --- start server ---------------------------------------------------
         try:
             proc = self._start_server(
-                Path(model_path), n_ctx, parallel=concurrent_users
+                Path(model_path), n_ctx, parallel=concurrent_users,
+                llm_flags=llm_flags, extra_flags_raw=extra_flags_raw,
             )
         except TimeoutError:
             # The server is alive but hasn't finished loading the model
@@ -275,7 +280,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             self._health_timeout = retry_timeout
             try:
                 proc = self._start_server(
-                    Path(model_path), n_ctx, parallel=concurrent_users
+                    Path(model_path), n_ctx, parallel=concurrent_users,
+                    llm_flags=llm_flags, extra_flags_raw=extra_flags_raw,
                 )
             except TimeoutError as exc:
                 log.error("Server health-check timed out on retry: %s", exc)
@@ -669,14 +675,25 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
     def supports_server_reuse(self) -> bool:
         return True
 
-    def ensure_server(self, model_path: Path, n_ctx: int, parallel: int = 1) -> None:
-        """Start or keep the managed server for (model_path, n_ctx, parallel).
+    def ensure_server(
+        self,
+        model_path: Path,
+        n_ctx: int,
+        parallel: int = 1,
+        llm_flags: dict | None = None,
+        extra_flags_raw: str | None = None,
+    ) -> None:
+        """Start or keep the managed server for (model_path, n_ctx, parallel, flags).
 
-        If a compatible server is already running (same model + n_ctx and
-        enough parallel slots), this is a no-op — the most common case
-        in a sweep where we test multiple batch sizes / concurrent user
-        counts at the same context.
+        If a compatible server is already running (same model + n_ctx, enough
+        parallel slots, and identical llama.cpp flags), this is a no-op — the
+        most common case in a sweep where we test multiple batch sizes or
+        concurrent user counts at the same context + flag combination.
+
+        A server started with different ``llm_flags`` is always restarted
+        because flags like ``-ncmoe`` affect model loading behaviour.
         """
+        _flags = llm_flags or {}
         model_key = str(model_path)
         if (
             self._process is not None
@@ -684,15 +701,22 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
             and self._managed_model == model_key
             and self._managed_n_ctx == n_ctx
             and self._managed_parallel >= parallel
+            and self._managed_llm_flags == _flags
+            and self._managed_extra_flags_raw == extra_flags_raw
         ):
             return  # server already running with compatible params
 
         # Different params or no server — (re)start.
         self.stop_managed_server()
-        proc = self.start_server(model_path, n_ctx, parallel=parallel)
+        proc = self.start_server(
+            model_path, n_ctx, parallel=parallel,
+            llm_flags=_flags, extra_flags_raw=extra_flags_raw,
+        )
         self._managed_model = model_key
         self._managed_n_ctx = n_ctx
         self._managed_parallel = parallel
+        self._managed_llm_flags = _flags
+        self._managed_extra_flags_raw = extra_flags_raw
         # self._process and self._port are set by start_server
 
     def run_on_server(self, config: dict[str, Any]) -> dict | None:
@@ -715,6 +739,8 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
         self._managed_model = None
         self._managed_n_ctx = None
         self._managed_parallel = 0
+        self._managed_llm_flags = {}
+        self._managed_extra_flags_raw = None
 
     # ---- optional: probe_ctx ------------------------------------------------
 
@@ -746,10 +772,18 @@ class LlamaServerRunner(ServerMixin, BaseRunner):
     # ---- internal (delegate to mixin) ---------------------------------------
 
     def _start_server(
-        self, model_path: Path, n_ctx: int, parallel: int = 1
+        self,
+        model_path: Path,
+        n_ctx: int,
+        parallel: int = 1,
+        llm_flags: dict | None = None,
+        extra_flags_raw: str | None = None,
     ) -> subprocess.Popen[str]:
         """Delegate to :meth:`ServerMixin.start_server`."""
-        return self.start_server(model_path, n_ctx, parallel=parallel)
+        return self.start_server(
+            model_path, n_ctx, parallel=parallel,
+            llm_flags=llm_flags, extra_flags_raw=extra_flags_raw,
+        )
 
     def _stop_server(self, proc: subprocess.Popen[str]) -> None:
         """Delegate to :meth:`ServerMixin.stop_server`."""

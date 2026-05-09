@@ -19,6 +19,8 @@ import time
 
 import httpx
 
+from utils.flag_utils import build_extra_cli_args
+
 log = logging.getLogger("ppb")
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,8 @@ class ServerMixin:
         model_path: str | Path,
         n_ctx: int,
         parallel: int = 1,
+        llm_flags: dict | None = None,
+        extra_flags_raw: str | None = None,
     ) -> subprocess.Popen[str]:
         """Launch ``llama-server`` and wait for ``/health`` to become OK."""
         self._port = find_free_port()
@@ -117,6 +121,9 @@ class ServerMixin:
             cmd += ["--split-mode", split_mode]
         if main_gpu is not None:
             cmd += ["--main-gpu", str(main_gpu)]
+        # Per-run llama.cpp flag variants
+        if llm_flags or extra_flags_raw:
+            cmd += build_extra_cli_args(llm_flags or {}, extra_flags_raw)
 
         log.debug("Starting llama-server: %s", " ".join(cmd))
 
