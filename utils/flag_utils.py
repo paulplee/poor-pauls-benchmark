@@ -85,6 +85,24 @@ _RESERVED_KEYS: frozenset[str] = frozenset({"_label", "extra_flags"})
 # ---------------------------------------------------------------------------
 
 
+def _auto_label(flags: dict[str, Any]) -> str | None:
+    """Derive a human-readable label from a flags dict.
+
+    Rules: integer/float values → ``key_value``; boolean ``True`` → ``key``;
+    boolean ``False`` → omitted.  Returns ``None`` for empty dicts.
+    """
+    if not flags:
+        return None
+    parts: list[str] = []
+    for key, value in flags.items():
+        if isinstance(value, bool):
+            if value:
+                parts.append(key)
+        else:
+            parts.append(f"{key}_{value}")
+    return "_".join(parts) if parts else None
+
+
 def parse_flag_entry(entry: dict[str, Any]) -> tuple[dict[str, Any], str | None, str | None]:
     """Split a raw TOML flag entry into its logical components.
 
@@ -93,20 +111,23 @@ def parse_flag_entry(entry: dict[str, Any]) -> tuple[dict[str, Any], str | None,
     entry:
         A dict from the ``llama_cpp_args`` list, e.g.::
 
-            {"ncmoe": 20, "cmoe": True, "_label": "ncmoe_20", "extra_flags": "-rtr"}
+            {"ncmoe": 20, "cmoe": True, "extra_flags": "-rtr"}
 
     Returns
     -------
     flags : dict
         Flag key→value pairs for CLI conversion (reserved keys removed).
     label : str | None
-        Value of ``_label``, or ``None``.
+        Value of ``_label`` if provided, otherwise auto-derived from flags
+        (e.g. ``{"ncmoe": 20}`` → ``"ncmoe_20"``).  ``None`` for empty dicts.
     extra_flags_raw : str | None
         Value of ``extra_flags``, or ``None``.
     """
     label: str | None = entry.get("_label")
     extra_flags_raw: str | None = entry.get("extra_flags")
     flags = {k: v for k, v in entry.items() if k not in _RESERVED_KEYS}
+    if label is None:
+        label = _auto_label(flags)
     return flags, label, extra_flags_raw
 
 

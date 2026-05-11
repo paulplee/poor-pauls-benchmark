@@ -30,7 +30,7 @@ class TestParseFlagEntry:
     def test_structured_flags_only(self):
         flags, label, efr = parse_flag_entry({"ncmoe": 20, "cmoe": True})
         assert flags == {"ncmoe": 20, "cmoe": True}
-        assert label is None
+        assert label == "ncmoe_20_cmoe"  # auto-generated
         assert efr is None
 
     def test_label_extracted(self):
@@ -42,7 +42,7 @@ class TestParseFlagEntry:
     def test_extra_flags_extracted(self):
         flags, label, efr = parse_flag_entry({"fa": True, "extra_flags": "-rtr"})
         assert flags == {"fa": True}
-        assert label is None
+        assert label == "fa"  # auto-generated
         assert efr == "-rtr"
 
     def test_all_special_keys(self):
