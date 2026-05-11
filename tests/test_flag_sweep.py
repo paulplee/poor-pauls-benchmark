@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -97,7 +96,9 @@ class TestBuildExtraCliArgs:
         assert result == ["-rtr", "--some-flag", "42"]
 
     def test_combined_structured_and_raw(self):
-        result = build_extra_cli_args({"ncmoe": 20, "cmoe": True}, extra_flags_raw="-rtr")
+        result = build_extra_cli_args(
+            {"ncmoe": 20, "cmoe": True}, extra_flags_raw="-rtr"
+        )
         assert result == ["-ncmoe", "20", "-cmoe", "-rtr"]
 
     def test_ngl_short_flag(self):
@@ -127,7 +128,9 @@ class TestExpandLlamaCppArgs:
         assert result == []
 
     def test_single_range_flag(self):
-        result = expand_llama_cpp_args([], {"ncmoe": {"from": 20, "to": 40, "step": 20}})
+        result = expand_llama_cpp_args(
+            [], {"ncmoe": {"from": 20, "to": 40, "step": 20}}
+        )
         assert result == [{"ncmoe": 20}, {"ncmoe": 40}]
 
     def test_range_step_1_default(self):
@@ -136,7 +139,9 @@ class TestExpandLlamaCppArgs:
 
     def test_range_does_not_exceed_to(self):
         # from=20 to=99 step=10 → values stop before 99
-        result = expand_llama_cpp_args([], {"ncmoe": {"from": 20, "to": 99, "step": 10}})
+        result = expand_llama_cpp_args(
+            [], {"ncmoe": {"from": 20, "to": 99, "step": 10}}
+        )
         values = [r["ncmoe"] for r in result]
         assert all(v <= 99 for v in values)
         assert 20 in values
@@ -144,8 +149,10 @@ class TestExpandLlamaCppArgs:
 
     def test_range_appended_after_explicit(self):
         explicit = [{}]
-        result = expand_llama_cpp_args(explicit, {"ncmoe": {"from": 20, "to": 20, "step": 10}})
-        assert result[0] == {}    # baseline first
+        result = expand_llama_cpp_args(
+            explicit, {"ncmoe": {"from": 20, "to": 20, "step": 10}}
+        )
+        assert result[0] == {}  # baseline first
         assert result[1] == {"ncmoe": 20}  # range after
 
     def test_multi_flag_cartesian_product(self):
@@ -183,6 +190,7 @@ class TestSweepConfigCombos:
     def _make_config(self, **kwargs):
         """Import SweepConfig inline to avoid module-level import issues."""
         import importlib
+
         ppb = importlib.import_module("ppb")
         SweepConfig = ppb.SweepConfig
         return SweepConfig(**kwargs)
@@ -306,7 +314,9 @@ class TestBackfillRecord:
         from scripts.backfill_flags import _needs_backfill
 
         assert _needs_backfill({}) is True
-        assert _needs_backfill({"llm_flags": "{}", "llm_flags_label": "default"}) is False
+        assert (
+            _needs_backfill({"llm_flags": "{}", "llm_flags_label": "default"}) is False
+        )
         assert _needs_backfill({"llm_flags": "{}"}) is True  # label still missing
 
     def test_backfill_file_roundtrip(self, tmp_path):
@@ -315,14 +325,22 @@ class TestBackfillRecord:
         jsonl = tmp_path / "test.jsonl"
         records = [
             {"model": "m.gguf", "n_ctx": 8192, "results": {}},
-            {"model": "m.gguf", "n_ctx": 16384, "llm_flags": "{}", "llm_flags_label": "default", "extra_flags_raw": None},
+            {
+                "model": "m.gguf",
+                "n_ctx": 16384,
+                "llm_flags": "{}",
+                "llm_flags_label": "default",
+                "extra_flags_raw": None,
+            },
         ]
         jsonl.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
         n = backfill_file(jsonl, "b5063", dry_run=False)
         assert n == 1  # only first record needed backfill
 
-        out_records = [json.loads(l) for l in jsonl.read_text().splitlines() if l.strip()]
+        out_records = [
+            json.loads(l) for l in jsonl.read_text().splitlines() if l.strip()
+        ]
         assert out_records[0]["llm_flags"] == "{}"
         assert out_records[1]["llm_flags"] == "{}"  # unchanged
 
@@ -356,7 +374,16 @@ class TestFlattenerNewColumns:
             "llm_engine_name": "llama.cpp",
             "llm_engine_version": "b5063 (58ab80c3)",
             "hardware": {},
-            "results": [{"n_prompt": 8192, "n_gen": 0, "t_pp": 1.0, "t_tg": 0.0, "avg_pp": 1000.0, "avg_tg": 0.0}],
+            "results": [
+                {
+                    "n_prompt": 8192,
+                    "n_gen": 0,
+                    "t_pp": 1.0,
+                    "t_tg": 0.0,
+                    "avg_pp": 1000.0,
+                    "avg_tg": 0.0,
+                }
+            ],
             **extra,
         }
 

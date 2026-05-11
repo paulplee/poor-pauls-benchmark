@@ -44,35 +44,35 @@ from typing import Any
 SHORT_FLAG_KEYS: frozenset[str] = frozenset(
     {
         # MoE / expert routing
-        "ncmoe",   # -ncmoe N  — number of experts for continuous batching
-        "cmoe",    # -cmoe     — use continuous batching for MoE models
+        "ncmoe",  # -ncmoe N  — number of experts for continuous batching
+        "cmoe",  # -cmoe     — use continuous batching for MoE models
         # Context / generation
-        "c",       # -c N      — context size
-        "n",       # -n N      — number of tokens to predict
-        "p",       # -p N      — number of prompt tokens
-        "b",       # -b N      — batch size
+        "c",  # -c N      — context size
+        "n",  # -n N      — number of tokens to predict
+        "p",  # -p N      — number of prompt tokens
+        "b",  # -b N      — batch size
         # GPU
-        "ngl",     # -ngl N    — GPU layers (same as --n-gpu-layers)
-        "ts",      # -ts       — tensor split shorthand
-        "mg",      # -mg N     — main GPU
+        "ngl",  # -ngl N    — GPU layers (same as --n-gpu-layers)
+        "ts",  # -ts       — tensor split shorthand
+        "mg",  # -mg N     — main GPU
         # Attention
-        "fa",      # -fa       — enable flash attention
+        "fa",  # -fa       — enable flash attention
         # KV cache
-        "nkvo",    # -nkvo     — disable KV cache offloading
-        "ctk",     # -ctk TYPE — KV cache type (key)
-        "ctv",     # -ctv TYPE — KV cache type (value)
+        "nkvo",  # -nkvo     — disable KV cache offloading
+        "ctk",  # -ctk TYPE — KV cache type (key)
+        "ctv",  # -ctv TYPE — KV cache type (value)
         # Rope / scaling
-        "rf",      # -rf FLOAT — rope frequency scale
-        "rs",      # -rs FLOAT — rope scale
+        "rf",  # -rf FLOAT — rope frequency scale
+        "rs",  # -rs FLOAT — rope scale
         # Threads
-        "t",       # -t N      — threads for generation
-        "tb",      # -tb N     — threads for prompt batch
+        "t",  # -t N      — threads for generation
+        "tb",  # -tb N     — threads for prompt batch
         # Grp attn
-        "gan",     # -gan N    — group attention factor N
-        "gaf",     # -gaf N    — group attention width
+        "gan",  # -gan N    — group attention factor N
+        "gaf",  # -gaf N    — group attention width
         # Miscellaneous
-        "rtr",     # -rtr      — process prompt and return timing results
-        "sm",      # -sm       — split mode shorthand
+        "rtr",  # -rtr      — process prompt and return timing results
+        "sm",  # -sm       — split mode shorthand
     }
 )
 
@@ -103,7 +103,9 @@ def _auto_label(flags: dict[str, Any]) -> str | None:
     return "_".join(parts) if parts else None
 
 
-def parse_flag_entry(entry: dict[str, Any]) -> tuple[dict[str, Any], str | None, str | None]:
+def parse_flag_entry(
+    entry: dict[str, Any],
+) -> tuple[dict[str, Any], str | None, str | None]:
     """Split a raw TOML flag entry into its logical components.
 
     Parameters
@@ -247,8 +249,7 @@ def expand_llama_cpp_args(
         flag_value_lists.append(values)
 
     range_combos: list[dict[str, Any]] = [
-        dict(zip(flag_names, combo))
-        for combo in itertools.product(*flag_value_lists)
+        dict(zip(flag_names, combo)) for combo in itertools.product(*flag_value_lists)
     ]
 
     return list(explicit) + range_combos
