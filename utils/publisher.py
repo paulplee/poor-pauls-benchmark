@@ -52,6 +52,36 @@ def check_hf_token(token: str | None = None) -> None:
         )
 
 
+def _make_dataset_info(flat_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a ``dataset_info.json`` summary for the current upload batch.
+
+    The file is published alongside every JSONL shard so that API consumers
+    and HuggingFace dataset viewers can inspect metadata without parsing rows.
+    """
+    schema_versions: set[str] = set()
+    benchmark_versions: set[str] = set()
+    for row in flat_rows:
+        sv = row.get("schema_version")
+        bv = row.get("benchmark_version")
+        if sv:
+            schema_versions.add(str(sv))
+        if bv:
+            benchmark_versions.add(str(bv))
+
+    return {
+        "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_rows_in_shard": len(flat_rows),
+        "schema_versions": sorted(schema_versions),
+        "runner_versions": sorted(benchmark_versions),
+        "license": "MIT",
+        "repository": f"https://huggingface.co/datasets/{PPB_HF_REPO}",
+        "deprecated_columns": {
+            "gpu_vram_gb": "Use gpu_total_vram_gb instead",
+            "backends": "Use backend (singular) in downstream consumers",
+        },
+    }
+
+
 def publish_to_hf(
     flat_rows: list[dict[str, Any]],
     *,
@@ -105,7 +135,7 @@ def publish_to_hf(
             tmp.write(json.dumps(row, default=str) + "\n")
         tmp_path = tmp.name
 
-    # -- upload ------------------------------------------------------------
+    # -- upload JSONL ------------------------------------------------------
     try:
         api.upload_file(
             path_or_fileobj=tmp_path,
@@ -115,6 +145,28 @@ def publish_to_hf(
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+    # -- upload dataset_info.json ------------------------------------------
+    info_bytes = json.dumps(_make_dataset_info(flat_rows), indent=2).encode()
+    with tempfile.NamedTemporaryFile(
+        suffix=".json",
+        prefix="ppb_dataset_info_",
+        delete=False,
+    ) as tmp_info:
+        tmp_info.write(info_bytes)
+        tmp_info_path = tmp_info.name
+
+    try:
+        api.upload_file(
+            path_or_fileobj=tmp_info_path,
+            path_in_repo="dataset_info.json",
+            repo_id=PPB_HF_REPO,
+            repo_type="dataset",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not update dataset_info.json: %s", exc)
+    finally:
+        Path(tmp_info_path).unlink(missing_ok=True)
 
     return f"https://huggingface.co/datasets/{PPB_HF_REPO}"
 

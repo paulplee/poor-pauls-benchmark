@@ -9,20 +9,21 @@ The authoritative source is `COLUMN_ORDER` in
 [`utils/flattener.py`](../utils/flattener.py). Update this file whenever
 that list changes.
 
-- **Schema version:** `0.9.0`
+- **Schema version:** `0.10.0`
 - **Format:** JSON Lines (one record per row)
 - **Field convention:** keys not applicable to a given runner are `null`
 
 ## Benchmark Identity
 
-| Field         | Type           | Description                                                                                  |
-| ------------- | -------------- | -------------------------------------------------------------------------------------------- |
-| `model`       | string \| null | Full model path passed to the runner (e.g. `unsloth/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf`) |
-| `model_base`  | string \| null | Base model name parsed from the GGUF filename (e.g. `Qwen3.5-2B`)                            |
-| `quant`       | string \| null | Quantization label parsed from the filename (e.g. `Q4_K_M`, `BF16`)                          |
-| `model_org`   | string \| null | Hugging Face org/user (e.g. `unsloth`)                                                       |
-| `model_repo`  | string \| null | Hugging Face `org/repo` portion of the model path                                            |
-| `runner_type` | string         | Backend used: `llama-bench`, `llama-server`, or `llama-server-loadtest`                      |
+| Field         | Type           | Description                                                                                                                                                          |
+| ------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_type`    | string         | Pipeline mode that produced the row: `all`, `quantitative`, or `qualitative`                                                                                         |
+| `model`       | string \| null | Full model path passed to the runner (e.g. `unsloth/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf`)                                                                         |
+| `model_base`  | string \| null | Base model name parsed from the GGUF filename (e.g. `Qwen3.5-2B`)                                                                                                    |
+| `quant`       | string \| null | Quantization label parsed from the filename (e.g. `Q4_K_M`, `BF16`)                                                                                                  |
+| `model_org`   | string \| null | Hugging Face org/user (e.g. `unsloth`)                                                                                                                               |
+| `model_repo`  | string \| null | Hugging Face `org/repo` portion of the model path                                                                                                                    |
+| `runner_type` | string         | Phase that produced the row: `llama-bench`, `llama-server`, `llama-server-loadtest`, `context-rot`, `tool-accuracy`, `answer-quality`, `multiturn`, or `qualitative` |
 
 ## LLM Engine
 
@@ -58,6 +59,17 @@ that list changes.
 | `split_mode`       | string \| null  | Multi-GPU split strategy (e.g. `none`, `layer`, `row`)                                                                                                                        |
 | `tensor_split`     | string \| null  | GPU weight ratios for multi-GPU (e.g. `"1,1"`)                                                                                                                                |
 | `concurrent_users` | integer \| null | Simultaneous inference requests (server runners only). For `llama-server-loadtest`, each row in the dataset corresponds to **one concurrency level** from the measured curve. |
+
+## Configuration — LLM Flags (schema v0.10.0+)
+
+These three fields capture structured llama.cpp flag variants introduced in schema v0.10.0.
+They are `null` on rows produced by older runner versions.
+
+| Field             | Type           | Description                                                                                                                    |
+| ----------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `llm_flags`       | string \| null | JSON-encoded dict of structured flags passed to the engine (e.g. `'{"ncmoe": 20}'`)                                            |
+| `llm_flags_label` | string \| null | Optional human-readable label for this flag variant (e.g. `"moe-20"`)                                                          |
+| `extra_flags_raw` | string \| null | Verbatim extra CLI tokens appended after the structured flags (e.g. `"--override-kv tokenizer.ggml.add_bos_token=bool:false"`) |
 
 ## Workload
 
@@ -258,7 +270,7 @@ a unified profile without re-running expensive perf sweeps.
 
 | Field                 | Type           | Description                                                                 |
 | --------------------- | -------------- | --------------------------------------------------------------------------- |
-| `schema_version`      | string         | Version of this schema (currently `0.9.0`)                                  |
+| `schema_version`      | string         | Version of this schema (currently `0.10.0`)                                 |
 | `benchmark_version`   | string         | Version of `poor-pauls-benchmark` that produced the row                     |
 | `suite_run_id`        | string \| null | UUID shared by all rows produced by the same suite invocation               |
 | `submission_id`       | string \| null | UUID set by the publisher for one upload batch                              |
