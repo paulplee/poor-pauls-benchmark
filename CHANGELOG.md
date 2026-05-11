@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.1.0] - 2026-05-10
 
 ### Added
+
 - `ppb sweep` — throughput benchmark via `llama-bench` subprocess across n_ctx/n_batch/quant combos
 - `ppb vram-cliff` — OOM-probe sweep to find max safe context window per quantisation
 - `ppb server-bench` — TTFT/ITL latency measurement via llama-server `/completion` SSE streaming
