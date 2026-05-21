@@ -105,21 +105,78 @@ All quality evaluations run local models via `llama-cpp-python`, which requires 
 Install the GPU-accelerated build once before running quality benchmarks:
 
 ```bash
-# CUDA (Linux / Windows)
-CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama-cpp-python>=0.3.0"
-
-# Metal (macOS Apple Silicon)
-CMAKE_ARGS="-DGGML_METAL=on" pip install "llama-cpp-python>=0.3.0"
-
-# Pre-built CUDA 12.4 wheel via uv (fastest path)
+# CUDA — x86_64 Linux / Windows: pre-built wheel (fastest path)
 uv pip install llama-cpp-python \
   --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+
+# CUDA — x86_64 Linux / Windows: build from source
+CMAKE_ARGS="-DGGML_CUDA=ON" uv pip install "llama-cpp-python>=0.3.0"
+
+# CUDA — ARM64/aarch64 (Grace Blackwell GB10, Jetson, etc.)
+# No CUDA-enabled wheels exist for aarch64; PyPI has a CPU-only aarch64 wheel.
+# --no-binary forces a source build. CMAKE_CUDA_ARCHITECTURES=native auto-detects the GPU.
+CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native" \
+  uv pip install "llama-cpp-python>=0.3.0" --no-binary llama-cpp-python
+
+# Metal (macOS Apple Silicon)
+CMAKE_ARGS="-DGGML_METAL=on" uv pip install "llama-cpp-python>=0.3.0"
 
 # Or compile via the pyproject extras group
 uv pip install -e ".[qualitative]"
 ```
 
+> **Note — ARM64 / aarch64 machines (including Lenovo ThinkStation PGX GB10, Jetson AGX Orin, etc.):**
+> The pre-built wheel index at `abetlen.github.io/llama-cpp-python/whl/cu124` only publishes
+> `linux_x86_64` and `win_amd64` wheels. Passing `--extra-index-url` on an aarch64 host will
+> fail with a "no matching platform tag" error. You must build from source as shown above.
+> The `native` architecture flag auto-detects your GPU's compute capability at compile time,
+> so you do not need to look it up manually.
+
 Pre-built wheels for common targets: [github.com/abetlen/llama-cpp-python/releases](https://github.com/abetlen/llama-cpp-python/releases)
+
+### Verifying the llama-cpp-python build
+
+Run this one-liner after installing. No model file needed.
+
+```bash
+uv run python - <<'EOF'
+from llama_cpp import llama_supports_gpu_offload, llama_backend_init, llama_backend_free
+from llama_cpp.llama_cpp import llama_print_system_info
+llama_backend_init()
+print(llama_print_system_info().decode())
+gpu = llama_supports_gpu_offload()
+print("GPU offload:", "OK ✓" if gpu else "FAIL — CPU-only build (qualitative benchmarks will be unusably slow)")
+llama_backend_free()
+EOF
+```
+
+**Healthy CUDA output** — look for the `ggml_cuda_init` header and a `CUDA :` line in the system info:
+
+```
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 122502 MiB):
+  Device 0: NVIDIA GB10, compute capability 12.1, VMM: yes, VRAM: 122502 MiB
+CUDA : ARCHS = 1210 | USE_GRAPHS = 1 | ...
+GPU offload: OK ✓
+```
+
+**If `GPU offload: FAIL` or no `CUDA :` line appears**, the wheel was built without GPU support. Reinstall with the source-build command for your platform from the section above, making sure to pass `--no-binary llama-cpp-python` so uv doesn't silently reuse the CPU-only wheel from PyPI:
+
+```bash
+# Remove the CPU-only install first
+uv pip uninstall llama-cpp-python
+
+# Then reinstall from source (substitute the correct CMAKE_ARGS for your platform)
+CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native" \
+  uv pip install "llama-cpp-python>=0.3.0" --no-binary llama-cpp-python
+```
+
+**If the GPU isn't visible at all**, check the OS level first:
+
+```bash
+nvidia-smi                    # GPU visible and driver loaded?
+nvcc --version                # CUDA toolkit installed?
+echo $CUDA_HOME               # CUDA_HOME set? (needed for source builds)
+```
 
 ---
 
