@@ -1,9 +1,9 @@
 """
-PPB — Tool-Call Accuracy (BFCL v4 + PPB-native).
+PPB — Tool-Call Accuracy (BFCL v3 + PPB-native).
 
 Measures whether a model produces structurally valid, schema-correct tool
-calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) v4 single-turn
-splits (``simple_python``, ``multiple``, ``parallel``, ``irrelevance``) as
+calls.  Uses the Berkeley Function Calling Leaderboard (BFCL) v3 single-turn
+splits (``simple``, ``multiple``, ``parallel``, ``irrelevance``) as
 the primary evaluation set, supplemented by a PPB-native MCP ground-truth
 set covering the four ``ppb-mcp`` tools.
 
@@ -57,14 +57,14 @@ BFCL_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 # Single-turn splits used by PPB.
 # Excludes: live/*, multi_turn/*, memory, web_search, java, javascript.
 BFCL_SPLITS = (
-    "BFCL_v4_simple_python.json",  # 399 cases — one tool, one call
-    "BFCL_v4_multiple.json",  # 199 cases — tool selection from candidates
-    "BFCL_v4_parallel.json",  # 199 cases — parallel / batched calls
-    "BFCL_v4_irrelevance.json",  # 239 cases — model must decline to call
+    "BFCL_v3_simple.json",       # one tool, one call
+    "BFCL_v3_multiple.json",     # tool selection from candidates
+    "BFCL_v3_parallel.json",     # parallel / batched calls
+    "BFCL_v3_irrelevance.json",  # model must decline to call
 )
 BFCL_ANSWER_PREFIX = "possible_answer/"  # ground-truth subfolder in the same repo
 # Split filename suffix that signals "model must NOT emit a tool call".
-BFCL_IRRELEVANCE_SPLIT = "BFCL_v4_irrelevance.json"
+BFCL_IRRELEVANCE_SPLIT = "BFCL_v3_irrelevance.json"
 
 DEFAULT_BFCL_SAMPLE_SIZE = 100
 DEFAULT_MAX_TOKENS = 256
@@ -90,9 +90,9 @@ SYSTEM_PROMPT_TEMPLATE = (
 
 
 def _parse_bfcl_ground_truth(call_str: str) -> dict[str, Any]:
-    """Parse a BFCL v4 ground-truth call string into a ``{name, arguments}`` dict.
+    """Parse a BFCL ground-truth call string into a ``{name, arguments}`` dict.
 
-    BFCL v4 expresses ground truth as Python function-call syntax, e.g.
+    BFCL ground truth is expressed as Python function-call syntax, e.g.
     ``"recommend_quantization(model='Qwen3-30B', gpu_vram_gb=24)"``.
     Returns ``{}`` on any parse failure.
     """
@@ -172,7 +172,7 @@ def _load_bfcl_answers(split_filename: str) -> dict[str, list[str]]:
 
 
 def _load_bfcl(sample_size: int) -> list[dict[str, Any]]:
-    """Load BFCL v4 single-turn rows from each split, capped at *sample_size*.
+    """Load BFCL v3 single-turn rows from each split, capped at *sample_size*.
 
     Each split contributes ``sample_size // len(BFCL_SPLITS)`` rows.  Ground
     truth is fetched separately from ``possible_answer/<split>`` and merged
@@ -257,7 +257,7 @@ def _normalise_bfcl_row(
     ground_truth_map: dict[str, list[str]] | None = None,
     expected_no_call: bool = False,
 ) -> dict[str, Any] | None:
-    """Normalise a raw BFCL v4 row into the same shape as PPB-native cases.
+    """Normalise a raw BFCL row into the same shape as PPB-native cases.
 
     The v4 schema is fixed:
 

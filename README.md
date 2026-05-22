@@ -236,13 +236,7 @@ Enable **multi-needle mode** (`multi_needle_enabled = true`) to measure context 
 
 Dual-track evaluation using established benchmarks and PPB-native cases:
 
-- **[BFCL v4](https://gorilla.cs.berkeley.edu/leaderboard.html)** (Berkeley Function Calling Leaderboard) — ~1,036 cases across four single-turn splits:
-  - `simple_python` (399 cases) — one correct call, one function provided
-  - `multiple` (199 cases) — correct tool selection from 2–4 candidates
-  - `parallel` (199 cases) — parallel/batched calls for multi-entity requests
-  - `irrelevance` (239 cases) — model must correctly _decline_ to call any tool
-
-  The `irrelevance` split is the standout addition in v4: it directly measures hallucination avoidance by testing whether a model knows when _not_ to call a function. Results are comparable to the Berkeley v4 leaderboard for single-turn categories.
+- **[BFCL v3](https://gorilla.cs.berkeley.edu/leaderboard.html)** (Berkeley Function Calling Leaderboard) — four single-turn splits (`simple`, `multiple`, `parallel`, `irrelevance`) covering straightforward calls, multi-candidate tool selection, parallel/batched requests, and cases where the model must correctly _decline_ to call any tool. The irrelevance split directly measures hallucination avoidance.
 
 - **PPB-native ground truth** — 100 cases covering all four `ppb-mcp` tools (`recommend_quantization`, `query_ppb_results`, `get_gpu_headroom`, `list_tested_configs`) with realistic hobbyist-AI prompts.
 
@@ -451,7 +445,7 @@ pytest tests/test_qualitative_fixes.py tests/test_context_rot.py \
 ```
 ppb.py                        # CLI entry point (Typer app)
 ppb_context_rot.py            # Long-Context Recall (Semantic NIAH)
-ppb_tool_accuracy.py          # Tool-Call Accuracy (BFCL v4: simple_python/multiple/parallel/irrelevance + PPB-native)
+ppb_tool_accuracy.py          # Tool-Call Accuracy (BFCL v3: simple/multiple/parallel/irrelevance + PPB-native)
 ppb_answer_quality.py         # Answer Quality (judge-model pipeline)
 ppb_multiturn.py              # Multi-Turn Memory (LongMemEval / MT-Bench)
 ppb_mcp_ground_truth.json     # 100 PPB-native tool-call evaluation cases
@@ -516,6 +510,6 @@ models/                       # Downloaded GGUF cache — gitignored
 
 Benchmark results contributed to `paulplee/ppb-results` are published under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Contributions remain attributed to their authors.
 
-BFCL v4 evaluation data © UC Berkeley, used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+BFCL v3 evaluation data © UC Berkeley, used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 MT-Bench questions © LMSYS, used under [MIT licence](https://github.com/lm-sys/FastChat/blob/main/LICENSE).
 ShareGPT dataset used under its [original licence](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered).

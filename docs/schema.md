@@ -217,7 +217,7 @@ PPB-native MCP ground-truth set. Rows produced by this phase carry
 
 > `no_call_accuracy` measures the fraction of cases where the model correctly
 > declined to call any tool. It is populated only when
-> `BFCL_v4_irrelevance.json` is included in the evaluation (default). A high
+> `BFCL_v3_irrelevance.json` is included in the evaluation (default). A high
 > `parameter_hallucination_rate` alongside a low `no_call_accuracy` indicates
 > the model is both generating bad calls **and** failing to abstain when
 > abstention is correct.
