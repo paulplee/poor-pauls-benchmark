@@ -395,7 +395,80 @@ hf_dataset = "paulplee/ppb-results"
 uv run ppb.py all suites/my_gpu.toml
 ```
 
-Results are pushed to HuggingFace after each model completes — so a multi-model run is never lost to a late crash. They appear on [poorpaul.dev/insights](https://poorpaul.dev/insights) and become queryable via `mcp.poorpaul.dev` within minutes.
+Results are pushed to HuggingFace after each model completes — so a multi-model run is never lost to a late crash.
+
+### How data flows from HuggingFace to the MCP and website
+
+Understanding the propagation path explains why a freshly pushed row doesn't appear instantly everywhere:
+
+```
+Your machine → HuggingFace (paulplee/ppb-results)
+                       │
+                       ├──► mcp.poorpaul.dev  (pulls on demand, see below)
+                       │
+                       └──► poorpaul.dev      (pulls at deploy time, see below)
+```
+
+**MCP (`mcp.poorpaul.dev`)** — the live REST API pulls data from HuggingFace automatically, but **only when the dataset's git commit SHA has changed** since its last sync. It checks the SHA on every request cycle; once a change is detected it downloads only the new/changed shards and upserts them into its local SQLite cache. The default refresh interval is **1 hour** (controlled by the `REFRESH_INTERVAL_HOURS` environment variable on the server). In practice this means new results appear in the MCP within an hour of being pushed to HuggingFace. To force an immediate refresh, restart the Docker container (`docker compose restart` on the server runs `update.sh`).
+
+**Website (`poorpaul.dev`)** — the site is a **static Next.js export**. The data files it serves (including `/data/results.json`, the file the `/insights` page reads for its charts) are baked in at **deploy time** by running `npx tsx scripts/fetch-data.ts` followed by `npm run build`. This means new HuggingFace rows do **not** appear on the website until a new deployment is triggered. Deployments happen automatically on every push to the `main` branch of `poorpaul-dev` via GitHub Actions, or can be triggered manually via `workflow_dispatch`. If you push benchmark results to HuggingFace but no site deployment follows, the insights page will be stale.
+
+**In short:** after pushing results to HuggingFace, wait up to 1 hour for the MCP to pick them up. For the website, a new deployment is required — either merge a change to `poorpaul-dev/main` or trigger the workflow manually.
+
+---
+
+## Auditing Published Coverage
+
+`scripts/audit_published_coverage.py` is an end-to-end correctness check that verifies every `(model, GPU)` pair in the HuggingFace dataset is also visible in the MCP REST API and the website's static snapshot. Run it whenever you suspect results are missing from the insights page.
+
+### What it checks
+
+1. **HuggingFace → source of truth.** Downloads the full dataset Parquet and enumerates every `(model_base, gpu_name)` pair, noting how many quantitative and qualitative rows each has.
+2. **MCP REST API.** Queries `https://mcp.poorpaul.dev/api/v1/results` and `/qualitative` for each pair and flags any that return zero rows when the dataset has data.
+3. **Static snapshot.** Fetches `https://poorpaul.dev/data/results.json` (the file the `/insights` page reads) and flags any pair missing from it — the most common cause of empty charts on the site.
+4. **Headless browser (optional).** Drives Chromium against `/insights?gpu=…&model=…`, clicks each qualitative tab (Context Rot / Tools / Quality / Multi-Turn), and flags tabs that render no charts.
+
+### Running the audit
+
+```bash
+# Fast smoke test — 5 random pairs, no browser (good for a quick sanity check)
+uv run python scripts/audit_published_coverage.py --limit-pairs 5
+
+# Full audit of all pairs (takes ~3 minutes at the default 0.9 req/s throttle)
+uv run python scripts/audit_published_coverage.py
+
+# Also drive a headless browser against /insights for a sample of pairs
+# (requires playwright: uv pip install playwright && playwright install chromium)
+uv run python scripts/audit_published_coverage.py --with-browser
+
+# Point at a local dev MCP/site instead of production
+uv run python scripts/audit_published_coverage.py \
+    --mcp-base http://localhost:8000/api/v1 \
+    --site-base http://localhost:3000
+```
+
+The report is written to `audit_report.md` (override with `--report PATH`). The script exits with code 0 when everything is clean, 1 when findings are reported, and 2 on a fatal error — suitable for CI.
+
+### Reading the report
+
+Findings are grouped by surface and sorted by severity:
+
+| Surface | What it means |
+| --- | --- |
+| `mcp-results` | A pair has quantitative rows in HF but none returned by the MCP `/results` endpoint. The MCP cache may be stale — wait up to 1 hour or restart the server. |
+| `mcp-qualitative` | A pair has qualitative rows in HF but none returned by `/qualitative`. Same cause as above; qualitative rows that were recently pushed are the most common culprit. |
+| `static-snapshot` | A pair is absent from `/data/results.json`. The website needs a new deployment (`npm run build` + deploy, or push any change to `poorpaul-dev/main` to trigger GitHub Actions). |
+| `insights-page` | The `/insights` page loaded but rendered no charts for that pair. Usually indicates the static snapshot is stale (same fix) or a chart component has a filtering bug. |
+
+A `severity: error` row means the request itself failed (e.g. HTTP 429 from rate limiting or a network error); a `severity: missing` row means the request succeeded but returned no data.
+
+### Unit tests
+
+The pure-function logic (pair enumeration, snapshot indexing, report rendering) is covered by offline unit tests:
+
+```bash
+uv run pytest tests/test_audit_published_coverage.py -v
+```
 
 ---
 
@@ -465,6 +538,7 @@ utils/
   publisher.py                # Push results to HuggingFace
 scripts/
   aggregate_results.py        # Group Parquet rows by key dimensions; compute mean/CI95; optional HF upload
+  audit_published_coverage.py # End-to-end coverage audit: HF dataset → MCP → website snapshot → browser
 suites/
   suite.example.toml          # Starter performance suite
   qualitative_example.toml    # Starter quality suite
