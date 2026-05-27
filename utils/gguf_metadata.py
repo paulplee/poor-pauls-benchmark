@@ -217,7 +217,13 @@ def estimate_kv_cache_bytes(
     if meta.embedding_length is None or meta.head_count is None:
         return None
 
-    n_kv_heads = meta.head_count_kv if meta.head_count_kv is not None else meta.head_count
+    # head_count_kv may be a per-layer list (e.g. Gemma 4 heterogeneous
+    # attention).  Use the maximum value for a conservative upper-bound.
+    raw_kv = meta.head_count_kv if meta.head_count_kv is not None else meta.head_count
+    if isinstance(raw_kv, list):
+        n_kv_heads = max(raw_kv) if raw_kv else meta.head_count
+    else:
+        n_kv_heads = raw_kv
     head_dim = meta.embedding_length // meta.head_count
     n_layers = meta.block_count if meta.block_count is not None else 1
 
