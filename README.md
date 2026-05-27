@@ -178,6 +178,58 @@ nvcc --version                # CUDA toolkit installed?
 echo $CUDA_HOME               # CUDA_HOME set? (needed for source builds)
 ```
 
+### Building with Flash Attention (recommended for Gemma 4 and other hybrid-attention models)
+
+Some models — notably **Gemma 4** and other hybrid sparse-attention architectures — have variable-sized V embeddings across transformer layers. Without Flash Attention, llama.cpp pads the entire V cache to the maximum layer size, which inflates VRAM usage significantly at larger context windows. This can trigger a native `ggml_cuda_pool_vmm::alloc` crash (SIGABRT from the CUDA VMM allocator) that Python cannot catch, killing the whole benchmark process mid-run.
+
+Adding `-DGGML_CUDA_FA=on` at build time enables the CUDA Flash Attention kernel, which eliminates the padding requirement and reduces peak VRAM substantially. There is no pre-built wheel with FA enabled, so you must compile from source:
+
+```bash
+# Uninstall the existing wheel first to prevent uv from reusing it
+uv pip uninstall llama-cpp-python
+
+# Build from source with CUDA + Flash Attention
+# --no-binary prevents uv from silently falling back to the CPU-only PyPI wheel
+CMAKE_ARGS="-DGGML_CUDA=ON -DGGML_CUDA_FA=on -DCMAKE_CUDA_ARCHITECTURES=native" \
+  uv pip install "llama-cpp-python>=0.3.0" \
+    --no-binary llama-cpp-python \
+    --no-build-isolation
+```
+
+> `--no-build-isolation` is required because the vendored llama.cpp sources need the CUDA toolkit visible to the compiler. If CMake can't find `nvcc`, prepend `PATH=/usr/local/cuda/bin:$PATH` to the command. Build time is approximately 10–15 minutes.
+
+**Verify Flash Attention is active** by loading a model with `flash_attn=True` and checking the startup log:
+
+```bash
+uv run python - <<'EOF'
+from llama_cpp import Llama
+llm = Llama(
+    model_path="/path/to/model.gguf",
+    n_ctx=8192, n_gpu_layers=-1, flash_attn=True, verbose=True
+)
+# Look for: "llama_kv_cache: using Flash Attention"
+# Absence of: "padding V cache to 2048" warns that FA is not active
+EOF
+```
+
+A successful FA build replaces the warning line:
+```
+# Without FA (bad):
+llama_kv_cache: the V embeddings have different sizes across layers and FA is
+not enabled - padding V cache to 2048
+
+# With FA (good):
+llama_kv_cache: using Flash Attention
+```
+
+Once the Flash Attention build is confirmed, restore full context-rot coverage in your suite TOML by uncommenting or removing the `haystack_lengths` cap:
+
+```toml
+[qualitative]
+context_rot_enabled = true
+# haystack_lengths defaults to [4096, 8192, 16384, 32768, 65536, 131072]
+```
+
 ---
 
 ## Run Modes
